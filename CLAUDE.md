@@ -13,10 +13,6 @@ SPR = medium), normalizes that information into a typed schema, stores it in a
 SQL database, and pushes each conference (and its deadlines) into Google
 Calendar as events.
 
-The initial domain focus is medical-imaging and radiology conferences (RSNA,
-SPR, ARRS, SIIM, etc.), but the schema and discovery pipeline are
-domain-agnostic and configurable.
-
 ## Status
 
 Early scaffolding. The package layout, schema, and module boundaries are in
@@ -40,6 +36,12 @@ yet implemented. See `## Planned Architecture` for the intended design.
 - `.github/workflows/` — `ci.yml` (lint + offline tests)
 
 ## Development Setup
+
+Use the `conference_agent` conda environment for all work in this repo:
+
+```bash
+conda activate conference_agent
+```
 
 ```bash
 pip install -e ".[dev]"            # core + test tooling
