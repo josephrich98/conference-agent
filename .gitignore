@@ -1,0 +1,83 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Mac OS
+.DS_Store
+
+# claude
+.claude/
+2026-*.txt
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# mypy / type checkers
+.mypy_cache/
+.dmypy.json
+.pyre/
+
+# ruff
+.ruff_cache/
+
+# IDEs
+.idea/
+**/.vscode/*
+
+# Logs
+logs/
+*.log
+
+# Scratch
+trash/
+tmp.*
+output/
+outputs/
+
+# ---- Secrets & credentials ----
+# Google Calendar OAuth client secrets and cached tokens must never be committed.
+credentials.json
+client_secret*.json
+token.json
+*.token
+
+# ---- Project data ----
+# Generated conference tables / databases must never be committed.
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+data/*
+!data/.gitkeep
