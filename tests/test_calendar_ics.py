@@ -1,10 +1,10 @@
 """Offline unit tests for the iCalendar (``.ics``) feed builder.
 
 These exercise :func:`conferences_to_ics` and its helpers, which are pure Python
-(no Google libraries, no network, no OAuth), so CI stays hermetic. They lock in
-the feed a user subscribes to: one all-day event per populated deadline / date
-range, an exclusive all-day end, reminders one month / one week / one day ahead,
-stable UIDs (idempotent re-fetch), and RFC 5545 escaping, folding, and CRLF.
+(no network), so CI stays hermetic. They lock in the feed a user subscribes to:
+one all-day event per populated deadline / date range, an exclusive all-day end,
+reminders four weeks / one week / one day ahead, stable UIDs (idempotent
+re-fetch), and RFC 5545 escaping, folding, and CRLF.
 """
 
 from datetime import date, datetime, timezone
@@ -87,8 +87,18 @@ def test_every_event_has_day_week_month_alarms():
     ics = _ics([_conf()])
     # Three events × three lead times.
     assert ics.count("BEGIN:VALARM") == 9
+    # Each alarm is anchored to the morning N days before (not bare midnight), so
+    # calendar apps label "N days before" correctly.
     for days in CALENDAR_REMINDER_LEAD_DAYS:
-        assert f"TRIGGER:-P{days}D" in ics
+        assert f"TRIGGER:{cs._alarm_trigger(days)}" in ics
+
+
+def test_alarm_triggers_are_anchored_to_the_morning():
+    # 9 AM the day before / week before / four weeks before an all-day (midnight)
+    # event: 24*N - 9 hours before the start.
+    assert cs._alarm_trigger(1) == "-PT15H"
+    assert cs._alarm_trigger(7) == "-P6DT15H"
+    assert cs._alarm_trigger(28) == "-P27DT15H"
 
 
 def test_uids_are_stable_distinct_and_namespaced():

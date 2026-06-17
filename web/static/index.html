@@ -13,9 +13,9 @@
       --muted: #6b7280;
       --accent: #2563eb;
       --accent-weak: #eff4ff;
-      --big: #b91c1c;
-      --medium: #b45309;
-      --small: #4b5563;
+      --big: #16a34a;
+      --medium: #ea580c;
+      --small: #1f2933;
       --date-recent: #dc2626;
       --date-old: #ea580c;
       --date-soon: #16a34a;
@@ -125,9 +125,20 @@
     .tier.medium { color: var(--medium); }
     .tier.small { color: var(--small); }
     .muted { color: var(--muted); }
-    .sync-btn { padding: 5px 10px; font-size: 13px; white-space: nowrap; }
-    .ics-link { font-size: 13px; white-space: nowrap; margin-left: 8px; }
     .cal-cell { white-space: nowrap; }
+    .cal-btn {
+      display: inline-block;
+      padding: 5px 10px;
+      font-size: 13px;
+      white-space: nowrap;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .cal-btn:hover { filter: brightness(0.98); }
     #subscribe-panel {
       margin: 0 0 14px;
       padding: 12px 14px;
@@ -162,7 +173,7 @@
 <body>
   <header>
     <h1>Conference Agent</h1>
-    <p class="subtitle">Curated conference deadlines and dates. Subscribe to a calendar feed, or sync to Google Calendar.</p>
+    <p class="subtitle">Curated conference deadlines and dates. Subscribe to a calendar feed, or add any row to your calendar.</p>
   </header>
 
   <div class="controls">
@@ -170,7 +181,6 @@
     <button class="primary" id="search-btn">Search</button>
     <button id="csv-btn">Export CSV</button>
     <button id="subscribe-btn" title="Subscribe to these results as a calendar feed (no sign-in)">Subscribe (.ics)</button>
-    <button id="sync-all-btn" title="Sync all results to Google Calendar">Sync all</button>
   </div>
 
   <div id="subscribe-panel" hidden>
@@ -226,7 +236,7 @@
       { key: "upcoming_abstract_deadline", label: "Abstract due", sort: "upcoming_abstract_deadline" },
       { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
       { key: "upcoming_dates", label: "Conference dates", sort: "upcoming_start_date" },
-      { key: "sync", label: "", sort: null },
+      { key: "cal", label: "Calendar", sort: null },
     ];
 
     let state = { sort: "upcoming_start_date", order: "asc", rows: [] };
@@ -285,6 +295,13 @@
       return '<span class="muted">—</span>';
     }
 
+    // Some stored URLs are bare domains (e.g. "rsna.org/annual-meeting"); without
+    // a scheme the browser treats the href as a relative path and the link 404s.
+    // Default to https:// when no scheme is present.
+    function externalUrl(url) {
+      return /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    }
+
     function renderHeader() {
       const row = $("header-row");
       row.innerHTML = "";
@@ -325,7 +342,7 @@
         const tr = document.createElement("tr");
 
         const name = r.url
-          ? `<a href="${r.url}" target="_blank" rel="noopener">${r.acronym}</a> — ${r.name}`
+          ? `<a href="${externalUrl(r.url)}" target="_blank" rel="noopener">${r.acronym}</a> — ${r.name}`
           : `${r.acronym} — ${r.name}`;
 
         const tier = r.reputation
@@ -343,11 +360,9 @@
           <td>${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
           <td>${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td class="cal-cell">
-            <button class="sync-btn" data-id="${r.id}">📅 Sync</button>
-            <a class="ics-link" href="/api/calendar.ics?ids=${encodeURIComponent(r.id)}" download="${r.id}.ics" title="Download this conference as an .ics file">📥 .ics</a>
+            <a class="cal-btn" href="/api/calendar.ics?ids=${encodeURIComponent(r.id)}" download="${r.id}.ics" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</a>
           </td>
         `;
-        tr.querySelector(".sync-btn").addEventListener("click", (e) => syncOne(r.id, e.target));
         body.appendChild(tr);
       }
     }
@@ -418,31 +433,6 @@
       setTimeout(() => { t.className = ""; }, 4000);
     }
 
-    async function postSync(ids, btn) {
-      if (btn) { btn.disabled = true; btn.textContent = "…"; }
-      try {
-        const resp = await fetch("/api/sync", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids }),
-        });
-        const data = await resp.json();
-        if (!resp.ok) { toast(data.detail || "Sync failed.", false); return; }
-        toast(`Synced ${data.events_written} event(s) across ${data.conferences} conference(s).`, true);
-      } catch (e) {
-        toast(`Sync failed: ${e}`, false);
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = "📅 Sync"; }
-      }
-    }
-
-    function syncOne(id, btn) { postSync([id], btn); }
-    function syncAll() {
-      const ids = state.rows.map((r) => r.id);
-      if (ids.length === 0) { toast("Nothing to sync.", false); return; }
-      postSync(ids, null);
-    }
-
     async function loadFields() {
       try {
         const resp = await fetch("/api/fields");
@@ -453,7 +443,20 @@
           .join("");
         $("fields-help").innerHTML =
           `<p class="muted" style="margin:0 0 6px">Search fields match the table columns:</p>` +
-          `<table>${rows}</table>`;
+          `<table>${rows}</table>` +
+          `<p class="muted" style="margin:10px 0 4px">Reputation color coding:</p>` +
+          `<table>` +
+            `<tr><td><span class="tier big">big</span></td><td class="muted">most reputable</td></tr>` +
+            `<tr><td><span class="tier medium">medium</span></td><td class="muted">mid-tier</td></tr>` +
+            `<tr><td><span class="tier small">small</span></td><td class="muted">smaller venue</td></tr>` +
+          `</table>` +
+          `<p class="muted" style="margin:10px 0 4px">Date color coding (relative to today):</p>` +
+          `<table>` +
+            `<tr><td><span class="date-soon">green</span></td><td class="muted">upcoming within 3 months</td></tr>` +
+            `<tr><td><span>(plain)</span></td><td class="muted">upcoming more than 3 months out</td></tr>` +
+            `<tr><td><span class="date-recent">red</span></td><td class="muted">past within the last 3 months</td></tr>` +
+            `<tr><td><span class="date-old">orange</span></td><td class="muted">past more than 3 months ago</td></tr>` +
+          `</table>`;
       } catch (e) { /* non-fatal */ }
     }
 
@@ -461,7 +464,6 @@
     $("csv-btn").addEventListener("click", exportCsv);
     $("subscribe-btn").addEventListener("click", toggleSubscribe);
     $("subscribe-copy").addEventListener("click", copySubscribeUrl);
-    $("sync-all-btn").addEventListener("click", syncAll);
     $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
     $("help-toggle").addEventListener("click", () => {
       const h = $("fields-help");

@@ -45,6 +45,24 @@ def test_upsert_then_query_round_trips(tmp_path):
     assert got.cost == "$1,095 (member)"
 
 
+def test_upsert_applies_curated_link_floor_for_flagship(tmp_path):
+    url = _db_url(tmp_path)
+    # Discovery reports a weaker (homepage) URL for a flagship series...
+    upsert_conferences([_conf(url="https://www.rsna.org")], db_url=url)
+    # ...but the curated-link floor keeps the verified deep link.
+    assert query_conferences(db_url=url)[0].url == "https://www.rsna.org/annual-meeting"
+
+
+def test_upsert_keeps_discovered_url_when_not_curated(tmp_path):
+    url = _db_url(tmp_path)
+    # A non-curated series keeps whatever URL discovery found (no floor).
+    found = "https://siim.org/page/annual_meeting"
+    upsert_conferences(
+        [_conf(acronym="SIIM", name="SIIM", url=found)], db_url=url
+    )
+    assert query_conferences(db_url=url)[0].url == found
+
+
 def test_upsert_is_idempotent_on_id(tmp_path):
     url = _db_url(tmp_path)
     upsert_conferences([_conf(cost="old")], db_url=url)
@@ -100,8 +118,10 @@ def test_merge_records_fills_dates_without_clobbering(tmp_path):
     assert got.upcoming_end_date == date(2026, 12, 3)
     assert got.location == "Chicago, IL"
     assert got.remote_option == RemoteOption.HYBRID
-    # Pre-existing fields the record did not mention are preserved.
-    assert got.url == "https://www.rsna.org"
+    # Pre-existing fields the record did not mention are preserved. RSNA is a
+    # flagship series, so upsert_conferences applies the curated-link floor: its
+    # url is the verified deep link regardless of the homepage passed at seed.
+    assert got.url == "https://www.rsna.org/annual-meeting"
     assert got.reputation == ConferenceTier.BIG
     assert got.name == "RSNA Annual Meeting"
 

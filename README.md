@@ -3,13 +3,13 @@
 An AI agent that automatically compiles a table of major conferences — with
 prior and upcoming submission deadlines and dates, category, remote-attendance
 option, cost, official link, and a reputability tier — keeps it searchable in a
-web table, and syncs each conference's upcoming deadlines and dates with Google
-Calendar. Discovery is seeded across medicine (radiology and ~18 other
-specialties), genomics/bioinformatics, and data science; see `TAXONOMY.md` for
-the field map and `SEED_CONFERENCES` in `config.py` to add more.
+web table, and exports each conference's deadlines and dates as a subscribable
+calendar feed (`.ics`). Discovery is seeded across medicine (radiology and ~18
+other specialties), genomics/bioinformatics, and data science; see `TAXONOMY.md`
+for the field map and `SEED_CONFERENCES` in `config.py` to add more.
 
 > **Status:** core pipeline implemented (schema, database, discovery agent,
-> calendar sync, email notifier, and web table interface).
+> calendar feed, email notifier, and web table interface).
 
 ## What it tracks
 
@@ -42,14 +42,15 @@ queries can filter and color consistently.
    acronym, so re-running discovery rolls a newly announced edition into the
    "upcoming" columns instead of duplicating the row.
 3. **Search** — a web table (`conference-agent serve`) supports a boolean query
-   language, a "Subscribe (.ics)" calendar feed, and a per-row "sync to Google
-   Calendar" button.
-4. **Sync** — each conference's upcoming abstract deadline, paper deadline, and
-   conference dates are pushed to Google Calendar as events with stable ids, so
-   re-syncing updates rather than duplicates. The same events are also served as
-   a credential-free iCalendar feed (`GET /api/calendar.ics`) that mirrors the
-   active search, so a user can subscribe from any calendar app ("Add by URL")
-   without any Google sign-in.
+   language, a "Subscribe (.ics)" calendar feed, and a per-row "📅 cal" button
+   that downloads that conference as a calendar file.
+4. **Calendar** — each conference's upcoming abstract deadline, paper deadline,
+   and conference dates are served as a credential-free iCalendar feed
+   (`GET /api/calendar.ics`) that mirrors the active search. A user subscribes
+   from any calendar app (Google "Add by URL", Apple/Outlook "Add from URL") or
+   downloads a one-off `.ics` — no sign-in, no Google account. Each event carries
+   a stable id, so re-fetching updates events in place rather than duplicating,
+   plus reminders four weeks, one week, and one day ahead.
 5. **Notify** — an optional email summarizes a discovery / daily refresh.
 
 ## Install
@@ -58,8 +59,7 @@ queries can filter and color consistently.
 conda activate conference_agent
 pip install -e ".[dev]"        # core + test tooling
 pip install -e ".[discover]"   # discovery agent helpers
-pip install -e ".[calendar]"   # Google Calendar client
-pip install -e ".[web]"        # FastAPI web table interface
+pip install -e ".[web]"        # FastAPI web table + calendar feed
 ```
 
 ## Usage
@@ -67,7 +67,6 @@ pip install -e ".[web]"        # FastAPI web table interface
 ```bash
 conference-agent discover --category radiology --email   # find + store (+ email summary)
 conference-agent list                                    # print the stored table
-conference-agent sync                                    # push to Google Calendar
 conference-agent serve                                   # launch the web table at :8000
 ```
 
@@ -85,8 +84,6 @@ date comparisons (`>`, `>=`, `<`, `<=`, `=`), `AND`/`OR`/`NOT`, and parentheses.
 ## Configuration
 
 - `ANTHROPIC_API_KEY` — required for the discovery agent.
-- `credentials.json` — Google OAuth client secret (from Google Cloud Console);
-  the first calendar sync produces a cached `token.json`. Both are gitignored.
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` and
   `CONFERENCE_NOTIFY_EMAIL` — optional, enable the summary email.
 - `CONFERENCE_DATABASE_URL` — optional, overrides the default SQLite location.

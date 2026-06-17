@@ -16,17 +16,12 @@ Browser ──HTTPS──> Lambda Function URL ──> FastAPI (Mangum) ──VP
 - **Engine reuse:** `get_engine` caches the engine per URL with `pool_pre_ping`
   and a tiny pool, so warm Lambda containers reuse connections.
 - **Calendar feed (`.ics`):** the "Subscribe (.ics)" button and the per-row
-  `📥 .ics` link hit `GET /api/calendar.ics`, which is pure Python — no Google
+  `📅 cal` link hit `GET /api/calendar.ics`, which is pure Python — no third-party
   libraries and no credentials — so it works on the hosted Lambda. This is the
-  credential-free path for end users: they subscribe to the feed URL (which
-  mirrors the active search) from any calendar app, no Google sign-in.
-- **Calendar sync (write API):** the `📅 Sync` button calls `POST /api/sync`,
-  which needs the Google OAuth `credentials.json`/`token.json` and writes to the
-  **server's** calendar via an interactive OAuth flow. Those are **not** deployed
-  and the OAuth flow can't run headless in Lambda, so server-side sync is a local
-  feature; on the hosted site the button returns a clear 400, and remote users
-  should use the `.ics` feed instead. Discovery (which calls the Anthropic API)
-  also runs locally or in CI, not in the VPC Lambda.
+  only calendar path: end users subscribe to the feed URL (which mirrors the
+  active search) from any calendar app (Google "Add by URL", Apple/Outlook "Add
+  from URL"), or download a one-off `.ics`, with no sign-in. Discovery (which
+  calls the Anthropic API) runs locally or in CI, not in the VPC Lambda.
 
 ## Prerequisites
 

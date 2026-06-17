@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "conference_agent"
 version = "0.1.0"
-description = "AI agent that compiles academic/professional conferences into a table and syncs them with Google Calendar"
+description = "AI agent that compiles academic/professional conferences into a table and exports them as a calendar feed"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -23,13 +23,8 @@ dependencies = [
 # Conference discovery agent (LLM tool-use + web search). The core `anthropic`
 # client is a base dependency; extras here cover optional fetch/parse helpers.
 discover = ["requests>=2.31", "beautifulsoup4>=4.12"]
-# Google Calendar sync.
-calendar = [
-    "google-api-python-client>=2.0",
-    "google-auth>=2.0",
-    "google-auth-oauthlib>=1.0",
-]
-# Web table interface (boolean search + per-row calendar sync).
+# Web table interface (boolean search + per-row calendar export). The .ics feed
+# is generated with the standard library, so it needs no extra dependencies.
 web = ["fastapi>=0.110", "uvicorn>=0.27"]
 # AWS Lambda deployment: ASGI adapter + a pure-Python PostgreSQL driver. pg8000
 # ships no compiled extension, so `sam build` produces a Lambda-compatible
@@ -45,7 +40,6 @@ dev = ["pytest>=7.0", "ruff>=0.4", "bandit>=1.7"]
 [project.scripts]
 conference-agent = "conference_agent.cli:main"
 conf-build-table = "scripts.build_table:main"
-conf-sync-calendar = "scripts.sync_calendar:main"
 conf-daily-update = "scripts.daily_update:main"
 
 [tool.setuptools]

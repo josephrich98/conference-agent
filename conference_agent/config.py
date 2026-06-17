@@ -575,8 +575,34 @@ SEED_CONFERENCE_LINKS: dict[str, dict[str, "str | None"]] = {
     "CAP": {"event": "https://www.cap.org/calendar/events/cap26", "meeting": "https://www.cap.org/calendar/events", "org": "https://www.cap.org"},
 }
 
-# Tier preference used by ``best_seed_url`` -- most specific first.
+# Tier preference used by the link resolvers below -- most specific first.
 _SEED_LINK_TIERS = ("event", "meeting", "org")
+
+# Upper-cased index of SEED_CONFERENCE_LINKS for case-insensitive lookup against
+# discovered acronyms, whose casing may differ from the canonical seed keys
+# (e.g. a discovery run may report "NEURIPS" rather than "NeurIPS").
+_SEED_CONFERENCE_LINKS_BY_UPPER = {k.upper(): v for k, v in SEED_CONFERENCE_LINKS.items()}
+
+
+def curated_seed_url(acronym: str) -> "str | None":
+    """Hand-verified deep link for a flagship series, or ``None`` if not curated.
+
+    Returns the most specific populated tier from :data:`SEED_CONFERENCE_LINKS`
+    (``event`` > ``meeting`` > ``org``). Unlike :func:`best_seed_url`, it never
+    falls back to a plain :data:`SEED_CONFERENCE_URLS` homepage -- it yields a
+    link only for series with a curated entry. Discovery uses it as a *floor* so
+    a refresh cannot overwrite a verified flagship link with a weaker
+    model-found one. Matching is case-insensitive.
+    """
+    if not acronym:
+        return None
+    links = _SEED_CONFERENCE_LINKS_BY_UPPER.get(acronym.upper())
+    if links is None:
+        return None
+    for tier in _SEED_LINK_TIERS:
+        if links.get(tier):
+            return links[tier]
+    return None
 
 
 def best_seed_url(acronym: str) -> "str | None":
@@ -587,12 +613,7 @@ def best_seed_url(acronym: str) -> "str | None":
     ``org`` homepage); this returns the most specific tier that is populated.
     Every other series falls back to its :data:`SEED_CONFERENCE_URLS` homepage.
     """
-    links = SEED_CONFERENCE_LINKS.get(acronym)
-    if links is not None:
-        for tier in _SEED_LINK_TIERS:
-            if links.get(tier):
-                return links[tier]
-    return SEED_CONFERENCE_URLS.get(acronym)
+    return curated_seed_url(acronym) or SEED_CONFERENCE_URLS.get(acronym)
 
 
 def seed_categories() -> list[str]:

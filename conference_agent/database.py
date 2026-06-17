@@ -23,6 +23,7 @@ from conference_agent.config import (
     DEFAULT_DATABASE_URL,
     SEED_CONFERENCES,
     best_seed_url,
+    curated_seed_url,
     normalize_reputation,
 )
 from conference_agent.models import Conference, ConferenceTier, RemoteOption
@@ -101,6 +102,20 @@ def _row_to_model(row: ConferenceRow) -> Conference:
     return Conference(**data)
 
 
+def _normalize_url(url: "str | None") -> "str | None":
+    """Ensure a stored URL carries a scheme.
+
+    Discovery sometimes returns bare domains (e.g. ``rsna.org/annual-meeting``).
+    Without ``http(s)://`` the web table renders ``<a href>`` as a relative path,
+    so the link 404s. Default a schemeless value to ``https://``.
+    """
+    if not url:
+        return url
+    if url.startswith(("http://", "https://")):
+        return url
+    return f"https://{url}"
+
+
 def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     """Copy all fields from a :class:`Conference` onto an ORM row."""
     row.acronym = conf.acronym
@@ -108,6 +123,7 @@ def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
         setattr(row, field, getattr(conf, field))
     for field in _DATE_FIELDS:
         setattr(row, field, getattr(conf, field))
+    row.url = _normalize_url(row.url)
     row.remote_option = conf.remote_option.value if conf.remote_option else None
     row.reputation = conf.reputation.value if conf.reputation else None
 
@@ -179,6 +195,12 @@ def upsert_conferences(
 
     Idempotent: re-running discovery updates existing rows rather than
     duplicating them. Returns the number of rows written.
+
+    Flagship link floor: when a series has a hand-verified link in
+    ``config.SEED_CONFERENCE_LINKS`` (:func:`config.curated_seed_url`), that link
+    is kept regardless of what discovery found, so a refresh cannot regress a
+    curated deep link to a weaker model-found URL. Series without a curated entry
+    keep the discovered URL.
     """
     engine = get_engine(db_url)
     written = 0
@@ -189,6 +211,9 @@ def upsert_conferences(
                 row = ConferenceRow(id=conf.id)
                 session.add(row)
             _apply_model_to_row(row, conf)
+            floor = curated_seed_url(conf.acronym)
+            if floor:
+                row.url = floor
             written += 1
         session.commit()
     return written

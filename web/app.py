@@ -5,7 +5,6 @@ Endpoints:
 - ``GET /api/search``   — boolean search; JSON or CSV.
 - ``GET /api/fields``   — queryable fields and aliases (for the UI help panel).
 - ``GET /api/calendar.ics`` — subscribable iCalendar feed (no auth/credentials).
-- ``POST /api/sync``    — push selected conferences to Google Calendar.
 
 Run locally with::
 
@@ -18,12 +17,11 @@ import csv
 import io
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -225,43 +223,3 @@ def api_calendar_ics(
         "Cache-Control": "no-cache",
     }
     return Response(content=ics, media_type="text/calendar; charset=utf-8", headers=headers)
-
-
-class SyncRequest(BaseModel):
-    ids: Optional[List[str]] = None
-
-
-@app.post("/api/sync")
-def api_sync(req: SyncRequest):
-    """Push the selected conferences (or all, if none given) to Google Calendar."""
-    _ensure_seeded()
-    engine = get_engine(get_db_url())
-    stmt = select(ConferenceRow)
-    if req.ids:
-        stmt = stmt.where(ConferenceRow.id.in_([i.upper() for i in req.ids]))
-
-    with Session(engine) as session:
-        conferences = [_row_to_model(r) for r in session.scalars(stmt)]
-
-    if not conferences:
-        raise HTTPException(status_code=404, detail="No matching conferences to sync.")
-
-    # Imported lazily so the app starts without the optional google libraries.
-    try:
-        from conference_agent import calendar_sync
-
-        written = calendar_sync.sync_conferences(conferences)
-    except ImportError:
-        raise HTTPException(
-            status_code=400,
-            detail="Google Calendar libraries are not installed. Run: pip install -e \".[calendar]\"",
-        )
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing credentials.json (Google OAuth client secret). See the README.",
-        )
-    except Exception as exc:  # surface a clean message to the UI, not a 500 trace
-        raise HTTPException(status_code=400, detail=f"Calendar sync failed: {exc}")
-
-    return {"events_written": written, "conferences": len(conferences)}
