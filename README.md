@@ -1,5 +1,7 @@
 # conference_agent
 
+https://mmekgpcwq2fnenb2ifnvhk4sca0ugikt.lambda-url.us-east-1.on.aws
+
 An AI agent that automatically compiles a table of major conferences — with
 prior and upcoming submission deadlines and dates, category, remote-attendance
 option, cost, official link, and a reputability tier — keeps it searchable in a

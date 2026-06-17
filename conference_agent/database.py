@@ -293,6 +293,13 @@ def merge_records(
                     changed = True
                 except ValueError:
                     pass
+            # Flagship link floor: a curated deep link wins over any URL a refresh
+            # merged in, mirroring upsert_conferences so neither write path can
+            # regress a verified link to a weaker homepage.
+            floor = curated_seed_url(acronym)
+            if floor and row.url != floor:
+                row.url = floor
+                changed = True
             if changed:
                 written += 1
         session.commit()

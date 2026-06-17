@@ -58,6 +58,39 @@
     }
     button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
     button:hover { filter: brightness(0.98); }
+    .columns-menu { position: relative; }
+    #columns-panel {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 10;
+      min-width: 200px;
+      padding: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+    }
+    #columns-panel[hidden] { display: none; }
+    #columns-panel .col-actions {
+      display: flex;
+      gap: 8px;
+      padding: 4px 6px 8px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 6px;
+    }
+    #columns-panel .col-actions a { color: var(--accent); cursor: pointer; font-size: 12px; }
+    #columns-panel label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 6px;
+      font-size: 13px;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #columns-panel label:hover { background: var(--accent-weak); }
     .syntax {
       padding: 0 24px 12px;
       color: var(--muted);
@@ -125,6 +158,7 @@
     .tier.medium { color: var(--medium); }
     .tier.small { color: var(--small); }
     .muted { color: var(--muted); }
+    .nobreak { white-space: nowrap; }
     .cal-cell { white-space: nowrap; }
     .cal-btn {
       display: inline-block;
@@ -169,6 +203,7 @@
     #toast.ok { background: #15803d; }
     #toast.err { background: #b91c1c; }
   </style>
+  <style id="col-style"></style>
 </head>
 <body>
   <header>
@@ -179,6 +214,16 @@
   <div class="controls">
     <input id="query" type="text" placeholder='e.g.  (virtual OR hybrid) AND reputation:big' autocomplete="off" />
     <button class="primary" id="search-btn">Search</button>
+    <div class="columns-menu">
+      <button id="columns-btn" title="Choose which columns are visible">Columns ▾</button>
+      <div id="columns-panel" hidden>
+        <div class="col-actions">
+          <a id="columns-all">Select all</a>
+          <a id="columns-none">Hide all</a>
+        </div>
+        <div id="columns-list"></div>
+      </div>
+    </div>
     <button id="csv-btn">Export CSV</button>
     <button id="subscribe-btn" title="Subscribe to these results as a calendar feed (no sign-in)">Subscribe (.ics)</button>
   </div>
@@ -243,6 +288,51 @@
 
     const $ = (id) => document.getElementById(id);
 
+    // Column visibility. Columns default to all-visible; the user's choice is
+    // persisted as the set of hidden keys. A single <style> element hides cells by
+    // data-col, so the rule survives table re-renders without re-touching the DOM.
+    const COLS_KEY = "conference-agent.hidden-columns";
+    let hiddenCols = new Set();
+    try {
+      const stored = JSON.parse(localStorage.getItem(COLS_KEY) || "[]");
+      hiddenCols = new Set(stored.filter((k) => COLUMNS.some((c) => c.key === k)));
+    } catch (e) { /* ignore malformed storage */ }
+
+    function applyColumnVisibility() {
+      const rules = [...hiddenCols]
+        .map((k) => `[data-col="${k}"] { display: none; }`)
+        .join("\n");
+      $("col-style").textContent = rules;
+      try {
+        localStorage.setItem(COLS_KEY, JSON.stringify([...hiddenCols]));
+      } catch (e) { /* ignore storage errors */ }
+    }
+
+    function renderColumnsMenu() {
+      const list = $("columns-list");
+      list.innerHTML = "";
+      for (const col of COLUMNS) {
+        const label = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !hiddenCols.has(col.key);
+        cb.addEventListener("change", () => {
+          if (cb.checked) hiddenCols.delete(col.key);
+          else hiddenCols.add(col.key);
+          applyColumnVisibility();
+        });
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(col.label));
+        list.appendChild(label);
+      }
+    }
+
+    function setAllColumns(visible) {
+      hiddenCols = visible ? new Set() : new Set(COLUMNS.map((c) => c.key));
+      applyColumnVisibility();
+      renderColumnsMenu();
+    }
+
     // Local YYYY-MM-DD for a Date. ISO date strings compare lexicographically, so
     // building all thresholds the same way lets us compare them as plain strings.
     function ymd(d) {
@@ -270,8 +360,8 @@
 
     function dateRange(start, end) {
       if (!start) return '<span class="muted">—</span>';
-      if (end && end !== start) return `${start} – ${end}`;
-      return start;
+      if (end && end !== start) return `<span class="nobreak">${start}</span> – <span class="nobreak">${end}</span>`;
+      return `<span class="nobreak">${start}</span>`;
     }
 
     // Wrap a rendered date value, coloring it by how its (start) date sits
@@ -307,6 +397,7 @@
       row.innerHTML = "";
       for (const col of COLUMNS) {
         const th = document.createElement("th");
+        th.dataset.col = col.key;
         let arrow = "";
         if (col.sort && col.sort === state.sort) {
           arrow = ` <span class="arrow">${state.order === "asc" ? "▲" : "▼"}</span>`;
@@ -350,16 +441,16 @@
           : '<span class="muted">—</span>';
 
         tr.innerHTML = `
-          <td><div class="conf-name">${name}</div></td>
-          <td>${r.category || '<span class="muted">—</span>'}</td>
-          <td>${r.location || '<span class="muted">—</span>'}</td>
-          <td>${tier}</td>
-          <td>${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
-          <td>${r.cost || '<span class="muted">—</span>'}</td>
-          <td>${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
-          <td>${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
-          <td>${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
-          <td class="cal-cell">
+          <td data-col="conference"><div class="conf-name">${name}</div></td>
+          <td data-col="category">${r.category || '<span class="muted">—</span>'}</td>
+          <td data-col="location">${r.location || '<span class="muted">—</span>'}</td>
+          <td data-col="reputation">${tier}</td>
+          <td data-col="remote_option">${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
+          <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
+          <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
+          <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
+          <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
+          <td data-col="cal" class="cal-cell">
             <a class="cal-btn" href="/api/calendar.ics?ids=${encodeURIComponent(r.id)}" download="${r.id}.ics" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</a>
           </td>
         `;
@@ -463,6 +554,16 @@
     $("search-btn").addEventListener("click", search);
     $("csv-btn").addEventListener("click", exportCsv);
     $("subscribe-btn").addEventListener("click", toggleSubscribe);
+    $("columns-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      $("columns-panel").hidden = !$("columns-panel").hidden;
+    });
+    $("columns-all").addEventListener("click", () => setAllColumns(true));
+    $("columns-none").addEventListener("click", () => setAllColumns(false));
+    // Close the columns dropdown when clicking outside it.
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".columns-menu")) $("columns-panel").hidden = true;
+    });
     $("subscribe-copy").addEventListener("click", copySubscribeUrl);
     $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
     $("help-toggle").addEventListener("click", () => {
@@ -472,6 +573,8 @@
       $("help-toggle").textContent = showing ? "show fields" : "hide fields";
     });
 
+    renderColumnsMenu();
+    applyColumnVisibility();
     loadFields();
     search();
   </script>
