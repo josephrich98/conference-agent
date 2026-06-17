@@ -35,7 +35,7 @@ import subprocess
 from datetime import date
 from typing import Iterable, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from conference_agent.config import (
     ANTHROPIC_API_KEY_ENV,
@@ -43,7 +43,12 @@ from conference_agent.config import (
     SEED_CONFERENCES,
     normalize_reputation,
 )
-from conference_agent.models import Conference, ConferenceTier, RemoteOption
+from conference_agent.models import (
+    Conference,
+    ConferenceTier,
+    RemoteOption,
+    normalize_categories,
+)
 
 # Available discovery backends. ``claude-code`` is the default (cheaper when a
 # Claude Code subscription is available); ``api`` uses the metered Anthropic API.
@@ -68,7 +73,9 @@ up-to-date information from official conference and society websites.
 
 For each notable conference in the requested category, gather:
 - acronym and full name
-- the field/category it belongs to
+- the field(s)/category(ies) it belongs to -- a conference may span more than
+  one (e.g. SPR is both radiology and pediatrics; MICCAI is both radiology and
+  machine learning), so list every field that applies, comma-separated
 - the most recent (prior) edition: abstract submission deadline, full paper /
   manuscript deadline, and the conference start and end dates
 - the upcoming edition: abstract submission deadline, full paper / manuscript
@@ -112,7 +119,9 @@ Write up what you find clearly, one conference at a time."""
 _EXTRACT_SYSTEM = """\
 Convert the research notes into structured conference records. Use ISO dates \
 (YYYY-MM-DD) for date fields. Use an empty string "" for any field the notes do \
-not state; do not invent values. Capture every date the notes give: populate the \
+not state; do not invent values. The category field may list more than one field \
+when a conference spans several (e.g. "radiology, machine learning"); separate \
+the tags with commas. Capture every date the notes give: populate the \
 abstract submission deadline and the full paper / manuscript deadline for both \
 the prior and upcoming editions whenever the notes mention them, keeping each \
 deadline with the correct edition. A submission deadline that has already passed \
@@ -137,7 +146,10 @@ class _ExtractedConference(BaseModel):
 
     acronym: str
     name: str
-    category: str
+    category: str = Field(
+        description="Field(s) the conference belongs to; comma-separate multiple, "
+        'e.g. "radiology, machine learning"'
+    )
     prior_abstract_deadline: str
     prior_paper_deadline: str
     prior_start_date: str
@@ -192,7 +204,7 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
     return Conference(
         acronym=item.acronym.strip(),
         name=item.name.strip(),
-        category=item.category.strip().lower(),
+        categories=normalize_categories(item.category),
         prior_abstract_deadline=_parse_date(item.prior_abstract_deadline),
         prior_paper_deadline=_parse_date(item.prior_paper_deadline),
         prior_start_date=_parse_date(item.prior_start_date),
@@ -216,7 +228,7 @@ def _seed_checklist(categories: List[str]) -> str:
     lines = [
         f"- {acronym} — {name}"
         for acronym, name, category, _ in SEED_CONFERENCES
-        if not cats or category.lower() in cats
+        if not cats or (set(normalize_categories(category)) & cats)
     ]
     return "\n".join(lines) if lines else "- (no seeds for this category)"
 

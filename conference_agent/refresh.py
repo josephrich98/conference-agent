@@ -34,7 +34,7 @@ import calendar
 from datetime import date
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from conference_agent.config import (
@@ -44,6 +44,7 @@ from conference_agent.config import (
     RECHECK_INTERVAL_DAYS,
 )
 from conference_agent.database import ConferenceRow, get_engine
+from conference_agent.models import normalize_categories
 
 
 def _add_months(anchor: date, months: int) -> date:
@@ -103,7 +104,11 @@ def due_categories(
     engine = get_engine(db_url)
     with Session(engine) as session:
         rows = session.scalars(select(ConferenceRow))
-        cats = {row.category for row in rows if is_due_for_check(row, today)}
+        cats: set[str] = set()
+        for row in rows:
+            if is_due_for_check(row, today):
+                # A row may carry several tags; each is a field worth refreshing.
+                cats.update(normalize_categories(row.category))
     return sorted(cats)
 
 
@@ -136,8 +141,12 @@ def mark_categories_checked(
         return 0
     engine = get_engine(db_url)
     with Session(engine) as session:
+        # Substring match per tag: a row whose category column lists several tags
+        # (e.g. "radiology, pediatrics") was covered if any refreshed field
+        # appears in it, so an exact ``IN`` match would miss multi-tag rows.
+        conds = [ConferenceRow.category.ilike(f"%{c}%") for c in cats]
         rows = list(
-            session.scalars(select(ConferenceRow).where(ConferenceRow.category.in_(cats)))
+            session.scalars(select(ConferenceRow).where(or_(*conds)))
         )
         for row in rows:
             row.last_checked = today

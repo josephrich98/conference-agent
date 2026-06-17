@@ -13,11 +13,13 @@ common many months out.
 
 from __future__ import annotations
 
+import calendar
+import re
 from datetime import date
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class ConferenceTier(str, Enum):
@@ -41,15 +43,52 @@ class RemoteOption(str, Enum):
     UNKNOWN = "unknown"
 
 
+# Categories are stored as a single column (a comma-joined string) but modeled as
+# a list, since one conference can belong to several fields (e.g. SPR is both
+# radiology and pediatrics; MICCAI is radiology and machine learning). This helper
+# normalizes any accepted form -- a list, or a delimited string -- into a clean,
+# lowercased, de-duplicated list, so the model, the seed table, and the refresh
+# policy all split categories the same way.
+def normalize_categories(value: "str | list | tuple | None") -> List[str]:
+    """Normalize categories to a lowercased, de-duplicated, order-preserving list."""
+    if value is None:
+        parts: List[str] = []
+    elif isinstance(value, str):
+        parts = re.split(r"[;,]", value)
+    else:
+        parts = [p for item in value for p in re.split(r"[;,]", str(item))]
+    seen: set[str] = set()
+    out: List[str] = []
+    for part in parts:
+        cat = part.strip().lower()
+        if cat and cat not in seen:
+            seen.add(cat)
+            out.append(cat)
+    return out
+
+
 class Conference(BaseModel):
     """A recurring conference series with its prior and upcoming editions."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     # --- Identity ----------------------------------------------------------
     acronym: str = Field(..., description="Short name, e.g. 'RSNA'")
     name: str = Field(..., description="Full conference name")
-    category: str = Field(
-        ..., description="Domain / field, e.g. 'radiology', 'genomics', 'AI'"
+    # One conference can carry several tags (e.g. SPR -> radiology + pediatrics).
+    # Accepts either a list or a comma/semicolon-delimited string (and the legacy
+    # singular ``category`` key) on input; ``category`` below exposes the joined
+    # string for display and storage.
+    categories: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("categories", "category"),
+        description="Domain(s) / field(s), e.g. ['radiology', 'machine learning']",
     )
+
+    @field_validator("categories", mode="before")
+    @classmethod
+    def _normalize_categories(cls, value):
+        return normalize_categories(value)
 
     # --- Prior (most recent completed) edition -----------------------------
     prior_abstract_deadline: Optional[date] = Field(
@@ -101,6 +140,63 @@ class Conference(BaseModel):
         return self.acronym.upper()
 
     @property
+    def category(self) -> str:
+        """The categories as a single comma-joined string (for display / storage)."""
+        return ", ".join(self.categories)
+
+    @property
     def upcoming_year(self) -> Optional[int]:
         """Year of the upcoming edition, if its start date is known."""
         return self.upcoming_start_date.year if self.upcoming_start_date else None
+
+    @property
+    def conference_month(self) -> Optional[int]:
+        """Month (1-12) the conference is held, derived from its start date.
+
+        Uses the upcoming edition's start date, falling back to the prior
+        edition's -- the same date the table shows. Kept separate from the
+        conference dates so rows can be sorted by season even when their years are
+        offset (e.g. a meeting whose next edition is unannounced still sorts by the
+        month of its most recent one).
+        """
+        start = self.upcoming_start_date or self.prior_start_date
+        return start.month if start else None
+
+    @property
+    def conference_month_name(self) -> Optional[str]:
+        """Full month name the conference is held in (e.g. ``"November"``)."""
+        month = self.conference_month
+        return calendar.month_name[month] if month else None
+
+    @property
+    def abstract_month(self) -> Optional[int]:
+        """Month (1-12) the abstract is due, derived from the abstract deadline.
+
+        Uses the upcoming edition's abstract deadline, falling back to the prior
+        edition's -- the same date the table shows. Kept separate from the deadline
+        so rows can be sorted by submission season even when their years are offset.
+        """
+        deadline = self.upcoming_abstract_deadline or self.prior_abstract_deadline
+        return deadline.month if deadline else None
+
+    @property
+    def abstract_month_name(self) -> Optional[str]:
+        """Full month name abstracts are due in (e.g. ``"April"``)."""
+        month = self.abstract_month
+        return calendar.month_name[month] if month else None
+
+    @property
+    def paper_month(self) -> Optional[int]:
+        """Month (1-12) the paper is due, derived from the paper deadline.
+
+        Mirrors :attr:`abstract_month`: the upcoming edition's paper deadline,
+        falling back to the prior edition's.
+        """
+        deadline = self.upcoming_paper_deadline or self.prior_paper_deadline
+        return deadline.month if deadline else None
+
+    @property
+    def paper_month_name(self) -> Optional[str]:
+        """Full month name papers are due in (e.g. ``"May"``)."""
+        month = self.paper_month
+        return calendar.month_name[month] if month else None

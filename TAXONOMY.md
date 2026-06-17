@@ -8,9 +8,14 @@ flagships were chosen and flags the decisions that need your sign-off.
 
 ## How the taxonomy maps to the code
 
-- **Field = flat `category` string** (e.g. `cardiology`, `genomics`,
-  `machine learning`). Subspecialties are not separate categories; they ride
-  inside the parent field's seeds (as radiology does).
+- **Field = one or more lowercase category tags.** A seed's category element is
+  either a single string (e.g. `cardiology`) or a tuple when a conference spans
+  fields (e.g. SPR is `("radiology", "pediatrics")`; MICCAI is `("radiology",
+  "machine learning")`; every CSHL meeting carries a `genomics` tag alongside any
+  clinical field). `normalize_categories` flattens either form, and a conference
+  is covered by every field it is tagged with. Subspecialties *within* a single
+  field are not separate tags; they ride inside the parent field's seeds (as
+  radiology does).
 - **Coverage is flagship-only.** Each field carries ~2-5 marquee meetings; the
   discovery agent finds the long tail and verifies dates against official sites.
 - **Adding a field = adding its flagship seeds.** `seed_categories()` derives the

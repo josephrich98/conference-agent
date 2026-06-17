@@ -21,7 +21,7 @@ from conference_agent.config import (
     weekly_categories,
 )
 from conference_agent.discover import _ExtractedConference, _parse_date, _seed_checklist, _to_conference
-from conference_agent.models import Conference, ConferenceTier, RemoteOption
+from conference_agent.models import Conference, ConferenceTier, RemoteOption, normalize_categories
 
 
 def _extracted(**overrides):
@@ -57,6 +57,15 @@ def test_to_conference_maps_dates_and_enums():
     assert conf.reputation == ConferenceTier.BIG
     assert conf.remote_option == RemoteOption.HYBRID
     assert conf.cost == "$1,095"
+
+
+def test_to_conference_parses_multiple_categories():
+    conf = _to_conference(
+        _extracted(acronym="miccai", name="MICCAI", category="Radiology, Machine Learning")
+    )
+    assert conf is not None
+    assert conf.categories == ["radiology", "machine learning"]
+    assert conf.category == "radiology, machine learning"
 
 
 def test_reputation_policy_caps_non_flagship_at_medium():
@@ -105,18 +114,34 @@ def test_to_conference_requires_identity_fields():
 
 
 def test_seed_list_is_well_formed():
-    # Each seed is a (acronym, name, category, tier) tuple with non-empty fields.
+    # Each seed is a (acronym, name, category, tier) tuple. The category element
+    # is a string or a tuple of strings (a conference may span several fields).
     assert SEED_CONFERENCES
     for acronym, name, category, tier in SEED_CONFERENCES:
-        assert acronym.strip() and name.strip() and category.strip()
+        cats = normalize_categories(category)
+        assert acronym.strip() and name.strip() and cats
         assert isinstance(tier, ConferenceTier)
         # Seeds must satisfy the same identity/validation rules as discovered rows.
         conf = Conference(acronym=acronym, name=name, category=category)
         assert conf.id == acronym.upper()
+        assert conf.categories == cats
 
     # Acronyms are the upsert key, so they must be unique (case-insensitive).
     acronyms = [a.upper() for a, _, _, _ in SEED_CONFERENCES]
     assert len(acronyms) == len(set(acronyms))
+
+
+def test_multi_tag_and_cshl_genomics_seeds():
+    by_id = {a.upper(): normalize_categories(c) for a, _, c, _ in SEED_CONFERENCES}
+    # Conferences that span fields carry every applicable tag.
+    assert by_id["SPR"] == ["radiology", "pediatrics"]
+    assert by_id["MICCAI"] == ["radiology", "machine learning"]
+    assert "ECCV" in by_id  # newly added computer-vision flagship
+    # Every CSHL meeting carries a genomics tag (its home domain).
+    cshl = {a: cats for a, cats in by_id.items() if a.startswith("CSHL-")}
+    assert cshl
+    for acronym, cats in cshl.items():
+        assert "genomics" in cats, f"{acronym} missing genomics tag"
 
 
 def test_seed_tiers_respect_reputation_policy():
@@ -133,10 +158,14 @@ def test_seed_checklist_includes_seeds_and_filters_by_category():
     checklist = _seed_checklist(["radiology"])
     for acronym, _, category, _ in SEED_CONFERENCES:
         line = f"- {acronym} — "
-        if category == "radiology":
+        if "radiology" in normalize_categories(category):
             assert line in checklist
         else:
             assert line not in checklist
+    # A multi-tag seed appears in every field it is tagged with: MICCAI is both
+    # radiology and machine learning, so it shows up in both checklists.
+    assert "- MICCAI — " in _seed_checklist(["radiology"])
+    assert "- MICCAI — " in _seed_checklist(["machine learning"])
     # A category with no seeds yields the explicit empty-state line.
     assert "no seeds" in _seed_checklist(["underwater basket weaving"]).lower()
 
@@ -167,7 +196,7 @@ def test_weekly_categories_are_all_real_categories():
 def test_mlcb_seed_present_in_genomics_with_url():
     entry = [s for s in SEED_CONFERENCES if s[0] == "MLCB"]
     assert entry, "MLCB seed missing"
-    assert entry[0][2] == "genomics"
+    assert "genomics" in normalize_categories(entry[0][2])
     assert SEED_CONFERENCE_URLS.get("MLCB") == "https://www.mlcb.org"
 
 

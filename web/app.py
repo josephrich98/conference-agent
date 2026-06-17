@@ -26,7 +26,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from conference_agent.config import DEFAULT_DATABASE_URL
-from conference_agent.database import ConferenceRow, _row_to_model, get_engine, seed_conferences
+from conference_agent.database import (
+    ConferenceRow,
+    _row_to_model,
+    abstract_date_expr,
+    conference_date_expr,
+    get_engine,
+    paper_date_expr,
+    seed_conferences,
+)
 from web.search import QueryError, build_filter, field_help
 
 app = FastAPI(title="Conference Agent", description="Curated conference table + calendar sync.")
@@ -45,8 +53,11 @@ _RESULT_COLUMNS = [
     "remote_option",
     "cost",
     "url",
+    "abstract_month",
     "upcoming_abstract_deadline",
+    "paper_month",
     "upcoming_paper_deadline",
+    "conference_month",
     "upcoming_start_date",
     "upcoming_end_date",
     "prior_abstract_deadline",
@@ -67,6 +78,9 @@ _SORTABLE = {
     "upcoming_start_date",
     "upcoming_abstract_deadline",
     "upcoming_paper_deadline",
+    "conference_month",
+    "abstract_month",
+    "paper_month",
 }
 
 # Date sort columns fall back to the prior edition's value, matching what the
@@ -78,6 +92,16 @@ _DATE_SORT_FALLBACK = {
     "upcoming_start_date": "prior_start_date",
     "upcoming_abstract_deadline": "prior_abstract_deadline",
     "upcoming_paper_deadline": "prior_paper_deadline",
+}
+
+# The derived-month sorts break ties on the underlying date the month was
+# extracted from (so two conferences in the same month order by who acts first),
+# rather than on the default alphabetical-name tie-breaker. Each expression
+# mirrors its column_property in ``database.py``.
+_MONTH_SORT_TIEBREAKER = {
+    "abstract_month": abstract_date_expr,
+    "paper_month": paper_date_expr,
+    "conference_month": conference_date_expr,
 }
 
 
@@ -131,8 +155,19 @@ def _run_search(query: str, sort: str, order: str) -> List[ConferenceRow]:
     # one. Only rows with neither date are NULL here, so only they sort last.
     sort_col = func.coalesce(primary, getattr(ConferenceRow, fallback)) if fallback else primary
     descending = order == "desc"
+    direction = (lambda c: c.desc()) if descending else (lambda c: c.asc())
+
     # NULLs always last, regardless of direction.
-    stmt = stmt.order_by(sort_col.is_(None), sort_col.desc() if descending else sort_col.asc())
+    order_by = [sort_col.is_(None), direction(sort_col)]
+    # Tie-breakers: the derived-month sorts break ties on their underlying date
+    # (following the sort direction); every sort then breaks any remaining ties
+    # alphabetically by acronym (falling back to name) for a stable order.
+    tiebreak = _MONTH_SORT_TIEBREAKER.get(sort)
+    if tiebreak is not None:
+        order_by.append(direction(tiebreak))
+    if sort != "acronym":
+        order_by.append(func.coalesce(ConferenceRow.acronym, ConferenceRow.name).asc())
+    stmt = stmt.order_by(*order_by)
 
     engine = get_engine(get_db_url())
     with Session(engine) as session:

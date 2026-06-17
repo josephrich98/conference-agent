@@ -38,7 +38,10 @@ Presence test (field is set / not set)::
 
 The query fields mirror the table's column headers exactly: ``conference``,
 ``category``, ``location``, ``reputation``, ``remote``, ``cost``,
-``abstract_due``, ``paper_due``, and ``conference_dates``. Each date field
+``abstract_due``, ``paper_due``, ``conference_dates``, ``conference_month``,
+``abstract_month``, and ``paper_month`` (the month fields are integers 1-12,
+derived from the displayed dates, e.g. ``conference_month:11`` or
+``abstract_month:<=4``). Each date field
 matches the value the column actually shows — the upcoming edition's date,
 falling back to the prior edition's. A handful of legacy names (``name``,
 ``acronym``, ``remote_option``, ``abstract``, ``upcoming``, …) remain accepted
@@ -90,6 +93,16 @@ _DATE_FIELDS = {
     "conference_dates": ("upcoming_start_date", "prior_start_date"),
 }
 
+# Public integer field → underlying (SQL-computed) column. The month fields are
+# derived from the displayed date (see ``database.ConferenceRow``), so they sort
+# and filter by season independent of year. Comparisons accept the same operators
+# as date fields (``> >= < <= =``), defaulting to ``=``.
+_INT_FIELDS = {
+    "conference_month": "conference_month",
+    "abstract_month": "abstract_month",
+    "paper_month": "paper_month",
+}
+
 # Data type descriptor shown next to each field in the help panel. Categorical
 # fields list their controlled vocabulary (derived from the enums so the help
 # stays in sync); everything else is free text or a date.
@@ -103,6 +116,9 @@ _FIELD_TYPES = {
     "abstract_due": "date",
     "paper_due": "date",
     "conference_dates": "date",
+    "conference_month": "int: 1-12",
+    "abstract_month": "int: 1-12",
+    "paper_month": "int: 1-12",
 }
 
 # Columns scanned by a bare (unscoped) keyword. Broader than the public fields so
@@ -138,20 +154,23 @@ _ALIASES = {
     "date": "conference_dates",
     "upcoming_start_date": "conference_dates",
     "prior_start": "conference_dates",
+    # The single submission-month column was split into abstract/paper months;
+    # keep older shared query URLs resolving to the abstract (earlier) deadline.
+    "submission_month": "abstract_month",
 }
 
 
 def _resolve_field(name: str) -> str:
     key = name.lower()
     key = _ALIASES.get(key, key)
-    if key not in _TEXT_FIELDS and key not in _DATE_FIELDS:
+    if key not in _TEXT_FIELDS and key not in _DATE_FIELDS and key not in _INT_FIELDS:
         raise QueryError(f"Unknown field: {name!r}")
     return key
 
 
 def field_help() -> dict:
     """Return the queryable fields and their data types (for the UI help panel)."""
-    order = list(_TEXT_FIELDS) + list(_DATE_FIELDS)
+    order = list(_TEXT_FIELDS) + list(_DATE_FIELDS) + list(_INT_FIELDS)
     return {"fields": [{"field": f, "type": _FIELD_TYPES[f]} for f in order]}
 
 
@@ -364,11 +383,32 @@ def _compile_date_term(term: Term):
     raise QueryError(f"Unsupported operator: {op}")
 
 
+def _compile_int_term(term: Term):
+    expr = getattr(ConferenceRow, _INT_FIELDS[term.field])
+    try:
+        value = int(term.value)
+    except (TypeError, ValueError) as exc:
+        raise QueryError(f"Invalid integer: {term.value!r}") from exc
+    op = term.op or "="
+    ops = {
+        "=": expr == value,
+        ">": expr > value,
+        ">=": expr >= value,
+        "<": expr < value,
+        "<=": expr <= value,
+    }
+    if op not in ops:
+        raise QueryError(f"Unsupported operator: {op}")
+    return and_(expr.isnot(None), ops[op])
+
+
 def _compile_term(term: Term):
     # Presence test: field:* — the column shows a value.
     if term.presence:
         if term.field in _DATE_FIELDS:
             return _date_expr(term.field).isnot(None)
+        if term.field in _INT_FIELDS:
+            return getattr(ConferenceRow, _INT_FIELDS[term.field]).isnot(None)
         cols = _TEXT_FIELDS[term.field]
         return or_(*[getattr(ConferenceRow, c).isnot(None) for c in cols])
 
@@ -380,6 +420,10 @@ def _compile_term(term: Term):
     # Scoped date field.
     if term.field in _DATE_FIELDS:
         return _compile_date_term(term)
+
+    # Scoped integer field (month).
+    if term.field in _INT_FIELDS:
+        return _compile_int_term(term)
 
     # Scoped text field (one or more underlying columns).
     pattern = f"%{term.value}%"

@@ -7,8 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `conference_agent` is an AI agent that automatically compiles a curated table of
 major academic and professional conferences and exports their deadlines and
 dates as a subscribable calendar feed. For each conference series the agent
-records its category (e.g. radiology), its **prior** and **upcoming** editions
-(abstract deadline, paper deadline, and conference dates for each), the official
+records its category tags (one or more per series — e.g. SPR is both radiology
+and pediatrics, MICCAI is radiology and machine learning), its **prior** and
+**upcoming** editions (abstract deadline, paper deadline, and conference dates
+for each), a derived conference month, abstract month, and paper month (each
+taken from the matching date so rows sort by season even when their years are
+offset), the official
 link, remote-attendance option, cost, and a reputability tier (e.g. RSNA = big,
 SPR = medium). It normalizes that information into a typed schema, stores it in a
 SQL database, exposes it through a boolean-searchable web table, and serves each
@@ -31,7 +35,10 @@ for the design.
 
 - `conference_agent/` — core reusable package
   - `models.py` — `Conference` pydantic schema (one record per conference *series*,
-    holding prior + upcoming editions); `ConferenceTier` and `RemoteOption` enums
+    holding prior + upcoming editions, a list of category tags, and derived
+    `conference_month` / `abstract_month` / `paper_month` properties);
+    `ConferenceTier` and
+    `RemoteOption` enums; `normalize_categories` (the shared tag parser)
   - `config.py` — constants, controlled vocabularies, seed list, Anthropic model
     id, and SMTP / notification settings
   - `discover.py` — the AI discovery agent: web search (research) + structured

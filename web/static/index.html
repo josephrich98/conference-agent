@@ -158,6 +158,16 @@
     .tier.medium { color: var(--medium); }
     .tier.small { color: var(--small); }
     .muted { color: var(--muted); }
+    .cat-tag {
+      display: inline-block;
+      background: var(--accent-weak);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 1px 6px;
+      margin: 1px 3px 1px 0;
+      font-size: 12px;
+      white-space: nowrap;
+    }
     .nobreak { white-space: nowrap; }
     .cal-cell { white-space: nowrap; }
     .cal-btn {
@@ -278,8 +288,11 @@
       { key: "reputation", label: "Reputation", sort: "reputation" },
       { key: "remote_option", label: "Remote", sort: "remote_option" },
       { key: "cost", label: "Cost", sort: null },
+      { key: "abstract_month", label: "Abs. month", sort: "abstract_month" },
       { key: "upcoming_abstract_deadline", label: "Abstract due", sort: "upcoming_abstract_deadline" },
+      { key: "paper_month", label: "Paper month", sort: "paper_month" },
       { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
+      { key: "conference_month", label: "Conf. month", sort: "conference_month" },
       { key: "upcoming_dates", label: "Conference dates", sort: "upcoming_start_date" },
       { key: "cal", label: "Calendar", sort: null },
     ];
@@ -340,6 +353,13 @@
       const day = String(d.getDate()).padStart(2, "0");
       return `${d.getFullYear()}-${m}-${day}`;
     }
+    // Full month names indexed 1-12 (index 0 unused), for the derived month columns.
+    const MONTHS = ["", "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December"];
+    function monthCell(n) {
+      return (n >= 1 && n <= 12) ? MONTHS[n] : '<span class="muted">—</span>';
+    }
+
     const NOW = new Date();
     const TODAY = ymd(NOW);
     const THREE_MONTHS_AGO = ymd(new Date(NOW.getFullYear(), NOW.getMonth() - 3, NOW.getDate()));
@@ -440,15 +460,23 @@
           ? `<span class="tier ${r.reputation}">${r.reputation}</span>`
           : '<span class="muted">—</span>';
 
+        const cats = (r.category || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const catHtml = cats.length
+          ? cats.map((c) => `<span class="cat-tag">${c}</span>`).join("")
+          : '<span class="muted">—</span>';
+
         tr.innerHTML = `
           <td data-col="conference"><div class="conf-name">${name}</div></td>
-          <td data-col="category">${r.category || '<span class="muted">—</span>'}</td>
+          <td data-col="category">${catHtml}</td>
           <td data-col="location">${r.location || '<span class="muted">—</span>'}</td>
           <td data-col="reputation">${tier}</td>
           <td data-col="remote_option">${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
+          <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month)}</td>
           <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
+          <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month)}</td>
           <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
+          <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="cal" class="cal-cell">
             <a class="cal-btn" href="/api/calendar.ics?ids=${encodeURIComponent(r.id)}" download="${r.id}.ics" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</a>

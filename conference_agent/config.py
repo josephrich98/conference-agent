@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from conference_agent.models import ConferenceTier
+from conference_agent.models import ConferenceTier, normalize_categories
 
 # --- Discovery agent -------------------------------------------------------
 
@@ -57,10 +57,10 @@ CALENDAR_REMINDER_HOUR = 9
 # one place and applied deterministically during discovery. Matching is
 # case-insensitive (see ``normalize_reputation``), so entries are uppercase.
 BIG_CONFERENCE_ACRONYMS = {
-    # Radiology
-    "RSNA", "ECR",
+    # Radiology / medical imaging (MICCAI is the flagship medical-image-computing venue)
+    "RSNA", "ECR", "MICCAI",
     # Data science / machine learning
-    "NEURIPS", "ICML", "ICLR", "CVPR", "ICCV",
+    "NEURIPS", "ICML", "ICLR", "CVPR", "ICCV", "ECCV",
     # Genomics / bioinformatics (ISMB is ISCB's flagship meeting)
     "RECOMB", "ASHG", "ISMB",
     # Medicine (one or more flagships per specialty)
@@ -92,13 +92,16 @@ def normalize_reputation(
 # --- Seed list -------------------------------------------------------------
 
 # A seed of flagship conferences to bootstrap and sanity-check the discovery
-# agent. The ``category`` is a flat lowercase field string (e.g. "radiology",
-# "cardiology", "machine learning"); subspecialties are noted inline rather than
-# given their own category, so a single ``discover --category radiology`` run
-# covers the whole field -- ``_seed_checklist`` filters seeds by the requested
-# category. Each field carries only its flagship meetings (coverage is "flagship
-# only"); the discovery agent finds the rest and verifies details against
-# official sources.
+# agent. The category element is one or more lowercase field tags: either a
+# single string (e.g. "radiology") or a tuple when a conference spans fields
+# (e.g. SPR is ("radiology", "pediatrics"); MICCAI is ("radiology", "machine
+# learning")). ``normalize_categories`` flattens either form, so a conference
+# tagged with a field is covered by that field's ``discover`` run --
+# ``_seed_checklist`` filters seeds by whether any tag matches the requested
+# category. Subspecialties within a single field are still noted inline rather
+# than given their own tag. Each field carries only its flagship meetings
+# (coverage is "flagship only"); the discovery agent finds the rest and verifies
+# details against official sources.
 #
 # Adding a new field is just adding its flagship seeds here: ``seed_categories()``
 # below derives the standing category list from this table, so a new field is
@@ -120,7 +123,7 @@ SEED_CONFERENCES = [
     ("CAR", "Canadian Association of Radiologists Annual Scientific Meeting", "radiology", ConferenceTier.MEDIUM),
     ("RANZCR", "Royal Australian and New Zealand College of Radiologists Annual Scientific Meeting", "radiology", ConferenceTier.MEDIUM),
     # Subspecialty societies
-    ("SPR", "Society for Pediatric Radiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
+    ("SPR", "Society for Pediatric Radiology Annual Meeting", ("radiology", "pediatrics"), ConferenceTier.MEDIUM),
     ("ASNR", "American Society of Neuroradiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
     ("ASHNR", "American Society of Head and Neck Radiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
     ("SIR", "Society of Interventional Radiology Annual Scientific Meeting", "radiology", ConferenceTier.MEDIUM),
@@ -128,7 +131,10 @@ SEED_CONFERENCES = [
     ("SBI", "Society of Breast Imaging Annual Symposium", "radiology", ConferenceTier.MEDIUM),
     ("ISS", "International Skeletal Society Annual Meeting", "radiology", ConferenceTier.MEDIUM),
     ("SNMMI", "Society of Nuclear Medicine and Molecular Imaging Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("SIIM", "Society for Imaging Informatics in Medicine Annual Meeting", "radiology", ConferenceTier.MEDIUM),
+    ("SIIM", "Society for Imaging Informatics in Medicine Annual Meeting", ("radiology", "machine learning"), ConferenceTier.MEDIUM),
+    # Medical image computing (technical / proceedings-based, not a clinical
+    # society); tagged both radiology and machine learning.
+    ("MICCAI", "Medical Image Computing and Computer Assisted Intervention", ("radiology", "machine learning"), ConferenceTier.BIG),
 
     # --- Medicine (other specialties) --------------------------------------
     # Flagship conference(s) per specialty. Sourced from Med School Insiders'
@@ -303,7 +309,7 @@ SEED_CONFERENCES = [
     ("TAGC", "The Allied Genetics Conference (Genetics Society of America)", "genomics", ConferenceTier.MEDIUM),
     ("SCG", "Single Cell Genomics Conference", "genomics", ConferenceTier.MEDIUM),
     ("BIOITWORLD", "Bio-IT World Conference & Expo", "genomics", ConferenceTier.MEDIUM),
-    ("MLCB", "Machine Learning in Computational Biology", "genomics", ConferenceTier.MEDIUM),
+    ("MLCB", "Machine Learning in Computational Biology", ("genomics", "machine learning"), ConferenceTier.MEDIUM),
     # Cold Spring Harbor Laboratory meetings (meetings.cshl.edu). CSHL meetings
     # have no official acronyms, so a stable "CSHL-*" id is assigned. Meetings
     # whose topic is squarely oncology or neuroscience are filed under those
@@ -312,7 +318,7 @@ SEED_CONFERENCES = [
     ("CSHL-BOG", "CSHL Biology of Genomes", "genomics", ConferenceTier.MEDIUM),
     ("CSHL-GENINFO", "CSHL Genome Informatics", "genomics", ConferenceTier.MEDIUM),
     ("CSHL-PROBGEN", "CSHL Probabilistic Modeling in Genomics", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-BIODATA", "CSHL Biological Data Science", "genomics", ConferenceTier.MEDIUM),
+    ("CSHL-BIODATA", "CSHL Biological Data Science", ("genomics", "machine learning"), ConferenceTier.MEDIUM),
     ("CSHL-NETBIO", "CSHL Network Biology", "genomics", ConferenceTier.MEDIUM),
     ("CSHL-CRISPR", "CSHL Genome Engineering: CRISPR Frontiers", "genomics", ConferenceTier.MEDIUM),
     ("CSHL-EPIG", "CSHL Epigenetics & Chromatin", "genomics", ConferenceTier.MEDIUM),
@@ -331,13 +337,15 @@ SEED_CONFERENCES = [
     ("CSHL-METAB", "CSHL Mechanisms of Metabolic Signaling", "genomics", ConferenceTier.MEDIUM),
     ("CSHL-AGING", "CSHL Mechanisms of Aging", "genomics", ConferenceTier.MEDIUM),
     ("CSHL-SOCINSECT", "CSHL Social Insects", "genomics", ConferenceTier.MEDIUM),
-    # CSHL meetings routed to their clinical field
-    ("CSHL-CANCER", "CSHL Mechanisms & Models of Cancer", "oncology", ConferenceTier.MEDIUM),
-    ("CSHL-GLIA", "CSHL Glia in Health & Disease", "neurology", ConferenceTier.MEDIUM),
-    ("CSHL-NEUROCONN", "CSHL Molecular Mechanisms of Neuronal Connectivity", "neurology", ConferenceTier.MEDIUM),
-    ("CSHL-NEURODEGEN", "CSHL Neurodegenerative Diseases: Biology & Therapeutics", "neurology", ConferenceTier.MEDIUM),
-    ("CSHL-BRAINDEV", "CSHL Development & 3D Modeling of the Human Brain", "neurology", ConferenceTier.MEDIUM),
-    ("CSHL-BRAINBAR", "CSHL Brain Barriers", "neurology", ConferenceTier.MEDIUM),
+    # CSHL meetings routed to their clinical field. Every CSHL meeting also
+    # carries a "genomics" tag (its home domain), so the genomics view lists the
+    # full CSHL series while these still surface under their clinical field too.
+    ("CSHL-CANCER", "CSHL Mechanisms & Models of Cancer", ("oncology", "genomics"), ConferenceTier.MEDIUM),
+    ("CSHL-GLIA", "CSHL Glia in Health & Disease", ("neurology", "genomics"), ConferenceTier.MEDIUM),
+    ("CSHL-NEUROCONN", "CSHL Molecular Mechanisms of Neuronal Connectivity", ("neurology", "genomics"), ConferenceTier.MEDIUM),
+    ("CSHL-NEURODEGEN", "CSHL Neurodegenerative Diseases: Biology & Therapeutics", ("neurology", "genomics"), ConferenceTier.MEDIUM),
+    ("CSHL-BRAINDEV", "CSHL Development & 3D Modeling of the Human Brain", ("neurology", "genomics"), ConferenceTier.MEDIUM),
+    ("CSHL-BRAINBAR", "CSHL Brain Barriers", ("neurology", "genomics"), ConferenceTier.MEDIUM),
 
     # --- Data science / machine learning -----------------------------------
     ("NeurIPS", "Conference on Neural Information Processing Systems", "machine learning", ConferenceTier.BIG),
@@ -345,6 +353,7 @@ SEED_CONFERENCES = [
     ("ICLR", "International Conference on Learning Representations", "machine learning", ConferenceTier.BIG),
     ("CVPR", "IEEE/CVF Conference on Computer Vision and Pattern Recognition", "machine learning", ConferenceTier.BIG),
     ("ICCV", "IEEE/CVF International Conference on Computer Vision", "machine learning", ConferenceTier.BIG),
+    ("ECCV", "European Conference on Computer Vision", "machine learning", ConferenceTier.BIG),
 ]
 
 
@@ -374,6 +383,7 @@ SEED_CONFERENCE_URLS: dict[str, "str | None"] = {
     "ISS": "https://internationalskeletalsociety.com",
     "SNMMI": "https://www.snmmi.org",
     "SIIM": "https://siim.org",
+    "MICCAI": "https://miccai.org",
     # --- Medicine ----------------------------------------------------------
     "ASA": "https://www.asahq.org",
     "IARS": "https://www.iars.org",
@@ -513,6 +523,7 @@ SEED_CONFERENCE_URLS: dict[str, "str | None"] = {
     "ICLR": "https://iclr.cc",
     "CVPR": "https://cvpr.thecvf.com",
     "ICCV": "https://iccv.thecvf.com",
+    "ECCV": "https://eccv.ecva.net",
 }
 # CSHL meetings share the official meetings portal (individual meetings have no
 # stable per-meeting permalink), so every CSHL-* seed maps to the same landing.
@@ -535,12 +546,14 @@ SEED_CONFERENCE_LINKS: dict[str, dict[str, "str | None"]] = {
     # --- Radiology ---------------------------------------------------------
     "RSNA": {"event": None, "meeting": "https://www.rsna.org/annual-meeting", "org": "https://www.rsna.org"},
     "ECR": {"event": None, "meeting": "https://myesr.org/congress/", "org": "https://www.myesr.org"},
+    "MICCAI": {"event": "https://conferences.miccai.org/2026/", "meeting": None, "org": "https://miccai.org"},
     # --- Machine learning --------------------------------------------------
     "NeurIPS": {"event": "https://neurips.cc/Conferences/2026", "meeting": "https://neurips.cc/Conferences/FutureMeetings", "org": "https://neurips.cc"},
     "ICML": {"event": "https://icml.cc/Conferences/2026", "meeting": None, "org": "https://icml.cc"},
     "ICLR": {"event": None, "meeting": "https://iclr.cc/Conferences/FutureMeetings", "org": "https://iclr.cc"},
     "CVPR": {"event": None, "meeting": None, "org": "https://cvpr.thecvf.com"},
     "ICCV": {"event": None, "meeting": None, "org": "https://iccv.thecvf.com"},
+    "ECCV": {"event": None, "meeting": None, "org": "https://eccv.ecva.net"},
     # --- Genomics / bioinformatics -----------------------------------------
     "RECOMB": {"event": None, "meeting": None, "org": "https://recomb.org"},
     "ASHG": {"event": "https://ashgmeeting.ashg.org/", "meeting": "https://www.ashg.org/meetings/", "org": "https://www.ashg.org"},
@@ -616,6 +629,33 @@ def best_seed_url(acronym: str) -> "str | None":
     return curated_seed_url(acronym) or SEED_CONFERENCE_URLS.get(acronym)
 
 
+# Curated category tags per seed acronym (case-insensitive), the authoritative
+# classification for every seeded series. Discovery is responsible for dates,
+# links, and cost -- not for classifying a conference into fields -- so the model
+# sometimes returns a descriptive blurb ("general radiology / medical imaging")
+# where a clean tag belongs. ``seed_categories_for`` exposes the curated tags so
+# the write paths can apply them as a *floor* (see ``database.upsert_conferences``
+# / ``merge_records``): a refresh can never overwrite a seed's tags with model
+# free-text. Editing a seed's category element is the single lever for its
+# classification. Built from the seed table, so it stays in sync automatically.
+_SEED_CATEGORIES_BY_UPPER: dict[str, list[str]] = {
+    acronym.upper(): normalize_categories(category)
+    for acronym, _, category, _ in SEED_CONFERENCES
+}
+
+
+def seed_categories_for(acronym: str) -> "list[str] | None":
+    """Curated category tags for a seed acronym, or ``None`` if not a seed.
+
+    Matching is case-insensitive. Returns a fresh list so callers cannot mutate
+    the shared table.
+    """
+    if not acronym:
+        return None
+    cats = _SEED_CATEGORIES_BY_UPPER.get(acronym.upper())
+    return list(cats) if cats else None
+
+
 def seed_categories() -> list[str]:
     """Distinct categories present in :data:`SEED_CONFERENCES`, sorted.
 
@@ -625,8 +665,9 @@ def seed_categories() -> list[str]:
     """
     seen: list[str] = []
     for _, _, category, _ in SEED_CONFERENCES:
-        if category not in seen:
-            seen.append(category)
+        for cat in normalize_categories(category):
+            if cat not in seen:
+                seen.append(cat)
     return sorted(seen)
 
 
