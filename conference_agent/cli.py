@@ -4,24 +4,26 @@ Subcommands:
   discover  — run the discovery agent and store results (optionally email a summary)
   seed      — populate the table from the static seed catalog (no API needed)
   list      — print the stored conference table
-  sync      — push stored conferences to Google Calendar
-  serve     — launch the web table interface (boolean search + sync buttons)
+  serve     — launch the web table interface (boolean search + calendar export)
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
-from conference_agent.config import DEFAULT_DATABASE_URL, GOOGLE_CALENDAR_ID
-from conference_agent.models import Conference
+from conference_agent.config import (
+    ANTHROPIC_API_KEY_ENV,
+    DEFAULT_DATABASE_URL,
+)
+from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="conference-agent",
-        description="Compile conferences into a table and sync with Google Calendar.",
+        description="Compile conferences into a table and export them as a calendar feed.",
     )
     parser.add_argument("--db", default=DEFAULT_DATABASE_URL, help="SQLAlchemy database URL")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -29,6 +31,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover = sub.add_parser("discover", help="Discover conferences and store them")
     p_discover.add_argument(
         "--category", action="append", help="Category to search, e.g. radiology (repeatable)"
+    )
+    p_discover.add_argument(
+        "--backend",
+        choices=DISCOVERY_BACKENDS,
+        default=DEFAULT_BACKEND,
+        help="Discovery backend: 'claude-code' (default) drives the local Claude "
+        "Code CLI on your subscription (cheaper); 'api' uses the Anthropic API "
+        "(requires ANTHROPIC_API_KEY and credits).",
+    )
+    p_discover.add_argument(
+        "--model",
+        help="Override the model id (defaults to the config model for --backend "
+        "api, or Claude Code's configured model for --backend claude-code).",
     )
     p_discover.add_argument("--email", action="store_true", help="Email a summary when finished")
 
@@ -45,10 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--category", help="Filter by category")
     p_list.add_argument("--reputation", help="Filter by reputation (big/medium/small)")
 
-    p_sync = sub.add_parser("sync", help="Push stored conferences to Google Calendar")
-    p_sync.add_argument("--category", help="Only sync this category")
-    p_sync.add_argument("--calendar-id", default=GOOGLE_CALENDAR_ID, help="Target calendar id")
-
     p_serve = sub.add_parser("serve", help="Launch the web table interface")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8000)
@@ -57,10 +68,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_discover(args) -> int:
+    import os
+
     from conference_agent.database import upsert_conferences
     from conference_agent.discover import discover_conferences
 
-    conferences = discover_conferences(categories=args.category)
+    if args.backend == "api" and not os.environ.get(ANTHROPIC_API_KEY_ENV):
+        print(
+            f"Error: --backend api requires {ANTHROPIC_API_KEY_ENV} to be set.",
+            file=sys.stderr,
+        )
+        return 1
+
+    conferences = discover_conferences(
+        categories=args.category, backend=args.backend, model=args.model
+    )
     written = upsert_conferences(conferences, db_url=args.db)
     print(f"Discovered and stored {written} conference(s).")
 
@@ -107,20 +129,6 @@ def _cmd_list(args) -> int:
     return 0
 
 
-def _cmd_sync(args) -> int:
-    from conference_agent.calendar_sync import sync_conferences
-    from conference_agent.database import query_conferences
-
-    rows: List[Conference] = query_conferences(category=args.category, db_url=args.db)
-    if not rows:
-        print("No conferences stored. Run `conference-agent discover` first.")
-        return 0
-
-    written = sync_conferences(rows, calendar_id=args.calendar_id)
-    print(f"Synced {written} calendar event(s).")
-    return 0
-
-
 def _cmd_serve(args) -> int:
     import uvicorn
 
@@ -134,7 +142,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "discover": _cmd_discover,
         "seed": _cmd_seed,
         "list": _cmd_list,
-        "sync": _cmd_sync,
         "serve": _cmd_serve,
     }
     try:

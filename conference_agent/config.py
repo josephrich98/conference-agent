@@ -38,21 +38,16 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER")  # e.g. a Gmail address
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")  # e.g. a Gmail app password
 
-# --- Google Calendar -------------------------------------------------------
-
-GOOGLE_OAUTH_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
-GOOGLE_CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
-GOOGLE_TOKEN_FILE = os.environ.get("GOOGLE_TOKEN_FILE", "token.json")
-# Target calendar; "primary" is the user's default calendar.
-GOOGLE_CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+# --- Calendar feed (.ics) --------------------------------------------------
 
 # Lead times (in days before the event) for the reminders attached to every
-# synced event -- one month, one week, and one day ahead. Google caps a reminder
-# override at 40320 minutes (4 weeks), so the one-month lead is clamped to that
-# maximum (see ``calendar_sync._reminders``).
-CALENDAR_REMINDER_LEAD_DAYS = (30, 7, 1)
-# Google Calendar's maximum reminder lead time, in minutes (4 weeks).
-GOOGLE_MAX_REMINDER_MINUTES = 40320
+# event in the iCalendar feed -- four weeks, one week, and one day ahead.
+CALENDAR_REMINDER_LEAD_DAYS = (28, 7, 1)
+# Hour of day (local, 24h) the reminders fire on their target morning. An all-day
+# event starts at midnight, so anchoring the alarm at this hour keeps calendar
+# apps from labeling a midnight alarm as one day too early (see
+# ``calendar_sync._alarm_trigger``).
+CALENDAR_REMINDER_HOUR = 9
 
 # --- Reputation policy ------------------------------------------------------
 
@@ -308,6 +303,7 @@ SEED_CONFERENCES = [
     ("TAGC", "The Allied Genetics Conference (Genetics Society of America)", "genomics", ConferenceTier.MEDIUM),
     ("SCG", "Single Cell Genomics Conference", "genomics", ConferenceTier.MEDIUM),
     ("BIOITWORLD", "Bio-IT World Conference & Expo", "genomics", ConferenceTier.MEDIUM),
+    ("MLCB", "Machine Learning in Computational Biology", "genomics", ConferenceTier.MEDIUM),
     # Cold Spring Harbor Laboratory meetings (meetings.cshl.edu). CSHL meetings
     # have no official acronyms, so a stable "CSHL-*" id is assigned. Meetings
     # whose topic is squarely oncology or neuroscience are filed under those
@@ -510,6 +506,7 @@ SEED_CONFERENCE_URLS: dict[str, "str | None"] = {
     "TAGC": "https://genetics-gsa.org",
     "SCG": None,  # rotating annual site; no permanent landing page
     "BIOITWORLD": "https://www.bio-itworldexpo.com",
+    "MLCB": "https://www.mlcb.org",
     # --- Data science / machine learning -----------------------------------
     "NeurIPS": "https://neurips.cc",
     "ICML": "https://icml.cc",
@@ -522,6 +519,80 @@ SEED_CONFERENCE_URLS: dict[str, "str | None"] = {
 SEED_CONFERENCE_URLS.update(
     {acronym: _CSHL_MEETINGS_URL for acronym, *_ in SEED_CONFERENCES if acronym.startswith("CSHL-")}
 )
+
+# Deep meeting links for the flagship (big-tier) series, layered on top of the
+# org homepages above. Each entry holds up to three tiers, most specific first:
+#   "event"   -- the current/next edition's own page (most specific; can rot when
+#                the edition rolls over, so it is re-verified alongside discovery)
+#   "meeting" -- a stable annual-meeting landing path the org reuses every year
+#   "org"     -- the organization homepage (mirrors SEED_CONFERENCE_URLS)
+# A tier is ``None`` when no such page exists (or none could be verified to
+# resolve). ``best_seed_url`` collapses an entry to its most specific non-None
+# tier; series absent from this map fall back to their SEED_CONFERENCE_URLS
+# homepage. Only big-tier series (see BIG_CONFERENCE_ACRONYMS) are listed, and
+# all populated links were verified to return HTTP 200 as of 2026-06-17.
+SEED_CONFERENCE_LINKS: dict[str, dict[str, "str | None"]] = {
+    # --- Radiology ---------------------------------------------------------
+    "RSNA": {"event": None, "meeting": "https://www.rsna.org/annual-meeting", "org": "https://www.rsna.org"},
+    "ECR": {"event": None, "meeting": "https://myesr.org/congress/", "org": "https://www.myesr.org"},
+    # --- Machine learning --------------------------------------------------
+    "NeurIPS": {"event": "https://neurips.cc/Conferences/2026", "meeting": "https://neurips.cc/Conferences/FutureMeetings", "org": "https://neurips.cc"},
+    "ICML": {"event": "https://icml.cc/Conferences/2026", "meeting": None, "org": "https://icml.cc"},
+    "ICLR": {"event": None, "meeting": "https://iclr.cc/Conferences/FutureMeetings", "org": "https://iclr.cc"},
+    "CVPR": {"event": None, "meeting": None, "org": "https://cvpr.thecvf.com"},
+    "ICCV": {"event": None, "meeting": None, "org": "https://iccv.thecvf.com"},
+    # --- Genomics / bioinformatics -----------------------------------------
+    "RECOMB": {"event": None, "meeting": None, "org": "https://recomb.org"},
+    "ASHG": {"event": "https://ashgmeeting.ashg.org/", "meeting": "https://www.ashg.org/meetings/", "org": "https://www.ashg.org"},
+    "ISMB": {"event": "https://www.iscb.org/ismb2026/home", "meeting": "https://www.iscb.org/about-ismb", "org": "https://www.iscb.org"},
+    # --- Medicine ----------------------------------------------------------
+    "ASA": {"event": None, "meeting": "https://www.asahq.org/annualmeeting", "org": "https://www.asahq.org"},
+    "AAD": {"event": "https://www.aad.org/member/meetings-education/am27", "meeting": "https://meetings.aad.org/", "org": "https://www.aad.org"},
+    "CORD": {"event": None, "meeting": "https://www.cordem.org/event/academic-assembly/", "org": "https://www.cordem.org"},
+    "AAFP": {"event": None, "meeting": "https://www.aafp.org/events/fmx.html", "org": "https://www.aafp.org"},
+    "ACP": {"event": None, "meeting": "https://www.acponline.org/meetings-courses/internal-medicine-meeting", "org": "https://www.acponline.org"},
+    "AAN": {"event": None, "meeting": "https://www.aan.com/events/annual-meeting", "org": "https://www.aan.com"},
+    "ACOG": {"event": None, "meeting": "https://annualmeeting.acog.org/", "org": "https://www.acog.org"},
+    "ASCO": {"event": None, "meeting": "https://www.asco.org/annual-meeting", "org": "https://www.asco.org"},
+    "AACR": {"event": "https://www.aacr.org/meeting/aacr-annual-meeting-2027/", "meeting": "https://www.aacr.org/professionals/meetings/", "org": "https://www.aacr.org"},
+    "AAO": {"event": "https://www.aao.org/annual-meeting/neworleans", "meeting": "https://www.aao.org/annual-meeting", "org": "https://www.aao.org"},
+    "ARVO": {"event": None, "meeting": "https://www.arvo.org/annual-meeting", "org": "https://www.arvo.org"},
+    "AAOS": {"event": None, "meeting": "https://www.aaos.org/annual/", "org": "https://www.aaos.org"},
+    "AAP": {"event": None, "meeting": "https://aapexperience.org/", "org": "https://www.aap.org"},
+    "PAS": {"event": "https://www.pas-meeting.org/2027-meeting/", "meeting": "https://www.pas-meeting.org/about/", "org": "https://www.pas-meeting.org"},
+    "APA": {"event": None, "meeting": "https://www.psychiatry.org/annual-meeting", "org": "https://www.psychiatry.org"},
+    "ACNP": {"event": None, "meeting": "https://acnp.org/annual-meeting/", "org": "https://acnp.org/"},
+    "ACS": {"event": "https://www.facs.org/for-medical-professionals/conferences-and-meetings/clinical-congress-2026/", "meeting": "https://www.facs.org/for-medical-professionals/conferences-and-meetings/", "org": "https://www.facs.org"},
+    "STS": {"event": "https://www.sts.org/calendar-of-events/63rd-sts-annual-meeting", "meeting": "https://www.sts.org/education/future-annual-meetings", "org": "https://www.sts.org"},
+    "VAM": {"event": None, "meeting": "https://vascular.org/vascular-specialists/education-and-meetings/meetings/future-vam-dates", "org": "https://vascular.org"},
+    "ASC": {"event": None, "meeting": None, "org": "https://www.academicsurgicalcongress.org"},
+    "SAGES": {"event": "https://www.sages2027.org/", "meeting": "https://www.sages.org/meetings/annual-meeting/", "org": "https://www.sages.org"},
+    "AUA": {"event": "https://www.auanet.org/AUA2027", "meeting": None, "org": "https://www.auanet.org"},
+    "CNS": {"event": None, "meeting": "https://www.cns.org/annualmeeting", "org": "https://www.cns.org"},
+    "AAOHNS": {"event": None, "meeting": "https://www.entnet.org/events/annual-meeting/", "org": "https://www.entnet.org/"},
+    "COSM": {"event": None, "meeting": "https://cosm.md/annual-meeting/", "org": "https://www.cosm.md"},
+    "USCAP": {"event": "https://2027am.uscap.org/", "meeting": "https://uscap.org/uscap-annual-meeting/", "org": "https://www.uscap.org"},
+    "CAP": {"event": "https://www.cap.org/calendar/events/cap26", "meeting": "https://www.cap.org/calendar/events", "org": "https://www.cap.org"},
+}
+
+# Tier preference used by ``best_seed_url`` -- most specific first.
+_SEED_LINK_TIERS = ("event", "meeting", "org")
+
+
+def best_seed_url(acronym: str) -> "str | None":
+    """Most specific known link for a seed, preferring a deep meeting link.
+
+    Big-tier series may carry a tiered link set in :data:`SEED_CONFERENCE_LINKS`
+    (an edition-specific ``event`` page, a stable ``meeting`` landing, and the
+    ``org`` homepage); this returns the most specific tier that is populated.
+    Every other series falls back to its :data:`SEED_CONFERENCE_URLS` homepage.
+    """
+    links = SEED_CONFERENCE_LINKS.get(acronym)
+    if links is not None:
+        for tier in _SEED_LINK_TIERS:
+            if links.get(tier):
+                return links[tier]
+    return SEED_CONFERENCE_URLS.get(acronym)
 
 
 def seed_categories() -> list[str]:

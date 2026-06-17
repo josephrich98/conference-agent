@@ -1,30 +1,59 @@
 """Conference discovery agent.
 
-Drives the Anthropic API with the server-side web-search tool to find major
-conferences in a category, then extracts the results into typed ``Conference``
-records using structured outputs.
+Finds major conferences in a category via web search, then extracts the results
+into typed ``Conference`` records using structured outputs. The flow is always
+two-phase, which keeps each step simple and robust:
 
-The flow is two-phase, which keeps each step simple and robust:
+1. **Research** — an agentic loop with a web-search tool. The model searches the
+   web for the leading conferences in each category and writes up what it found
+   (names, dates, deadlines, cost, links).
+2. **Extract** — a single tool-less call that turns that research text into a
+   validated list of ``Conference`` objects via a JSON schema derived from the
+   pydantic model.
 
-1. **Research** — an agentic loop with the ``web_search`` server tool. The model
-   searches the web for the leading conferences in each category and writes up
-   what it found (names, dates, deadlines, cost, links).
-2. **Extract** — a single ``messages.parse`` call (no tools) that turns that
-   research text into a validated list of ``Conference`` objects via a JSON
-   schema derived from the pydantic model.
+Two interchangeable backends run that flow (chosen by ``backend``):
 
-The model id is centralized in ``conference_agent.config.ANTHROPIC_MODEL``.
+- ``"claude-code"`` (default) shells out to the local ``claude`` CLI in headless
+  mode (``claude -p``). It authenticates through the user's Claude Code
+  subscription -- the subprocess is run with ``ANTHROPIC_API_KEY`` removed from
+  its environment so the CLI never falls back to the metered API -- which makes
+  it the cheaper option when a subscription is available.
+- ``"api"`` calls the Anthropic API directly via the ``anthropic`` SDK. It
+  requires ``ANTHROPIC_API_KEY`` (and API credits) and is opt-in.
+
+The model id for the API backend is centralized in
+``conference_agent.config.ANTHROPIC_MODEL``; the CLI backend defaults to whatever
+model Claude Code is configured to use unless ``model`` is given.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 from datetime import date
 from typing import Iterable, List, Optional
 
 from pydantic import BaseModel
 
-from conference_agent.config import ANTHROPIC_MODEL, SEED_CONFERENCES, normalize_reputation
+from conference_agent.config import (
+    ANTHROPIC_API_KEY_ENV,
+    ANTHROPIC_MODEL,
+    SEED_CONFERENCES,
+    normalize_reputation,
+)
 from conference_agent.models import Conference, ConferenceTier, RemoteOption
+
+# Available discovery backends. ``claude-code`` is the default (cheaper when a
+# Claude Code subscription is available); ``api`` uses the metered Anthropic API.
+DISCOVERY_BACKENDS = ("claude-code", "api")
+DEFAULT_BACKEND = "claude-code"
+
+# Timeouts (seconds) for the headless ``claude`` CLI calls. Research runs a
+# web-search loop and can take a while; extraction is a single tool-less call.
+_CLI_RESEARCH_TIMEOUT = 600
+_CLI_EXTRACT_TIMEOUT = 180
 
 # Server-side web search tool (current version supports dynamic filtering).
 _WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search"}
@@ -192,15 +221,20 @@ def _seed_checklist(categories: List[str]) -> str:
     return "\n".join(lines) if lines else "- (no seeds for this category)"
 
 
-def _research(client, categories: List[str], model: str, max_tokens: int) -> str:
-    """Run the web-search agentic loop and return the model's research text."""
-    system = _RESEARCH_SYSTEM.format(seed_list=_seed_checklist(categories))
-    prompt = (
+def _research_prompt(categories: List[str]) -> str:
+    """The user-facing research instruction, shared by both backends."""
+    return (
         "Find the major conferences in the following "
         f"{'categories' if len(categories) > 1 else 'category'}: "
         f"{', '.join(categories)}. Search the web for current dates and details, "
         "then summarize each conference and its key dates."
     )
+
+
+def _research(client, categories: List[str], model: str, max_tokens: int) -> str:
+    """Run the web-search agentic loop and return the model's research text."""
+    system = _RESEARCH_SYSTEM.format(seed_list=_seed_checklist(categories))
+    prompt = _research_prompt(categories)
     messages = [{"role": "user", "content": prompt}]
 
     response = client.messages.create(
@@ -248,9 +282,111 @@ def _extract(client, research_text: str, model: str, max_tokens: int) -> List[Co
     return [c for c in (_to_conference(item) for item in parsed.conferences) if c is not None]
 
 
+# --- Claude Code CLI backend ----------------------------------------------
+
+
+def _claude_cli_path() -> str:
+    """Locate the ``claude`` CLI or raise a helpful error."""
+    path = shutil.which("claude")
+    if not path:
+        raise RuntimeError(
+            "The 'claude' CLI was not found on PATH. Install Claude Code "
+            "(https://docs.claude.com/claude-code) to use the default "
+            "'claude-code' backend, or pass backend='api' to use the Anthropic "
+            "API instead."
+        )
+    return path
+
+
+def _run_claude_cli(
+    prompt: str,
+    *,
+    append_system: Optional[str] = None,
+    tools: Optional[List[str]] = None,
+    json_schema: Optional[dict] = None,
+    model: Optional[str] = None,
+    timeout: int,
+) -> dict:
+    """Invoke ``claude -p`` headlessly and return the parsed JSON result payload.
+
+    The subprocess is run with ``ANTHROPIC_API_KEY`` removed from its environment
+    so the CLI authenticates via the user's Claude Code subscription rather than
+    falling back to the metered API.
+    """
+    cmd = [_claude_cli_path(), "-p", prompt, "--output-format", "json"]
+    if append_system:
+        cmd += ["--append-system-prompt", append_system]
+    if tools is not None:
+        # An empty list disables all tools ("" per the CLI); a populated list
+        # restricts the session to exactly those built-in tools and pre-approves
+        # them so headless runs do not stall on a permission prompt.
+        cmd += ["--tools", ",".join(tools)]
+        if tools:
+            cmd += ["--allowedTools", *tools]
+    if json_schema is not None:
+        cmd += ["--json-schema", json.dumps(json_schema)]
+    if model:
+        cmd += ["--model", model]
+
+    env = {k: v for k, v in os.environ.items() if k != ANTHROPIC_API_KEY_ENV}
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except subprocess.TimeoutExpired as exc:  # pragma: no cover - timing dependent
+        raise RuntimeError(f"claude CLI timed out after {timeout}s") from exc
+
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or "no output"
+        raise RuntimeError(f"claude CLI failed (exit {proc.returncode}): {detail}")
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"could not parse claude CLI output as JSON: {proc.stdout[:500]!r}"
+        ) from exc
+    if payload.get("is_error"):
+        raise RuntimeError(f"claude CLI returned an error: {payload.get('result')}")
+    return payload
+
+
+def _research_via_cli(categories: List[str], model: Optional[str]) -> str:
+    """Run the research phase through the headless ``claude`` CLI."""
+    system = _RESEARCH_SYSTEM.format(seed_list=_seed_checklist(categories))
+    payload = _run_claude_cli(
+        _research_prompt(categories),
+        append_system=system,
+        tools=["WebSearch", "WebFetch"],
+        model=model,
+        timeout=_CLI_RESEARCH_TIMEOUT,
+    )
+    return payload.get("result", "")
+
+
+def _extract_via_cli(research_text: str, model: Optional[str]) -> List[Conference]:
+    """Run the extraction phase through the headless ``claude`` CLI."""
+    payload = _run_claude_cli(
+        research_text,
+        append_system=_EXTRACT_SYSTEM,
+        tools=[],  # extraction needs no tools
+        json_schema=_ExtractedList.model_json_schema(),
+        model=model,
+        timeout=_CLI_EXTRACT_TIMEOUT,
+    )
+    data = payload.get("structured_output")
+    if not data:
+        return []
+    parsed = _ExtractedList.model_validate(data)
+    return [c for c in (_to_conference(item) for item in parsed.conferences) if c is not None]
+
+
+# --- Public entry point ----------------------------------------------------
+
+
 def discover_conferences(
     categories: Optional[Iterable[str]] = None,
-    model: str = ANTHROPIC_MODEL,
+    backend: str = DEFAULT_BACKEND,
+    model: Optional[str] = None,
     max_tokens: int = 16000,
 ) -> List[Conference]:
     """Discover conferences for the given categories and return typed records.
@@ -258,19 +394,37 @@ def discover_conferences(
     Args:
         categories: Fields to search (e.g. ``["radiology"]``). Defaults to
             ``["radiology"]``.
-        model: Anthropic model id to drive the agent.
-        max_tokens: Output token ceiling per API call.
+        backend: ``"claude-code"`` (default) drives the local ``claude`` CLI on
+            the user's Claude Code subscription; ``"api"`` calls the Anthropic
+            API directly (requires ``ANTHROPIC_API_KEY`` and credits).
+        model: Model id to drive the agent. ``None`` uses
+            :data:`config.ANTHROPIC_MODEL` for the API backend and Claude Code's
+            configured model for the CLI backend.
+        max_tokens: Output token ceiling per API call (API backend only).
 
     Returns:
-        A list of ``Conference`` records. Requires ``ANTHROPIC_API_KEY`` in the
-        environment.
+        A list of ``Conference`` records.
     """
-    import anthropic  # imported lazily so non-discovery code paths don't need it
+    if backend not in DISCOVERY_BACKENDS:
+        raise ValueError(
+            f"Unknown discovery backend {backend!r}; expected one of "
+            f"{', '.join(DISCOVERY_BACKENDS)}."
+        )
 
     cats = list(categories) if categories else ["radiology"]
-    client = anthropic.Anthropic()
 
-    research_text = _research(client, cats, model, max_tokens)
+    if backend == "claude-code":
+        research_text = _research_via_cli(cats, model)
+        if not research_text.strip():
+            return []
+        return _extract_via_cli(research_text, model)
+
+    # backend == "api"
+    import anthropic  # imported lazily so non-discovery code paths don't need it
+
+    resolved_model = model or ANTHROPIC_MODEL
+    client = anthropic.Anthropic()
+    research_text = _research(client, cats, resolved_model, max_tokens)
     if not research_text.strip():
         return []
-    return _extract(client, research_text, model, max_tokens)
+    return _extract(client, research_text, resolved_model, max_tokens)

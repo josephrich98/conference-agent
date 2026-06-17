@@ -41,7 +41,7 @@ jobs:
           CONFERENCE_NOTIFY_EMAIL: ${{ secrets.CONFERENCE_NOTIFY_EMAIL }}
         run: |
           mkdir -p data
-          python scripts/daily_update.py --cadence monthly
+          python scripts/daily_update.py --cadence monthly --backend api
 
       - name: Upload database artifact
         # When no persistent CONFERENCE_DATABASE_URL is set, the run writes a

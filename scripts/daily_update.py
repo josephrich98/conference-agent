@@ -34,7 +34,7 @@ from conference_agent.config import (
     weekly_categories,
 )
 from conference_agent.database import upsert_conferences
-from conference_agent.discover import discover_conferences
+from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS, discover_conferences
 from conference_agent.notify import notify_refresh
 from conference_agent.refresh import due_categories, mark_categories_checked
 
@@ -69,6 +69,13 @@ def main() -> None:
         default=os.environ.get("CONFERENCE_DATABASE_URL", DEFAULT_DATABASE_URL),
         help="SQLAlchemy URL",
     )
+    parser.add_argument(
+        "--backend",
+        choices=DISCOVERY_BACKENDS,
+        default=DEFAULT_BACKEND,
+        help="Discovery backend: 'claude-code' (default, uses your subscription) "
+        "or 'api' (Anthropic API; requires ANTHROPIC_API_KEY).",
+    )
     parser.add_argument("--no-email", action="store_true", help="Do not send a summary email")
     args = parser.parse_args()
 
@@ -90,7 +97,7 @@ def main() -> None:
     total = 0
     all_conferences = []
     for category in categories:
-        conferences = discover_conferences(categories=[category])
+        conferences = discover_conferences(categories=[category], backend=args.backend)
         written = upsert_conferences(conferences, db_url=args.db)
         all_conferences.extend(conferences)
         total += written

@@ -14,14 +14,15 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional
 
-from sqlalchemy import Date, String, Text, create_engine, inspect as sa_inspect, select, text
+from sqlalchemy import Date, String, Text, create_engine, select, text
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from conference_agent.config import (
     DEFAULT_DATABASE_URL,
-    SEED_CONFERENCE_URLS,
     SEED_CONFERENCES,
+    best_seed_url,
     normalize_reputation,
 )
 from conference_agent.models import Conference, ConferenceTier, RemoteOption
@@ -294,7 +295,7 @@ def seed_conferences(db_url: str = DEFAULT_DATABASE_URL, overwrite: bool = False
                 name=name,
                 category=category,
                 reputation=normalize_reputation(acronym, tier),
-                url=SEED_CONFERENCE_URLS.get(acronym),
+                url=best_seed_url(acronym),
             )
             row = session.get(ConferenceRow, conf.id)
             if row is None:

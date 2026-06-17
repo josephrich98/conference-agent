@@ -4,10 +4,15 @@ These cover the flat-string -> typed ``Conference`` mapping (the step that turns
 the LLM's structured output into validated records). No network or LLM calls.
 """
 
+import json
 from datetime import date
 
+import pytest
+
+import conference_agent.discover as discover
 from conference_agent.config import (
     SEED_CONFERENCE_SOURCES,
+    SEED_CONFERENCE_URLS,
     SEED_CONFERENCES,
     WEEKLY_CATEGORIES,
     monthly_categories,
@@ -157,3 +162,102 @@ def test_weekly_categories_are_all_real_categories():
     # Every name in WEEKLY_CATEGORIES must correspond to an actual seed category,
     # otherwise the weekly job would silently refresh nothing for that name.
     assert WEEKLY_CATEGORIES <= set(seed_categories())
+
+
+def test_mlcb_seed_present_in_genomics_with_url():
+    entry = [s for s in SEED_CONFERENCES if s[0] == "MLCB"]
+    assert entry, "MLCB seed missing"
+    assert entry[0][2] == "genomics"
+    assert SEED_CONFERENCE_URLS.get("MLCB") == "https://www.mlcb.org"
+
+
+# --- Backend dispatch (hermetic; no network/LLM) ---------------------------
+
+
+def test_discover_rejects_unknown_backend():
+    with pytest.raises(ValueError):
+        discover.discover_conferences(categories=["radiology"], backend="bogus")
+
+
+def test_claude_code_backend_dispatches_without_api_key(monkeypatch):
+    # The default backend must not require ANTHROPIC_API_KEY or touch the SDK.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(discover, "_research_via_cli", lambda cats, model: "notes")
+    sentinel = [object()]
+    monkeypatch.setattr(discover, "_extract_via_cli", lambda text, model: sentinel)
+    out = discover.discover_conferences(categories=["genomics"], backend="claude-code")
+    assert out is sentinel
+
+
+def test_claude_code_backend_returns_empty_when_no_research(monkeypatch):
+    monkeypatch.setattr(discover, "_research_via_cli", lambda cats, model: "   ")
+    out = discover.discover_conferences(categories=["genomics"], backend="claude-code")
+    assert out == []
+
+
+class _FakeProc:
+    def __init__(self, stdout, returncode=0, stderr=""):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def test_run_claude_cli_strips_api_key_and_builds_command(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, capture_output, text, timeout, env):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return _FakeProc(json.dumps({"is_error": False, "result": "ok", "structured_output": {"a": 1}}))
+
+    monkeypatch.setattr(discover.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(discover.subprocess, "run", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+
+    payload = discover._run_claude_cli(
+        "prompt",
+        append_system="sys",
+        tools=["WebSearch", "WebFetch"],
+        json_schema={"type": "object"},
+        model="opus",
+        timeout=10,
+    )
+    assert payload["result"] == "ok"
+    # The subprocess must not inherit the API key, so the CLI uses the subscription.
+    assert "ANTHROPIC_API_KEY" not in captured["env"]
+    cmd = captured["cmd"]
+    assert cmd[:2] == ["/usr/bin/claude", "-p"]
+    for flag in ("--output-format", "--append-system-prompt", "--tools", "--allowedTools", "--json-schema", "--model"):
+        assert flag in cmd
+
+
+def test_run_claude_cli_no_allowedtools_when_tools_empty(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, capture_output, text, timeout, env):
+        captured["cmd"] = cmd
+        return _FakeProc(json.dumps({"is_error": False, "structured_output": {}}))
+
+    monkeypatch.setattr(discover.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(discover.subprocess, "run", fake_run)
+    discover._run_claude_cli("prompt", tools=[], timeout=10)
+    # An empty tool list disables tools; it must not pre-approve any with --allowedTools.
+    assert "--tools" in captured["cmd"]
+    assert "--allowedTools" not in captured["cmd"]
+
+
+def test_run_claude_cli_raises_on_error_payload(monkeypatch):
+    monkeypatch.setattr(discover.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        discover.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(json.dumps({"is_error": True, "result": "boom"})),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        discover._run_claude_cli("prompt", tools=[], timeout=10)
+
+
+def test_run_claude_cli_raises_when_cli_missing(monkeypatch):
+    monkeypatch.setattr(discover.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="claude"):
+        discover._run_claude_cli("prompt", tools=[], timeout=10)

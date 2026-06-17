@@ -196,8 +196,8 @@
     <code>category:radiology</code>
     <code>reputation:big</code>
     <code>(virtual OR hybrid) AND cost:*</code>
-    <code>upcoming:&gt;=2026-06-01</code>
-    <code>NOT abstract:*</code>
+    <code>conference_dates:&gt;=2026-06-01</code>
+    <code>NOT abstract_due:*</code>
     &nbsp;·&nbsp;<span id="help-toggle">show fields</span>
     <div id="fields-help"></div>
   </div>
@@ -337,7 +337,7 @@
           <td>${r.category || '<span class="muted">—</span>'}</td>
           <td>${r.location || '<span class="muted">—</span>'}</td>
           <td>${tier}</td>
-          <td>${r.remote_option || '<span class="muted">—</span>'}</td>
+          <td>${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td>${r.cost || '<span class="muted">—</span>'}</td>
           <td>${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
           <td>${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
@@ -447,14 +447,13 @@
       try {
         const resp = await fetch("/api/fields");
         const data = await resp.json();
-        const rowsFor = (obj) =>
-          Object.entries(obj)
-            .map(([f, aliases]) =>
-              `<tr><td class="fname">${f}</td><td class="muted">${aliases.length ? aliases.join(", ") : ""}</td></tr>`)
-            .join("");
+        const rows = data.fields
+          .map(({ field, type }) =>
+            `<tr><td class="fname">${field}</td><td class="muted">(${type})</td></tr>`)
+          .join("");
         $("fields-help").innerHTML =
-          `<strong>Text fields</strong><table>${rowsFor(data.text_fields)}</table>` +
-          `<strong>Date fields</strong><table>${rowsFor(data.date_fields)}</table>`;
+          `<p class="muted" style="margin:0 0 6px">Search fields match the table columns:</p>` +
+          `<table>${rows}</table>`;
       } catch (e) { /* non-fatal */ }
     }
 

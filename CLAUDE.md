@@ -32,8 +32,12 @@ search + per-row calendar sync). See `## Architecture` for the design.
     holding prior + upcoming editions); `ConferenceTier` and `RemoteOption` enums
   - `config.py` — constants, controlled vocabularies, seed list, Anthropic model
     id, and SMTP / notification settings
-  - `discover.py` — the AI discovery agent: Anthropic web search (research) +
-    structured output (extraction) to find conferences and extract typed fields
+  - `discover.py` — the AI discovery agent: web search (research) + structured
+    output (extraction) to find conferences and extract typed fields. Two
+    interchangeable backends run that flow: `claude-code` (default) drives the
+    local `claude` CLI on the user's Claude Code subscription (the subprocess
+    runs with `ANTHROPIC_API_KEY` removed so it never falls back to the metered
+    API); `api` calls the Anthropic API directly and requires `ANTHROPIC_API_KEY`
   - `database.py` — SQLAlchemy ORM + idempotent ingestion/query helpers
   - `calendar_sync.py` — Google Calendar sync (OAuth, event upsert, dedupe)
   - `refresh.py` — per-conference auto-check policy: decides which series are
@@ -77,7 +81,9 @@ dependencies there rather than installing ad hoc.
 
 ### Credentials (not committed)
 
-- `ANTHROPIC_API_KEY` — environment variable for the discovery agent.
+- `ANTHROPIC_API_KEY` — required only for the `api` discovery backend (and the
+  CI refresh workflows, which pass `--backend api`). The default `claude-code`
+  backend uses the local Claude Code subscription instead and needs no key.
 - Google Calendar OAuth — a `credentials.json` (OAuth client secret) downloaded
   from Google Cloud Console; the first run produces a cached `token.json`. Both
   files are gitignored and must never be committed.
@@ -92,9 +98,12 @@ dependencies there rather than installing ad hoc.
   dates alongside upcoming lets the table show last year's schedule as a
   reference before next year's is announced.
 - **LLM-driven discovery, typed output.** `discover.py` runs two phases: a
-  web-search agentic loop (research) followed by a `messages.parse` structured-
-  output call (extraction) that validates against the `Conference` model. The
-  model id lives in `config.py` (default: the latest Claude model).
+  web-search agentic loop (research) followed by a structured-output call
+  (extraction) that validates against the `Conference` model. The same flow runs
+  through either backend — the `api` backend uses `messages.parse`; the
+  `claude-code` backend uses the CLI's `--json-schema` structured output. The
+  `api` model id lives in `config.py` (default: the latest Claude model); the
+  `claude-code` backend defaults to Claude Code's configured model.
 - **Controlled vocabularies.** `ConferenceTier` (`big`/`medium`/`small`,
   reputability) and `RemoteOption` (`in-person`/`virtual`/`hybrid`/`unknown`) are
   enums, not free text, so the table and queries can filter/color consistently.

@@ -14,9 +14,9 @@ Bare keywords match (case-insensitive substring) across all text fields::
 Scoped field match::
 
     category:radiology
-    name:"American Roentgen"
-    remote:virtual          # alias for remote_option
-    reputation:big          # aliases: tier, rep
+    conference:"American Roentgen"
+    remote:virtual
+    reputation:big
 
 Boolean operators (case-insensitive), with implicit AND between adjacent terms,
 and parentheses for grouping::
@@ -27,19 +27,22 @@ and parentheses for grouping::
 Date comparisons on date fields accept ``YYYY``, ``YYYY-MM``, or ``YYYY-MM-DD``
 and the operators ``> >= < <= =``::
 
-    upcoming:>=2026-06-01   # upcoming_start_date on/after that date
-    abstract:<2026          # upcoming abstract deadline before 2026
-    upcoming:2026           # upcoming edition during 2026
+    conference_dates:>=2026-06-01   # conference on/after that date
+    abstract_due:<2026              # abstract deadline before 2026
+    conference_dates:2026           # conference during 2026
 
 Presence test (field is set / not set)::
 
     cost:*                  # has a cost recorded
-    NOT upcoming:*          # upcoming start date not yet announced
+    NOT conference_dates:*  # no conference date shown
 
-Date field aliases: ``upcoming``/``date`` → upcoming_start_date,
-``abstract``/``deadline`` → upcoming_abstract_deadline, ``paper`` →
-upcoming_paper_deadline, ``prior_start`` → prior_start_date, ``prior_abstract``
-→ prior_abstract_deadline, ``prior_paper`` → prior_paper_deadline.
+The query fields mirror the table's column headers exactly: ``conference``,
+``category``, ``location``, ``reputation``, ``remote``, ``cost``,
+``abstract_due``, ``paper_due``, and ``conference_dates``. Each date field
+matches the value the column actually shows — the upcoming edition's date,
+falling back to the prior edition's. A handful of legacy names (``name``,
+``acronym``, ``remote_option``, ``abstract``, ``upcoming``, …) remain accepted
+as hidden aliases so older shared query URLs keep working.
 """
 
 from __future__ import annotations
@@ -49,9 +52,10 @@ from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional, Tuple, Union
 
-from sqlalchemy import and_, not_, or_
+from sqlalchemy import and_, func, not_, or_
 
 from conference_agent.database import ConferenceRow
+from conference_agent.models import ConferenceTier, RemoteOption
 
 
 class QueryError(Exception):
@@ -60,63 +64,95 @@ class QueryError(Exception):
 
 # --- Field registry --------------------------------------------------------
 
-# Canonical text fields (matched with case-insensitive substring).
-_TEXT_FIELDS = [
-    "name",
+# The queryable fields exposed to users mirror the table's column headers exactly
+# (see COLUMNS in web/static/index.html), so the search box and the displayed
+# table agree on names. Each public field maps to the underlying ConferenceRow
+# column(s); users never need to know the internal names.
+
+# Public text field → underlying column(s). A scoped match is a case-insensitive
+# substring OR-ed across the listed columns. The labels mirror the column
+# headers ("Conference", "Category", …).
+_TEXT_FIELDS = {
+    "conference": ("acronym", "name"),
+    "category": ("category",),
+    "location": ("location",),
+    "reputation": ("reputation",),
+    "remote": ("remote_option",),
+    "cost": ("cost",),
+}
+
+# Public date field → (upcoming column, prior column). Comparisons run against
+# the value the column actually shows: the upcoming edition's date, falling back
+# to the prior edition's (coalesce), matching the table's "upcoming ?? prior ?? —".
+_DATE_FIELDS = {
+    "abstract_due": ("upcoming_abstract_deadline", "prior_abstract_deadline"),
+    "paper_due": ("upcoming_paper_deadline", "prior_paper_deadline"),
+    "conference_dates": ("upcoming_start_date", "prior_start_date"),
+}
+
+# Data type descriptor shown next to each field in the help panel. Categorical
+# fields list their controlled vocabulary (derived from the enums so the help
+# stays in sync); everything else is free text or a date.
+_FIELD_TYPES = {
+    "conference": "string",
+    "category": "string",
+    "location": "string",
+    "reputation": "cat: " + ", ".join(t.value for t in ConferenceTier),
+    "remote": "cat: " + ", ".join(o.value for o in RemoteOption if o is not RemoteOption.UNKNOWN),
+    "cost": "string",
+    "abstract_due": "date",
+    "paper_due": "date",
+    "conference_dates": "date",
+}
+
+# Columns scanned by a bare (unscoped) keyword. Broader than the public fields so
+# a loose keyword still reaches url/notes that have no column of their own.
+_BARE_SEARCH_COLUMNS = (
     "acronym",
+    "name",
     "category",
     "location",
+    "reputation",
+    "remote_option",
     "cost",
     "url",
     "notes",
-    "remote_option",
-    "reputation",
-]
+)
 
-# Canonical date fields (matched with comparison operators).
-_DATE_FIELDS = [
-    "upcoming_start_date",
-    "upcoming_end_date",
-    "upcoming_abstract_deadline",
-    "upcoming_paper_deadline",
-    "prior_start_date",
-    "prior_end_date",
-    "prior_abstract_deadline",
-    "prior_paper_deadline",
-]
-
-# Aliases → canonical field name.
+# Legacy / convenience names accepted but not advertised, so older shared query
+# URLs (and the internal column names) keep resolving to the public fields.
 _ALIASES = {
-    "remote": "remote_option",
+    "name": "conference",
+    "acronym": "conference",
+    "remote_option": "remote",
     "tier": "reputation",
     "rep": "reputation",
-    "upcoming": "upcoming_start_date",
-    "date": "upcoming_start_date",
-    "abstract": "upcoming_abstract_deadline",
-    "deadline": "upcoming_abstract_deadline",
-    "paper": "upcoming_paper_deadline",
-    "prior_start": "prior_start_date",
-    "prior_abstract": "prior_abstract_deadline",
-    "prior_paper": "prior_paper_deadline",
+    "abstract": "abstract_due",
+    "deadline": "abstract_due",
+    "upcoming_abstract_deadline": "abstract_due",
+    "prior_abstract": "abstract_due",
+    "paper": "paper_due",
+    "upcoming_paper_deadline": "paper_due",
+    "prior_paper": "paper_due",
+    "upcoming": "conference_dates",
+    "date": "conference_dates",
+    "upcoming_start_date": "conference_dates",
+    "prior_start": "conference_dates",
 }
 
 
 def _resolve_field(name: str) -> str:
-    canonical = _ALIASES.get(name.lower(), name.lower())
-    if canonical not in _TEXT_FIELDS and canonical not in _DATE_FIELDS:
+    key = name.lower()
+    key = _ALIASES.get(key, key)
+    if key not in _TEXT_FIELDS and key not in _DATE_FIELDS:
         raise QueryError(f"Unknown field: {name!r}")
-    return canonical
+    return key
 
 
 def field_help() -> dict:
-    """Return queryable fields and their aliases (for the UI help panel)."""
-    aliases_by_field: dict = {f: [] for f in _TEXT_FIELDS + _DATE_FIELDS}
-    for alias, target in _ALIASES.items():
-        aliases_by_field.setdefault(target, []).append(alias)
-    return {
-        "text_fields": {f: aliases_by_field.get(f, []) for f in _TEXT_FIELDS},
-        "date_fields": {f: aliases_by_field.get(f, []) for f in _DATE_FIELDS},
-    }
+    """Return the queryable fields and their data types (for the UI help panel)."""
+    order = list(_TEXT_FIELDS) + list(_DATE_FIELDS)
+    return {"fields": [{"field": f, "type": _FIELD_TYPES[f]} for f in order]}
 
 
 # --- AST --------------------------------------------------------------------
@@ -305,39 +341,50 @@ def _parse_date_bounds(value: str) -> Tuple[date, date]:
     raise QueryError(f"Invalid date: {value!r}")
 
 
+def _date_expr(field: str):
+    """The displayed date for a public date field: upcoming, falling back to prior."""
+    upcoming, prior = _DATE_FIELDS[field]
+    return func.coalesce(getattr(ConferenceRow, upcoming), getattr(ConferenceRow, prior))
+
+
 def _compile_date_term(term: Term):
-    column = getattr(ConferenceRow, term.field)
+    expr = _date_expr(term.field)
     lower, upper = _parse_date_bounds(term.value)
     op = term.op or "="
     if op == "=":
-        return and_(column.isnot(None), column >= lower, column <= upper)
+        return and_(expr.isnot(None), expr >= lower, expr <= upper)
     if op == ">":
-        return and_(column.isnot(None), column > upper)
+        return and_(expr.isnot(None), expr > upper)
     if op == ">=":
-        return and_(column.isnot(None), column >= lower)
+        return and_(expr.isnot(None), expr >= lower)
     if op == "<":
-        return and_(column.isnot(None), column < lower)
+        return and_(expr.isnot(None), expr < lower)
     if op == "<=":
-        return and_(column.isnot(None), column <= upper)
+        return and_(expr.isnot(None), expr <= upper)
     raise QueryError(f"Unsupported operator: {op}")
 
 
 def _compile_term(term: Term):
-    # Presence test: field:*
+    # Presence test: field:* — the column shows a value.
     if term.presence:
-        return getattr(ConferenceRow, term.field).isnot(None)
+        if term.field in _DATE_FIELDS:
+            return _date_expr(term.field).isnot(None)
+        cols = _TEXT_FIELDS[term.field]
+        return or_(*[getattr(ConferenceRow, c).isnot(None) for c in cols])
 
-    # Bare keyword: substring across all text fields.
+    # Bare keyword: substring across all text columns.
     if term.field is None:
         pattern = f"%{term.value}%"
-        return or_(*[getattr(ConferenceRow, f).ilike(pattern) for f in _TEXT_FIELDS])
+        return or_(*[getattr(ConferenceRow, c).ilike(pattern) for c in _BARE_SEARCH_COLUMNS])
 
     # Scoped date field.
     if term.field in _DATE_FIELDS:
         return _compile_date_term(term)
 
-    # Scoped text field.
-    return getattr(ConferenceRow, term.field).ilike(f"%{term.value}%")
+    # Scoped text field (one or more underlying columns).
+    pattern = f"%{term.value}%"
+    cols = _TEXT_FIELDS[term.field]
+    return or_(*[getattr(ConferenceRow, c).ilike(pattern) for c in cols])
 
 
 def _compile(node: Node):
