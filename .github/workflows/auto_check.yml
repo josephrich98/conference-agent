@@ -1,0 +1,60 @@
+name: Auto-check due conferences
+
+on:
+  # schedule:
+    # 06:00 UTC daily. Targeted per-series auto-check: discovery runs only for
+    # fields holding a conference whose next edition is plausibly about to be
+    # announced (config.CHECK_WINDOW_*), and each such series is re-checked at
+    # most every config.RECHECK_INTERVAL_DAYS days (enforced via last_checked),
+    # so a daily cron is cheap. Enable by uncommenting (and supply the secrets
+    # below in the repo settings). A persistent CONFERENCE_DATABASE_URL is
+    # effectively required here: last_checked must survive across runs for the
+    # interval gating to work.
+    # - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[discover]"
+
+      - name: Auto-check due conferences
+        env:
+          # Required for discovery.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Persistent database URL (e.g. hosted Postgres). Strongly recommended
+          # for this job: the two-week re-check interval relies on last_checked
+          # persisting between runs.
+          CONFERENCE_DATABASE_URL: ${{ secrets.CONFERENCE_DATABASE_URL }}
+          # Optional: SMTP settings enable the "table refreshed" email.
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          CONFERENCE_NOTIFY_EMAIL: ${{ secrets.CONFERENCE_NOTIFY_EMAIL }}
+        run: |
+          mkdir -p data
+          python scripts/daily_update.py --cadence due
+
+      - name: Upload database artifact
+        # When no persistent CONFERENCE_DATABASE_URL is set, the run writes a
+        # local SQLite file; preserve it as an artifact so the refresh is not lost.
+        if: ${{ env.CONFERENCE_DATABASE_URL == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: conferences-db
+          path: data/*.db
+          if-no-files-found: ignore
+          retention-days: 14

@@ -29,16 +29,32 @@ calendar = [
     "google-auth>=2.0",
     "google-auth-oauthlib>=1.0",
 ]
+# Web table interface (boolean search + per-row calendar sync).
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
+# AWS Lambda deployment: ASGI adapter + a pure-Python PostgreSQL driver. pg8000
+# ships no compiled extension, so `sam build` produces a Lambda-compatible
+# package on any platform without Docker. (See web/requirements.txt.)
+deploy = ["mangum>=0.17", "pg8000>=1.30"]
+# PostgreSQL driver for loading/querying a managed database from your laptop
+# (e.g. seeding RDS). psycopg has the best local ergonomics; use a
+# `postgresql+psycopg://` URL with it, or `postgresql+pg8000://` with `deploy`.
+postgres = ["psycopg[binary]>=3.1"]
 notebooks = ["jupyter>=1.0", "ipykernel>=6.0"]
-dev = ["pytest>=7.0", "ruff>=0.4"]
+dev = ["pytest>=7.0", "ruff>=0.4", "bandit>=1.7"]
 
 [project.scripts]
 conference-agent = "conference_agent.cli:main"
 conf-build-table = "scripts.build_table:main"
 conf-sync-calendar = "scripts.sync_calendar:main"
+conf-daily-update = "scripts.daily_update:main"
 
 [tool.setuptools]
-packages = ["conference_agent"]
+packages = ["conference_agent", "web"]
+
+# Ship the static SPA assets with the `web` package so they are present in the
+# Lambda artifact (FileResponse / StaticFiles resolve them relative to the package).
+[tool.setuptools.package-data]
+web = ["static/*"]
 
 [tool.pytest.ini_options]
 markers = [

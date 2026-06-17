@@ -1,0 +1,11 @@
+# Runtime dependencies for the Lambda function (installed into the build by SAM).
+# Kept lean: the web service imports only the core package + FastAPI, and reaches
+# PostgreSQL through pg8000. The Anthropic and Google client libraries are NOT
+# needed here — discovery runs elsewhere, and calendar sync is a local feature.
+fastapi>=0.110
+mangum>=0.17
+pydantic>=2.0
+SQLAlchemy>=2.0
+# Pure-Python PostgreSQL driver: no compiled extension, so `sam build` packages a
+# Lambda-compatible artifact on any platform without `--use-container`.
+pg8000>=1.30

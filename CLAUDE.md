@@ -6,34 +6,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `conference_agent` is an AI agent that automatically compiles a curated table of
 major academic and professional conferences and keeps it in sync with Google
-Calendar. The agent discovers conferences and their key dates (abstract /
-submission deadlines, conference dates), location, attendance/submission
-requirements, official link, and an importance tier (e.g. RSNA = big,
-SPR = medium), normalizes that information into a typed schema, stores it in a
-SQL database, and pushes each conference (and its deadlines) into Google
-Calendar as events.
+Calendar. For each conference series the agent records its category (e.g.
+radiology), its **prior** and **upcoming** editions (abstract deadline, paper
+deadline, and conference dates for each), the official link, remote-attendance
+option, cost, and a reputability tier (e.g. RSNA = big, SPR = medium). It
+normalizes that information into a typed schema, stores it in a SQL database,
+exposes it through a boolean-searchable web table, and pushes each conference's
+upcoming deadlines and dates into Google Calendar as events. Discovery is seeded
+across medicine (radiology and ~18 other specialties), genomics/bioinformatics,
+and data science; the seed list (`SEED_CONFERENCES` in `config.py`) is the lever
+for adding fields, the standing refresh categories are derived from it, and
+`TAXONOMY.md` documents the field map and cadence policy.
 
 ## Status
 
-Early scaffolding. The package layout, schema, and module boundaries are in
-place as stubs; the discovery agent, database layer, and calendar sync are not
-yet implemented. See `## Planned Architecture` for the intended design.
+Core pipeline implemented: typed schema, SQLAlchemy persistence with idempotent
+upserts, the LLM discovery agent (Anthropic web search + structured output),
+Google Calendar sync, an email notifier, and a web table interface (boolean
+search + per-row calendar sync). See `## Architecture` for the design.
 
 ## Repository Layout
 
 - `conference_agent/` — core reusable package
-  - `models.py` — `Conference` pydantic schema (one record per conference edition)
-  - `config.py` — constants, controlled vocabularies (`ConferenceTier`), default
-    conference seed lists, and the Anthropic model id used by the agent
-  - `discover.py` — the AI discovery agent: drives the Anthropic API with
-    tool-use / web search to find conferences and extract their structured fields
+  - `models.py` — `Conference` pydantic schema (one record per conference *series*,
+    holding prior + upcoming editions); `ConferenceTier` and `RemoteOption` enums
+  - `config.py` — constants, controlled vocabularies, seed list, Anthropic model
+    id, and SMTP / notification settings
+  - `discover.py` — the AI discovery agent: Anthropic web search (research) +
+    structured output (extraction) to find conferences and extract typed fields
   - `database.py` — SQLAlchemy ORM + idempotent ingestion/query helpers
   - `calendar_sync.py` — Google Calendar sync (OAuth, event upsert, dedupe)
-  - `cli.py` — command-line entry point
-- `scripts/` — runnable CLI entry points (`build_table.py`, `sync_calendar.py`)
+  - `refresh.py` — per-conference auto-check policy: decides which series are
+    "due" for re-discovery (6–12-month staleness window, biweekly re-check via a
+    `last_checked` column) so `daily_update.py --cadence due` targets only them
+  - `notify.py` — email summary after a discovery / daily refresh
+  - `cli.py` — command-line entry point (`discover` / `list` / `sync` / `serve`)
+- `web/` — FastAPI app + static single-page table (`search.py` boolean-query
+  language, `app.py` REST API, `static/index.html`, `handler.py` Lambda entry
+  point, `requirements.txt` for the Lambda build)
+- `scripts/` — runnable entry points (`build_table.py`, `sync_calendar.py`,
+  `daily_update.py`)
+- `infra/` — AWS SAM deployment (`template.yaml`: Lambda + Function URL + RDS
+  PostgreSQL in a VPC; `samconfig.toml`); built via the root `Makefile`
 - `tests/` — offline unit tests (network/LLM tests are marked and excluded from CI)
 - `data/` — generated tables / databases (gitignored, never committed)
-- `.github/workflows/` — `ci.yml` (lint + offline tests)
+- `.github/workflows/` — `ci.yml` (lint + offline tests), `weekly_update.yml`
+  (flagship fields) and `monthly_update.yml` (remaining fields); both run
+  `daily_update.py --cadence ...` with crons disabled by default, manually
+  dispatchable
+- `TAXONOMY.md` — the field taxonomy (domains → fields → flagship seeds) and the
+  refresh-cadence policy
+- `DEPLOY.md` — AWS deployment walkthrough (FastAPI + Lambda + PostgreSQL)
 
 ## Development Setup
 
@@ -59,27 +82,38 @@ dependencies there rather than installing ad hoc.
   from Google Cloud Console; the first run produces a cached `token.json`. Both
   files are gitignored and must never be committed.
 
-## Planned Architecture / Key Design Decisions
+## Architecture / Key Design Decisions
 
-- **One record per conference edition.** The `Conference` schema keys on
-  acronym + year (e.g. `RSNA-2026`), so a recurring conference produces a new
-  row each year rather than mutating last year's dates.
-- **LLM-driven discovery, typed output.** `discover.py` uses the Anthropic API
-  with web search / tool use to find conferences, then returns data conforming
-  to the `Conference` pydantic model. The model id lives in `config.py`
-  (default: the latest Claude model) so it is changed in one place.
-- **Controlled importance tier.** `ConferenceTier` (`big` / `medium` / `small`)
-  is an enum, not free text, so calendars and views can filter/color consistently.
-- **SQLAlchemy over raw SQL.** The same ORM models run against SQLite (local)
-  and any other SQLAlchemy-supported backend with only a connection-string change.
-- **Idempotent ingestion.** Upserts key on the conference id (acronym + year),
-  so re-running discovery updates rather than duplicates rows.
-- **Idempotent calendar sync.** Calendar events carry a stable external id
-  derived from the conference id so re-syncing updates existing events instead of
-  creating duplicates. Each conference yields up to two events: the abstract /
-  submission deadline and the conference dates.
-- **Separation of concerns.** Discovery (find/extract), persistence (database),
-  and sync (calendar) are independent modules; each can run on its own schedule.
+- **One record per conference series.** The `Conference` schema keys on the
+  acronym (e.g. `RSNA`) and holds both the **prior** and **upcoming** editions
+  (abstract deadline, paper deadline, start/end dates for each). Re-running
+  discovery updates the same row each cycle, rolling a newly announced edition
+  into the "upcoming" columns rather than creating a second row. Keeping prior
+  dates alongside upcoming lets the table show last year's schedule as a
+  reference before next year's is announced.
+- **LLM-driven discovery, typed output.** `discover.py` runs two phases: a
+  web-search agentic loop (research) followed by a `messages.parse` structured-
+  output call (extraction) that validates against the `Conference` model. The
+  model id lives in `config.py` (default: the latest Claude model).
+- **Controlled vocabularies.** `ConferenceTier` (`big`/`medium`/`small`,
+  reputability) and `RemoteOption` (`in-person`/`virtual`/`hybrid`/`unknown`) are
+  enums, not free text, so the table and queries can filter/color consistently.
+- **SQLAlchemy over raw SQL.** The same ORM runs against SQLite (local) or any
+  SQLAlchemy backend with only a connection-string change.
+- **Idempotent ingestion.** Upserts key on the conference id (the acronym), so
+  re-running discovery updates rather than duplicates rows.
+- **Idempotent calendar sync.** Each event carries a deterministic id derived
+  (base32hex) from the conference id and event kind, so re-syncing updates
+  existing events instead of creating duplicates. A conference yields up to three
+  events for its upcoming edition: abstract deadline, paper deadline, and the
+  conference dates.
+- **Boolean-searchable web table.** `web/` mirrors a proven pattern: a small
+  boolean query language (`field:value`, `AND`/`OR`/`NOT`, parentheses, date
+  comparisons) compiled to SQLAlchemy filters, a FastAPI JSON/CSV API, and a
+  static single-page table with a per-row "sync to Google Calendar" button.
+- **Separation of concerns.** Discovery, persistence, calendar sync, email
+  notification, and the web layer are independent modules; each can run on its
+  own schedule.
 
 ## CI/CD
 

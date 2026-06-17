@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  conference-agent web service: a FastAPI app on AWS Lambda (behind a public
+  Function URL) backed by an RDS PostgreSQL database. The Lambda and the database
+  share a VPC; by default the database is reachable only from the Lambda's
+  security group. Set DbAdminCidr to also reach it from your IP for data loading.
+
+Parameters:
+  DBName:
+    Type: String
+    Default: conferences
+    Description: Initial PostgreSQL database name.
+  DBUsername:
+    Type: String
+    Default: conf_admin
+    Description: Master username for the database.
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: >
+      Master password. Use only URL-safe characters (letters, digits, -_.~) so
+      it embeds cleanly in the SQLAlchemy connection string.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to place the Lambda and database in (your default VPC is fine).
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Two or more subnets in the VPC (different AZs) for Lambda + RDS.
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    Description: RDS instance size.
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: Database storage in GiB.
+  DbAdminCidr:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. A CIDR (e.g. 203.0.113.4/32) allowed to reach the database on
+      5432 for loading data from your laptop. Leave empty to keep the database
+      private to the Lambda. When set, the instance is made publicly accessible.
+
+Conditions:
+  ExposeDb: !Not [!Equals [!Ref DbAdminCidr, ""]]
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.12
+
+Resources:
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: conference-agent Lambda egress
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all egress (Lambda reaches RDS in-VPC)
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: conference-agent RDS access
+      VpcId: !Ref VpcId
+
+  DBIngressFromLambda:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt DBSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !GetAtt LambdaSecurityGroup.GroupId
+      Description: PostgreSQL from the Lambda security group only
+
+  DBIngressFromAdmin:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: ExposeDb
+    Properties:
+      GroupId: !GetAtt DBSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      CidrIp: !Ref DbAdminCidr
+      Description: PostgreSQL from the admin CIDR (for data loading)
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: conference-agent database subnets
+      SubnetIds: !Ref SubnetIds
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: postgres
+      # EngineVersion intentionally unset: RDS uses the region's current default
+      # major version, which is always a valid (non-deprecated) choice.
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt DBSecurityGroup.GroupId
+      PubliclyAccessible: !If [ExposeDb, true, false]
+      BackupRetentionPeriod: 1
+      StorageEncrypted: true
+      MultiAZ: false
+
+  ConferenceFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ../
+      Handler: web.handler.handler
+      Description: conference-agent FastAPI app (table UI + boolean search API)
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          CONFERENCE_DATABASE_URL: !Sub "postgresql+pg8000://${DBUsername}:${DBPassword}@${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}"
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt LambdaSecurityGroup.GroupId
+        SubnetIds: !Ref SubnetIds
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins: ["*"]
+          AllowMethods: ["GET", "POST"]
+
+Outputs:
+  WebsiteUrl:
+    Description: Public URL of the conference-agent website and REST API.
+    Value: !GetAtt ConferenceFunctionUrl.FunctionUrl
+  DatabaseEndpoint:
+    Description: RDS endpoint host.
+    Value: !GetAtt Database.Endpoint.Address
+  DatabaseUrlHint:
+    Description: SQLAlchemy URL to use for loading data (fill in the password).
+    Value: !Sub "postgresql+psycopg://${DBUsername}:<password>@${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}"

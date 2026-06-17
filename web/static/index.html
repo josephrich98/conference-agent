@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conference Agent</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --border: #e2e6eb;
+      --text: #1f2933;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --accent-weak: #eff4ff;
+      --big: #b91c1c;
+      --medium: #b45309;
+      --small: #4b5563;
+      --date-recent: #dc2626;
+      --date-old: #ea580c;
+      --date-soon: #16a34a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    header {
+      padding: 20px 24px 8px;
+    }
+    h1 { font-size: 20px; margin: 0 0 2px; }
+    .subtitle { color: var(--muted); font-size: 13px; margin: 0; }
+    .controls {
+      padding: 12px 24px 16px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    #query {
+      flex: 1 1 420px;
+      min-width: 260px;
+      padding: 9px 12px;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    button {
+      padding: 9px 14px;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button:hover { filter: brightness(0.98); }
+    .syntax {
+      padding: 0 24px 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .syntax code {
+      background: var(--accent-weak);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    #help-toggle { color: var(--accent); cursor: pointer; text-decoration: underline; }
+    #fields-help {
+      display: none;
+      margin: 8px 0 0;
+      padding: 10px 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      max-width: 900px;
+    }
+    #fields-help table { border-collapse: collapse; font-size: 12px; }
+    #fields-help td { padding: 2px 12px 2px 0; vertical-align: top; }
+    #fields-help .fname { font-family: ui-monospace, monospace; color: var(--text); }
+    #status { padding: 0 24px 8px; color: var(--muted); font-size: 13px; min-height: 18px; }
+    .table-wrap { padding: 0 24px 40px; overflow-x: auto; }
+    table.results {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 13px;
+    }
+    table.results th, table.results td {
+      text-align: left;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    table.results th {
+      background: #fafbfc;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    table.results th .arrow { color: var(--accent); font-size: 11px; }
+    table.results tr:last-child td { border-bottom: none; }
+    .conf-name { font-weight: 600; }
+    .conf-name a { color: var(--accent); text-decoration: none; }
+    .conf-name a:hover { text-decoration: underline; }
+    /* A date is colored by how it sits relative to a three-month window around
+       today: green when it falls from today through three months ahead (coming up
+       soon), red when it passed within the last three months (recently missed),
+       and orange when it is more than three months in the past (long gone). Dates
+       further than three months out are left uncolored. This is judged purely by
+       the date itself, not by whether it came from a prior or upcoming edition. */
+    .date-recent { color: var(--date-recent); }
+    .date-old { color: var(--date-old); }
+    .date-soon { color: var(--date-soon); }
+    .tier { font-weight: 600; text-transform: capitalize; }
+    .tier.big { color: var(--big); }
+    .tier.medium { color: var(--medium); }
+    .tier.small { color: var(--small); }
+    .muted { color: var(--muted); }
+    .sync-btn { padding: 5px 10px; font-size: 13px; white-space: nowrap; }
+    .ics-link { font-size: 13px; white-space: nowrap; margin-left: 8px; }
+    .cal-cell { white-space: nowrap; }
+    #subscribe-panel {
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel, #f8fafc);
+      font-size: 13px;
+    }
+    #subscribe-panel p { margin: 0 0 8px; }
+    .sub-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    #subscribe-url { flex: 1; font-family: ui-monospace, monospace; font-size: 12px; }
+    .sub-links { color: var(--muted); }
+    #toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      max-width: 360px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 13px;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.ok { background: #15803d; }
+    #toast.err { background: #b91c1c; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Conference Agent</h1>
+    <p class="subtitle">Curated conference deadlines and dates. Subscribe to a calendar feed, or sync to Google Calendar.</p>
+  </header>
+
+  <div class="controls">
+    <input id="query" type="text" placeholder='e.g.  (virtual OR hybrid) AND reputation:big' autocomplete="off" />
+    <button class="primary" id="search-btn">Search</button>
+    <button id="csv-btn">Export CSV</button>
+    <button id="subscribe-btn" title="Subscribe to these results as a calendar feed (no sign-in)">Subscribe (.ics)</button>
+    <button id="sync-all-btn" title="Sync all results to Google Calendar">Sync all</button>
+  </div>
+
+  <div id="subscribe-panel" hidden>
+    <p>
+      Add these results to any calendar app — no sign-in. The feed tracks your current
+      search and refreshes automatically.
+    </p>
+    <div class="sub-row">
+      <input id="subscribe-url" type="text" readonly />
+      <button id="subscribe-copy">Copy</button>
+    </div>
+    <p class="sub-links">
+      <a id="subscribe-google" target="_blank" rel="noopener">Add to Google Calendar</a>
+      &nbsp;·&nbsp;
+      <a id="subscribe-webcal">Open in default calendar app</a>
+      &nbsp;·&nbsp;
+      <a id="subscribe-download" download="conferences.ics">Download .ics</a>
+    </p>
+  </div>
+
+  <div class="syntax">
+    Boolean search:
+    <code>category:radiology</code>
+    <code>reputation:big</code>
+    <code>(virtual OR hybrid) AND cost:*</code>
+    <code>upcoming:&gt;=2026-06-01</code>
+    <code>NOT abstract:*</code>
+    &nbsp;·&nbsp;<span id="help-toggle">show fields</span>
+    <div id="fields-help"></div>
+  </div>
+
+  <div id="status"></div>
+
+  <div class="table-wrap">
+    <table class="results">
+      <thead>
+        <tr id="header-row"></tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    const COLUMNS = [
+      { key: "conference", label: "Conference", sort: "acronym" },
+      { key: "category", label: "Category", sort: "category" },
+      { key: "location", label: "Location", sort: "location" },
+      { key: "reputation", label: "Reputation", sort: "reputation" },
+      { key: "remote_option", label: "Remote", sort: "remote_option" },
+      { key: "cost", label: "Cost", sort: null },
+      { key: "upcoming_abstract_deadline", label: "Abstract due", sort: "upcoming_abstract_deadline" },
+      { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
+      { key: "upcoming_dates", label: "Conference dates", sort: "upcoming_start_date" },
+      { key: "sync", label: "", sort: null },
+    ];
+
+    let state = { sort: "upcoming_start_date", order: "asc", rows: [] };
+
+    const $ = (id) => document.getElementById(id);
+
+    // Local YYYY-MM-DD for a Date. ISO date strings compare lexicographically, so
+    // building all thresholds the same way lets us compare them as plain strings.
+    function ymd(d) {
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${d.getFullYear()}-${m}-${day}`;
+    }
+    const NOW = new Date();
+    const TODAY = ymd(NOW);
+    const THREE_MONTHS_AGO = ymd(new Date(NOW.getFullYear(), NOW.getMonth() - 3, NOW.getDate()));
+    const THREE_MONTHS_AHEAD = ymd(new Date(NOW.getFullYear(), NOW.getMonth() + 3, NOW.getDate()));
+
+    // CSS class for a date relative to a three-month window around today:
+    //   orange  — more than three months in the past (long gone)
+    //   red     — within the last three months (recently passed)
+    //   green   — from today through three months ahead (coming up soon)
+    //   ""      — more than three months out, left uncolored
+    function dateClass(date) {
+      if (!date) return "";
+      if (date < THREE_MONTHS_AGO) return "date-old";
+      if (date < TODAY) return "date-recent";
+      if (date <= THREE_MONTHS_AHEAD) return "date-soon";
+      return "";
+    }
+
+    function dateRange(start, end) {
+      if (!start) return '<span class="muted">—</span>';
+      if (end && end !== start) return `${start} – ${end}`;
+      return start;
+    }
+
+    // Wrap a rendered date value, coloring it by how its (start) date sits
+    // relative to today (see dateClass). The coloring is judged purely by the date
+    // itself, not by which edition it came from.
+    function dateSpan(inner, refDate) {
+      const dc = dateClass(refDate);
+      const cls = dc ? ` class="${dc}"` : "";
+      return `<span${cls}>${inner}</span>`;
+    }
+
+    function dateOrPrior(upcoming, prior) {
+      const value = upcoming || prior;
+      if (value) return dateSpan(value, value);
+      return '<span class="muted">—</span>';
+    }
+
+    function rangeOrPrior(upStart, upEnd, prStart, prEnd) {
+      const [start, end] = upStart ? [upStart, upEnd] : [prStart, prEnd];
+      if (start) return dateSpan(dateRange(start, end), start);
+      return '<span class="muted">—</span>';
+    }
+
+    function renderHeader() {
+      const row = $("header-row");
+      row.innerHTML = "";
+      for (const col of COLUMNS) {
+        const th = document.createElement("th");
+        let arrow = "";
+        if (col.sort && col.sort === state.sort) {
+          arrow = ` <span class="arrow">${state.order === "asc" ? "▲" : "▼"}</span>`;
+        }
+        th.innerHTML = col.label + arrow;
+        if (col.sort) {
+          th.addEventListener("click", () => {
+            if (state.sort === col.sort) {
+              state.order = state.order === "asc" ? "desc" : "asc";
+            } else {
+              state.sort = col.sort;
+              state.order = "asc";
+            }
+            search();
+          });
+        } else {
+          th.style.cursor = "default";
+        }
+        row.appendChild(th);
+      }
+    }
+
+    function renderRows(rows) {
+      const body = $("results-body");
+      body.innerHTML = "";
+      if (rows.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="${COLUMNS.length}" class="muted">No conferences match.</td>`;
+        body.appendChild(tr);
+        return;
+      }
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+
+        const name = r.url
+          ? `<a href="${r.url}" target="_blank" rel="noopener">${r.acronym}</a> — ${r.name}`
+          : `${r.acronym} — ${r.name}`;
+
+        const tier = r.reputation
+          ? `<span class="tier ${r.reputation}">${r.reputation}</span>`
+          : '<span class="muted">—</span>';
+
+        tr.innerHTML = `
+          <td><div class="conf-name">${name}</div></td>
+          <td>${r.category || '<span class="muted">—</span>'}</td>
+          <td>${r.location || '<span class="muted">—</span>'}</td>
+          <td>${tier}</td>
+          <td>${r.remote_option || '<span class="muted">—</span>'}</td>
+          <td>${r.cost || '<span class="muted">—</span>'}</td>
+          <td>${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
+          <td>${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
+          <td>${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
+          <td class="cal-cell">
+            <button class="sync-btn" data-id="${r.id}">📅 Sync</button>
+            <a class="ics-link" href="/api/calendar.ics?ids=${encodeURIComponent(r.id)}" download="${r.id}.ics" title="Download this conference as an .ics file">📥 .ics</a>
+          </td>
+        `;
+        tr.querySelector(".sync-btn").addEventListener("click", (e) => syncOne(r.id, e.target));
+        body.appendChild(tr);
+      }
+    }
+
+    async function search() {
+      renderHeader();
+      const q = $("query").value;
+      $("status").textContent = "Searching…";
+      const params = new URLSearchParams({ q, sort: state.sort, order: state.order });
+      try {
+        const resp = await fetch(`/api/search?${params}`);
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+          $("status").textContent = `Query error: ${err.detail}`;
+          renderRows([]);
+          return;
+        }
+        const rows = await resp.json();
+        state.rows = rows;
+        $("status").textContent = `${rows.length} conference${rows.length === 1 ? "" : "s"}.`;
+        renderRows(rows);
+      } catch (e) {
+        $("status").textContent = `Request failed: ${e}`;
+      }
+    }
+
+    function exportCsv() {
+      const q = $("query").value;
+      const params = new URLSearchParams({ q, sort: state.sort, order: state.order, format: "csv" });
+      window.location = `/api/search?${params}`;
+    }
+
+    function icsUrl() {
+      const q = $("query").value;
+      const params = q ? `?${new URLSearchParams({ q })}` : "";
+      return `${location.origin}/api/calendar.ics${params}`;
+    }
+
+    function toggleSubscribe() {
+      const panel = $("subscribe-panel");
+      if (!panel.hidden) { panel.hidden = true; return; }
+      const url = icsUrl();
+      const webcal = url.replace(/^https?:/, "webcal:");
+      $("subscribe-url").value = url;
+      $("subscribe-webcal").href = webcal;
+      $("subscribe-download").href = url;
+      // Google Calendar's "add by URL" expects the webcal/https feed URL.
+      $("subscribe-google").href =
+        `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}`;
+      panel.hidden = false;
+    }
+
+    async function copySubscribeUrl() {
+      const url = $("subscribe-url").value;
+      try {
+        await navigator.clipboard.writeText(url);
+        toast("Feed URL copied.", true);
+      } catch (e) {
+        $("subscribe-url").select();
+        toast("Press Ctrl/Cmd-C to copy.", false);
+      }
+    }
+
+    function toast(msg, ok) {
+      const t = $("toast");
+      t.textContent = msg;
+      t.className = `show ${ok ? "ok" : "err"}`;
+      setTimeout(() => { t.className = ""; }, 4000);
+    }
+
+    async function postSync(ids, btn) {
+      if (btn) { btn.disabled = true; btn.textContent = "…"; }
+      try {
+        const resp = await fetch("/api/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) { toast(data.detail || "Sync failed.", false); return; }
+        toast(`Synced ${data.events_written} event(s) across ${data.conferences} conference(s).`, true);
+      } catch (e) {
+        toast(`Sync failed: ${e}`, false);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "📅 Sync"; }
+      }
+    }
+
+    function syncOne(id, btn) { postSync([id], btn); }
+    function syncAll() {
+      const ids = state.rows.map((r) => r.id);
+      if (ids.length === 0) { toast("Nothing to sync.", false); return; }
+      postSync(ids, null);
+    }
+
+    async function loadFields() {
+      try {
+        const resp = await fetch("/api/fields");
+        const data = await resp.json();
+        const rowsFor = (obj) =>
+          Object.entries(obj)
+            .map(([f, aliases]) =>
+              `<tr><td class="fname">${f}</td><td class="muted">${aliases.length ? aliases.join(", ") : ""}</td></tr>`)
+            .join("");
+        $("fields-help").innerHTML =
+          `<strong>Text fields</strong><table>${rowsFor(data.text_fields)}</table>` +
+          `<strong>Date fields</strong><table>${rowsFor(data.date_fields)}</table>`;
+      } catch (e) { /* non-fatal */ }
+    }
+
+    $("search-btn").addEventListener("click", search);
+    $("csv-btn").addEventListener("click", exportCsv);
+    $("subscribe-btn").addEventListener("click", toggleSubscribe);
+    $("subscribe-copy").addEventListener("click", copySubscribeUrl);
+    $("sync-all-btn").addEventListener("click", syncAll);
+    $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+    $("help-toggle").addEventListener("click", () => {
+      const h = $("fields-help");
+      const showing = h.style.display === "block";
+      h.style.display = showing ? "none" : "block";
+      $("help-toggle").textContent = showing ? "show fields" : "hide fields";
+    });
+
+    loadFields();
+    search();
+  </script>
+</body>
+</html>

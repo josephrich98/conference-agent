@@ -1,0 +1,19 @@
+# Defaults for `sam build` / `sam deploy`. Deploy-time parameters (VPC, subnets,
+# DB password, admin CIDR) are passed on the command line — see DEPLOY.md.
+version = 0.1
+
+[default.global.parameters]
+stack_name = "conference-agent"
+
+[default.build.parameters]
+# pg8000 is pure Python, so no container build is needed; SAM packages the
+# dependencies directly. (Set use_container = true only if you swap in a driver
+# with a compiled extension, e.g. psycopg.)
+use_container = false
+template_file = "template.yaml"
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+resolve_s3 = true
+region = "us-east-1"

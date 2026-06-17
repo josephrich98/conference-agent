@@ -1,0 +1,27 @@
+# gitleaks configuration for conference-agent.
+#
+# Extends the bundled default ruleset and adds project-specific rules so the
+# secrets this project actually handles are caught deterministically (not left
+# to generic entropy heuristics). Auto-detected by `gitleaks` when run at the
+# repository root (the pre-commit hook does exactly that).
+
+title = "conference-agent gitleaks config"
+
+[extend]
+# Keep all of gitleaks' built-in provider rules (AWS, GCP, private keys, ...).
+useDefault = true
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+# Matches user keys (sk-ant-api03-...) and admin keys (sk-ant-admin01-...). The
+# trailing segment is long and high-entropy; 50+ chars avoids false positives on
+# the short literal prefix while reliably catching real keys (~95 chars).
+regex = '''sk-ant-(?:api|admin)[0-9]{2}-[A-Za-z0-9_-]{50,}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "google-oauth-client-secret"
+description = "Google OAuth client secret (credentials.json)"
+regex = '''GOCSPX-[A-Za-z0-9_-]{20,}'''
+keywords = ["GOCSPX-"]
