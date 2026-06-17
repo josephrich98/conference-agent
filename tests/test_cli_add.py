@@ -120,7 +120,8 @@ def test_bare_acronym_updates_existing_and_preserves_fields(tmp_path):
         ]
     )
     # A bare acronym (no name) updates the existing row; other fields persist.
-    code = main(["--db", url, "add", "--conference", "ZZT", "--abstract-due", "2026-04-08"])
+    # --yes skips the "matches an existing entry" confirmation prompt.
+    code = main(["--db", url, "add", "--yes", "--conference", "ZZT", "--abstract-due", "2026-04-08"])
     assert code == 0
     conf = _by_id(url)["ZZT"]
     assert conf.name == "Test Imaging Conference"
@@ -154,7 +155,7 @@ def test_add_overwrite_clears_unsupplied_fields(tmp_path):
         ]
     )
     code = main(
-        ["--db", url, "add", "--overwrite", "--conference", "ZZT - Test Imaging Conference", "--category", "radiology"]
+        ["--db", url, "add", "--yes", "--overwrite", "--conference", "ZZT - Test Imaging Conference", "--category", "radiology"]
     )
     assert code == 0
     conf = _by_id(url)["ZZT"]
@@ -257,3 +258,73 @@ def test_add_warns_on_new_category_but_still_writes(tmp_path, capsys):
     assert "quantum imaging" in err
     assert "radiology" not in err
     assert _by_id(url)["ZZT"].categories == ["radiology", "quantum imaging"]
+
+
+def _seed_zzt(url):
+    main(
+        [
+            "--db",
+            url,
+            "add",
+            "--conference",
+            "ZZT - Test Imaging Conference",
+            "--category",
+            "radiology",
+            "--conference-dates",
+            "2026-11-29",
+        ]
+    )
+
+
+def test_add_matching_entry_prompts_and_accepts(tmp_path, monkeypatch):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    # A bare acronym that matches the table is confirmed, so the update applies.
+    code = main(["--db", url, "add", "--conference", "ZZT", "--abstract-due", "2026-04-08"])
+    assert code == 0
+    assert prompts and "already exists" in prompts[0]
+    assert _by_id(url)["ZZT"].upcoming_abstract_deadline == date(2026, 4, 8)
+
+
+def test_add_matching_entry_prompts_and_declines(tmp_path, monkeypatch, capsys):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    # Declining the prompt leaves the existing entry unchanged.
+    code = main(["--db", url, "add", "--conference", "ZZT - Test Imaging Conference", "--abstract-due", "2026-04-08"])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "left unchanged" in (captured.out + captured.err)
+    assert _by_id(url)["ZZT"].upcoming_abstract_deadline is None
+
+
+def test_add_yes_flag_skips_prompt(tmp_path, monkeypatch):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+
+    def boom(prompt=""):
+        raise AssertionError("input() should not be called when --yes is passed")
+
+    monkeypatch.setattr("builtins.input", boom)
+    code = main(["--db", url, "add", "--yes", "--conference", "ZZT", "--abstract-due", "2026-04-08"])
+    assert code == 0
+    assert _by_id(url)["ZZT"].upcoming_abstract_deadline == date(2026, 4, 8)
+
+
+def test_add_new_conference_not_prompted(tmp_path, monkeypatch):
+    url = _db_url(tmp_path)
+
+    def boom(prompt=""):
+        raise AssertionError("a brand-new conference must not trigger the match prompt")
+
+    monkeypatch.setattr("builtins.input", boom)
+    code = main(["--db", url, "add", "--conference", "ZZT - Test Imaging Conference", "--category", "radiology"])
+    assert code == 0
+    assert _by_id(url)["ZZT"].name == "Test Imaging Conference"

@@ -209,6 +209,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replace the entire row instead of merging: fields you do not supply "
         "are cleared (requires acronym, name, and category per conference).",
     )
+    p_add.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt shown when a conference matches an "
+        "existing table entry (assume yes and update it).",
+    )
 
     p_list = sub.add_parser("list", help="Print the stored conference table")
     p_list.add_argument("--category", help="Filter by category")
@@ -322,6 +329,51 @@ def _warn_new_categories(records: list[dict], db_url: str) -> None:
         )
 
 
+def _confirm_existing_matches(records: list[dict], db_url: str, assume_yes: bool) -> list[dict]:
+    """Confirm before updating records that match an existing table entry.
+
+    Identity keys on the (upper-cased) acronym, so both a bare acronym and the
+    'ACRONYM - Name' form resolve to the same row: either is a match. For each
+    record whose id already exists, prompt the curator to confirm they mean to
+    update that entry; ``--yes`` skips every prompt. Declined records are dropped
+    from the returned list so the rest still proceed. A non-interactive stdin
+    (no TTY) is treated as a decline -- run with --yes to update unattended.
+    """
+    if assume_yes:
+        return records
+
+    from conference_agent.database import query_conferences
+
+    existing = {c.id: c for c in query_conferences(db_url=db_url)}
+    proceed: list[dict] = []
+    for record in records:
+        acronym = (record.get("acronym") or record.get("id") or "").strip()
+        match = existing.get(acronym.upper()) if acronym else None
+        if match is None:
+            proceed.append(record)
+            continue
+        # Show the existing entry as the table does: "ACRONYM — Name", collapsing
+        # to just the name when the row has no distinct acronym (acronym == name).
+        if match.name and match.acronym.strip().lower() == match.name.strip().lower():
+            label = match.name
+        else:
+            label = f"{match.acronym} — {match.name}" if match.name else match.acronym
+        try:
+            reply = input(
+                f"'{label}' already exists in the table. Update this existing entry? [y/N] "
+            )
+        except EOFError:
+            reply = ""
+        if reply.strip().lower() in ("y", "yes"):
+            proceed.append(record)
+        else:
+            print(
+                f"Skipped {match.id} (existing entry left unchanged).",
+                file=sys.stderr,
+            )
+    return proceed
+
+
 def _cmd_add(args) -> int:
     from conference_agent.database import merge_records, upsert_conferences
 
@@ -335,6 +387,11 @@ def _cmd_add(args) -> int:
         return 1
 
     _warn_new_categories(records, args.db)
+
+    records = _confirm_existing_matches(records, args.db, args.yes)
+    if not records:
+        print("No conferences added (existing entries left unchanged).")
+        return 0
 
     if args.overwrite:
         from pydantic import ValidationError

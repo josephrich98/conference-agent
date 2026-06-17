@@ -452,9 +452,17 @@
       for (const r of rows) {
         const tr = document.createElement("tr");
 
-        const name = r.url
-          ? `<a href="${externalUrl(r.url)}" target="_blank" rel="noopener">${r.acronym}</a> — ${r.name}`
-          : `${r.acronym} — ${r.name}`;
+        // The URL hyperlinks the acronym, with the full name in plain text after
+        // it. When the row has no distinct acronym (none stored, or it equals the
+        // name), the link wraps the full name instead and the dash is dropped.
+        const acronym = (r.acronym || "").trim();
+        const fullName = (r.name || "").trim();
+        const hasAcronym = acronym && acronym.toLowerCase() !== fullName.toLowerCase();
+        const linkText = hasAcronym ? acronym : (fullName || acronym);
+        const linked = r.url
+          ? `<a href="${externalUrl(r.url)}" target="_blank" rel="noopener">${linkText}</a>`
+          : linkText;
+        const name = hasAcronym ? `${linked} — ${fullName}` : linked;
 
         const tier = r.reputation
           ? `<span class="tier ${r.reputation}">${r.reputation}</span>`

@@ -50,16 +50,13 @@ conference-agent add \
   --url https://www.rsna.org/annual-meeting
 ```
 
-`--conference` takes the table's first column verbatim — `ACRONYM - Full Name`. A
-bare acronym (`--conference RSNA`) updates an existing row in place, so you can
-correct a single date with nothing else. `--category` accepts several
-space-separated tags; introducing a tag no existing conference uses prints a
-warning (a typo guard) but still adds it. If the series already exists the command
-updates only the fields you pass — add `--overwrite` to replace the whole row
-instead, clearing anything you omit (so it then needs at least the acronym, name,
-and category). The added row behaves exactly like a discovered one: its website
-becomes the conference-name hyperlink and it gets the per-row "📅 cal" button plus
-inclusion in the subscribable calendar feed.
+`--conference` takes the table's first column verbatim — `ACRONYM - Full Name`.
+A bare acronym (or the `ACRONYM - Full Name` form) that matches a row already in
+the table counts as a match: the command shows that entry and asks you to confirm
+before updating it, so a typo can't silently overwrite an existing series. Pass
+`-y`/`--yes` to skip the prompt (required when running unattended). If the series
+already exists, the command updates only the fields you pass — add `--overwrite`
+to replace the whole row instead, clearing anything you omit.
 
 To load several at once, point `--csv` at a file whose header columns are the same
 column names as the flags — `conference`, `category`, `location`, `reputation`,

@@ -25,11 +25,20 @@ and parentheses for grouping::
     category:radiology NOT cost:*
 
 Date comparisons on date fields accept ``YYYY``, ``YYYY-MM``, or ``YYYY-MM-DD``
-and the operators ``> >= < <= =``::
+and the operators ``> >= < <= =`` (``=>`` / ``=<`` are accepted as typos for
+``>=`` / ``<=``). The operator may follow a colon or attach directly to the
+field::
 
     conference_dates:>=2026-06-01   # conference on/after that date
     abstract_due:<2026              # abstract deadline before 2026
     conference_dates:2026           # conference during 2026
+    abstract_month>=6               # colon optional before a comparison operator
+
+Month fields (``conference_month``, ``abstract_month``, ``paper_month``) accept
+an integer ``1-12`` or a month name / 3-letter abbreviation (case-insensitive)::
+
+    abstract_month:>=June           # abstract deadline in June or later
+    conference_month:nov            # conference in November
 
 Presence test (field is set / not set)::
 
@@ -40,8 +49,8 @@ The query fields mirror the table's column headers exactly: ``conference``,
 ``category``, ``location``, ``reputation``, ``remote``, ``cost``,
 ``abstract_due``, ``paper_due``, ``conference_dates``, ``conference_month``,
 ``abstract_month``, and ``paper_month`` (the month fields are integers 1-12,
-derived from the displayed dates, e.g. ``conference_month:11`` or
-``abstract_month:<=4``). Each date field
+derived from the displayed dates, e.g. ``conference_month:11``,
+``abstract_month:<=April``, or ``abstract_month>=June``). Each date field
 matches the value the column actually shows — the upcoming edition's date,
 falling back to the prior edition's. A handful of legacy names (``name``,
 ``acronym``, ``remote_option``, ``abstract``, ``upcoming``, …) remain accepted
@@ -116,9 +125,9 @@ _FIELD_TYPES = {
     "abstract_due": "date",
     "paper_due": "date",
     "conference_dates": "date",
-    "conference_month": "int: 1-12",
-    "abstract_month": "int: 1-12",
-    "paper_month": "int: 1-12",
+    "conference_month": "int: 1-12 or month name",
+    "abstract_month": "int: 1-12 or month name",
+    "paper_month": "int: 1-12 or month name",
 }
 
 # Columns scanned by a bare (unscoped) keyword. Broader than the public fields so
@@ -203,19 +212,29 @@ Node = Union[Term, NotOp, BoolOp]
 
 # --- Tokenizer --------------------------------------------------------------
 
+# A comparison operator may separate field and value either after a colon
+# (``abstract_month:>=6``) or directly (``abstract_month>=6``). ``=>`` / ``=<``
+# are accepted as common typos for ``>=`` / ``<=``.
+_OP_ALT = r">=|<=|=>|=<|>|<|="
+
 _TOKEN_RE = re.compile(
-    r"""
+    rf"""
       \s+                                         # whitespace (skipped)
     | (?P<lparen>\()
     | (?P<rparen>\))
-    | (?P<field>[A-Za-z_]\w*)\s*:\s*
-      (?P<op>>=|<=|>|<|=)?\s*
-      (?P<val>"[^"]*"|\*|[^\s()]+)                # scoped field:value
+    | (?P<field>[A-Za-z_]\w*)                     # scoped field:value
+      (?: \s*:\s*(?P<colon_op>{_OP_ALT})?         #   field: [op] value
+        | \s*(?P<bare_op>{_OP_ALT})               #   field op value (no colon)
+      )\s*
+      (?P<val>"[^"]*"|\*|[^\s()]+)
     | (?P<quoted>"[^"]*")                         # quoted bare keyword
     | (?P<word>[^\s()":]+)                        # bare word / operator
     """,
     re.VERBOSE,
 )
+
+# Comparison-operator typos normalized to their canonical form.
+_OP_NORMALIZE = {"=>": ">=", "=<": "<="}
 
 _OPERATORS = {"AND", "OR", "NOT"}
 
@@ -242,7 +261,8 @@ def _tokenize(query: str) -> List[_Tok]:
             tokens.append(_Tok("rparen"))
         elif m.group("field"):
             field = _resolve_field(m.group("field"))
-            op = m.group("op")
+            op = m.group("colon_op") or m.group("bare_op")
+            op = _OP_NORMALIZE.get(op, op)
             raw = m.group("val")
             if raw == "*":
                 tokens.append(_Tok("term", Term(field=field, op=None, value="", presence=True)))
@@ -383,12 +403,45 @@ def _compile_date_term(term: Term):
     raise QueryError(f"Unsupported operator: {op}")
 
 
+_MONTH_NAMES = {
+    name: num
+    for num, full in enumerate(
+        (
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        ),
+        start=1,
+    )
+    for name in (full, full[:3])
+}
+
+
+def _parse_month(value: str) -> int:
+    """Parse a month field value: an integer 1-12 or a (abbreviated) month name."""
+    token = value.strip().lower()
+    if token.isdigit():
+        num = int(token)
+        if 1 <= num <= 12:
+            return num
+        raise QueryError(f"Month out of range (1-12): {value!r}")
+    if token in _MONTH_NAMES:
+        return _MONTH_NAMES[token]
+    raise QueryError(f"Invalid month: {value!r} (use 1-12 or a month name)")
+
+
 def _compile_int_term(term: Term):
     expr = getattr(ConferenceRow, _INT_FIELDS[term.field])
-    try:
-        value = int(term.value)
-    except (TypeError, ValueError) as exc:
-        raise QueryError(f"Invalid integer: {term.value!r}") from exc
+    value = _parse_month(term.value)
     op = term.op or "="
     ops = {
         "=": expr == value,

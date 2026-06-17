@@ -45,7 +45,7 @@ def _redact(db_url: str) -> str:
     except Exception:
         return db_url
     if url.password:
-        url = url.set(password="***")
+        url = url.set(password="***")  # nosec  # gitleaks:allow
     return url.render_as_string(hide_password=False)
 
 
