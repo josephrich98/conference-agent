@@ -35,6 +35,7 @@ from conference_agent.database import (
     paper_date_expr,
     seed_conferences,
 )
+from web.nl_query import LLMUnavailable, TranslationError, translate
 from web.search import QueryError, build_filter, field_help
 
 app = FastAPI(title="Conference Agent", description="Curated conference table + calendar sync.")
@@ -48,8 +49,12 @@ _RESULT_COLUMNS = [
     "acronym",
     "name",
     "category",
+    "subcategory",
+    "format",
     "location",
-    "reputation",
+    "size",
+    "attendance",
+    "attendance_year",
     "remote_option",
     "cost",
     "url",
@@ -60,10 +65,12 @@ _RESULT_COLUMNS = [
     "conference_month",
     "upcoming_start_date",
     "upcoming_end_date",
+    "upcoming_registration",
     "prior_abstract_deadline",
     "prior_paper_deadline",
     "prior_start_date",
     "prior_end_date",
+    "prior_registration",
     "notes",
 ]
 
@@ -72,8 +79,11 @@ _SORTABLE = {
     "acronym",
     "name",
     "category",
+    "subcategory",
+    "format",
     "location",
-    "reputation",
+    "size",
+    "attendance",
     "remote_option",
     "upcoming_start_date",
     "upcoming_abstract_deadline",
@@ -188,6 +198,27 @@ def index() -> FileResponse:
 @app.get("/api/fields")
 def api_fields() -> dict:
     return field_help()
+
+
+@app.get("/api/translate")
+def api_translate(
+    q: str = Query("", description="Plain-English description of the conferences to find."),
+):
+    """Translate a natural-language request into a boolean query (local LLM).
+
+    Backed by a free, local Ollama model (see ``web.nl_query``); no API key and
+    no external network call. Returns the compiled boolean ``query`` so the UI
+    can show it, let the user edit it, and run the normal ``/api/search``. The
+    feature is optional: when the model is unavailable this returns 503 and the
+    UI keeps working with the manual boolean box.
+    """
+    try:
+        result = translate(q)
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except TranslationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"query": result.query, "natural_language": result.natural_language, "repaired": result.repaired}
 
 
 @app.get("/api/search")

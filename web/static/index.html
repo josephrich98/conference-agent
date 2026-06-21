@@ -13,7 +13,7 @@
       --muted: #6b7280;
       --accent: #2563eb;
       --accent-weak: #eff4ff;
-      --big: #16a34a;
+      --large: #16a34a;
       --medium: #ea580c;
       --small: #1f2933;
       --date-recent: #dc2626;
@@ -32,8 +32,22 @@
     }
     h1 { font-size: 20px; margin: 0 0 2px; }
     .subtitle { color: var(--muted); font-size: 13px; margin: 0; }
+    .ask-row {
+      padding: 16px 24px 0;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    #nl-query {
+      flex: 1 1 auto;
+      min-width: 260px;
+      padding: 9px 12px;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
     .controls {
-      padding: 12px 24px 16px;
+      padding: 8px 24px 16px;
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
@@ -153,10 +167,10 @@
     .date-recent { color: var(--date-recent); }
     .date-old { color: var(--date-old); }
     .date-soon { color: var(--date-soon); }
-    .tier { font-weight: 600; text-transform: capitalize; }
-    .tier.big { color: var(--big); }
-    .tier.medium { color: var(--medium); }
-    .tier.small { color: var(--small); }
+    .size { font-weight: 600; text-transform: capitalize; }
+    .size.large { color: var(--large); }
+    .size.medium { color: var(--medium); }
+    .size.small { color: var(--small); }
     .muted { color: var(--muted); }
     .cat-tag {
       display: inline-block;
@@ -221,8 +235,13 @@
     <p class="subtitle">Curated conference deadlines and dates. Subscribe to a calendar feed, or add any row to your calendar.</p>
   </header>
 
+  <div class="ask-row">
+    <input id="nl-query" type="text" placeholder='Ask in plain English — e.g.  big virtual radiology conferences with an abstract deadline after June' autocomplete="off" />
+    <button class="primary" id="ask-btn" title="Translate this to a boolean query with a local LLM">✨ Ask</button>
+  </div>
+
   <div class="controls">
-    <input id="query" type="text" placeholder='e.g.  (virtual OR hybrid) AND reputation:big' autocomplete="off" />
+    <input id="query" type="text" placeholder='e.g.  (virtual OR hybrid) AND size:large' autocomplete="off" />
     <button class="primary" id="search-btn">Search</button>
     <div class="columns-menu">
       <button id="columns-btn" title="Choose which columns are visible">Columns ▾</button>
@@ -258,8 +277,9 @@
 
   <div class="syntax">
     Boolean search:
-    <code>category:radiology</code>
-    <code>reputation:big</code>
+    <code>category:medicine</code>
+    <code>subcategory:radiology</code>
+    <code>size:large</code>
     <code>(virtual OR hybrid) AND cost:*</code>
     <code>conference_dates:&gt;=2026-06-01</code>
     <code>NOT abstract_due:*</code>
@@ -284,16 +304,20 @@
     const COLUMNS = [
       { key: "conference", label: "Conference", sort: "acronym" },
       { key: "category", label: "Category", sort: "category" },
+      { key: "subcategory", label: "Subcategory", sort: "subcategory" },
+      { key: "format", label: "Format", sort: "format" },
       { key: "location", label: "Location", sort: "location" },
-      { key: "reputation", label: "Reputation", sort: "reputation" },
+      { key: "size", label: "Size", sort: "size" },
+      { key: "attendance", label: "Attendance", sort: "attendance" },
       { key: "remote_option", label: "Remote", sort: "remote_option" },
       { key: "cost", label: "Cost", sort: null },
-      { key: "abstract_month", label: "Abs. month", sort: "abstract_month" },
+      { key: "abstract_month", label: "Abstract month", sort: "abstract_month" },
       { key: "upcoming_abstract_deadline", label: "Abstract due", sort: "upcoming_abstract_deadline" },
       { key: "paper_month", label: "Paper month", sort: "paper_month" },
       { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
-      { key: "conference_month", label: "Conf. month", sort: "conference_month" },
+      { key: "conference_month", label: "Conference month", sort: "conference_month" },
       { key: "upcoming_dates", label: "Conference dates", sort: "upcoming_start_date" },
+      { key: "registration", label: "Registration", sort: null },
       { key: "cal", label: "Calendar", sort: null },
     ];
 
@@ -405,6 +429,22 @@
       return '<span class="muted">—</span>';
     }
 
+    // Escape free-text values (e.g. researched registration windows) before
+    // inserting them as HTML, since they can contain & or < / >.
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    // Registration is free text: show the upcoming edition's value, falling back
+    // to the prior edition's, else a muted dash.
+    function textOrPrior(upcoming, prior) {
+      const value = upcoming || prior;
+      return value ? escapeHtml(value) : '<span class="muted">—</span>';
+    }
+
     // Some stored URLs are bare domains (e.g. "rsna.org/annual-meeting"); without
     // a scheme the browser treats the href as a relative path and the link 404s.
     // Default to https:// when no scheme is present.
@@ -464,20 +504,43 @@
           : linkText;
         const name = hasAcronym ? `${linked} — ${fullName}` : linked;
 
-        const tier = r.reputation
-          ? `<span class="tier ${r.reputation}">${r.reputation}</span>`
+        const sizeHtml = r.size
+          ? `<span class="size ${r.size}">${r.size}</span>`
           : '<span class="muted">—</span>';
 
+        // Attendance figure with the year it describes in parentheses, e.g.
+        // "45,000 (2025)". The size bucket above is derived from this number.
+        const attendanceHtml = (r.attendance != null)
+          ? `${Number(r.attendance).toLocaleString()}${r.attendance_year ? ` (${r.attendance_year})` : ""}`
+          : '<span class="muted">—</span>';
+
+        // Category (the broad bucket, derived) and subcategory (the specific
+        // field) are both multi-valued; render each as comma-split tags.
         const cats = (r.category || "").split(",").map((s) => s.trim()).filter(Boolean);
         const catHtml = cats.length
           ? cats.map((c) => `<span class="cat-tag">${c}</span>`).join("")
           : '<span class="muted">—</span>';
 
+        const subcats = (r.subcategory || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const subcatHtml = subcats.length
+          ? subcats.map((c) => `<span class="cat-tag">${c}</span>`).join("")
+          : '<span class="muted">—</span>';
+
+        // Submission/presentation formats (abstract, paper, poster, oral),
+        // rendered as tags like the category column.
+        const fmts = (r.format || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const formatHtml = fmts.length
+          ? fmts.map((f) => `<span class="cat-tag">${f}</span>`).join("")
+          : '<span class="muted">—</span>';
+
         tr.innerHTML = `
           <td data-col="conference"><div class="conf-name">${name}</div></td>
           <td data-col="category">${catHtml}</td>
+          <td data-col="subcategory">${subcatHtml}</td>
+          <td data-col="format">${formatHtml}</td>
           <td data-col="location">${r.location || '<span class="muted">—</span>'}</td>
-          <td data-col="reputation">${tier}</td>
+          <td data-col="size">${sizeHtml}</td>
+          <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
           <td data-col="remote_option">${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
           <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month)}</td>
@@ -486,6 +549,7 @@
           <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
+          <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="cal" class="cal-cell">
             <a class="cal-btn" href="/api/calendar.ics?ids=${encodeURIComponent(r.id)}" download="${r.id}.ics" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</a>
           </td>
@@ -513,6 +577,36 @@
         renderRows(rows);
       } catch (e) {
         $("status").textContent = `Request failed: ${e}`;
+      }
+    }
+
+    async function askNl() {
+      const text = $("nl-query").value.trim();
+      if (!text) return;
+      const btn = $("ask-btn");
+      btn.disabled = true;
+      $("status").textContent = "Translating…";
+      try {
+        const resp = await fetch(`/api/translate?${new URLSearchParams({ q: text })}`);
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+          // 503 = local LLM not running; 422 = couldn't form a valid query.
+          $("status").textContent =
+            resp.status === 503
+              ? `Plain-English search needs a local Ollama model running. ${err.detail}`
+              : `Couldn't translate that: ${err.detail}`;
+          return;
+        }
+        const data = await resp.json();
+        // Drop the translated query into the boolean box so it's transparent and
+        // editable; a toast confirms it (search() overwrites the status line).
+        $("query").value = data.query;
+        toast(data.query ? `Translated to:  ${data.query}` : "No filters detected — showing everything.", true);
+        search();
+      } catch (e) {
+        $("status").textContent = `Request failed: ${e}`;
+      } finally {
+        btn.disabled = false;
       }
     }
 
@@ -571,11 +665,11 @@
         $("fields-help").innerHTML =
           `<p class="muted" style="margin:0 0 6px">Search fields match the table columns:</p>` +
           `<table>${rows}</table>` +
-          `<p class="muted" style="margin:10px 0 4px">Reputation color coding:</p>` +
+          `<p class="muted" style="margin:10px 0 4px">Size color coding (by annual attendance):</p>` +
           `<table>` +
-            `<tr><td><span class="tier big">big</span></td><td class="muted">most reputable</td></tr>` +
-            `<tr><td><span class="tier medium">medium</span></td><td class="muted">mid-tier</td></tr>` +
-            `<tr><td><span class="tier small">small</span></td><td class="muted">smaller venue</td></tr>` +
+            `<tr><td><span class="size large">large</span></td><td class="muted">1,000+ attendees</td></tr>` +
+            `<tr><td><span class="size medium">medium</span></td><td class="muted">100–999 attendees</td></tr>` +
+            `<tr><td><span class="size small">small</span></td><td class="muted">under 100 attendees</td></tr>` +
           `</table>` +
           `<p class="muted" style="margin:10px 0 4px">Date color coding (relative to today):</p>` +
           `<table>` +
@@ -602,6 +696,8 @@
     });
     $("subscribe-copy").addEventListener("click", copySubscribeUrl);
     $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+    $("ask-btn").addEventListener("click", askNl);
+    $("nl-query").addEventListener("keydown", (e) => { if (e.key === "Enter") askNl(); });
     $("help-toggle").addEventListener("click", () => {
       const h = $("fields-help");
       const showing = h.style.display === "block";

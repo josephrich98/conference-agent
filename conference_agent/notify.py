@@ -57,7 +57,7 @@ def _summarize(conferences: Iterable[Conference]) -> str:
             else "TBA"
         )
         lines.append(
-            f"- {conf.acronym} ({conf.category}): conference {when}, abstract deadline {deadline}"
+            f"- {conf.acronym} ({conf.subcategory}): conference {when}, abstract deadline {deadline}"
         )
     return "\n".join(lines)
 

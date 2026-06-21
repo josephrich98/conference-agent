@@ -6,6 +6,9 @@ Each conference can yield up to three all-day events for its upcoming edition:
 - the upcoming full paper / manuscript deadline
 - the upcoming conference dates (start through end)
 
+(Registration is a free-text field — windows, not a single date — so it yields
+no calendar event.)
+
 The feed is the credential-free path to a user's calendar: they subscribe to a
 URL (Google "Add by URL", Apple/Outlook "Add from URL") or download a one-off
 ``.ics``. There is no OAuth and no API key, and generation is pure Python, so it
@@ -61,7 +64,8 @@ def _edition_events(conf: Conference) -> List[CalEvent]:
 
     Up to three: the abstract deadline, the paper deadline, and the conference
     dates. Only populated upcoming fields produce an event. ``start``/``end`` are
-    inclusive (a single-day deadline has ``start == end``).
+    inclusive (a single-day deadline has ``start == end``). Registration is free
+    text, so it produces no event.
     """
     events: List[CalEvent] = []
     label = f"{conf.acronym} {conf.name}"
@@ -98,6 +102,8 @@ def _edition_events(conf: Conference) -> List[CalEvent]:
                 f"{label} conference dates.{url}",
             )
         )
+    # Registration is free text (windows, not a single date), so it yields no
+    # calendar event.
     return events
 
 

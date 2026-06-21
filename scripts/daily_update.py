@@ -1,25 +1,25 @@
 """Incremental refresh of the conference table.
 
-Re-runs discovery for a set of categories, upserts the results (idempotent, so
+Re-runs discovery for a set of subcategories, upserts the results (idempotent, so
 this rolls newly announced editions into the "upcoming" columns), and emails a
 summary. Intended to run on a schedule: a weekly job for flagship fields and a
 monthly job for the rest (see ``.github/workflows/weekly_update.yml`` and
 ``monthly_update.yml``). Requires ``ANTHROPIC_API_KEY``; email requires the
 SMTP_* environment variables.
 
-The category set is chosen by ``--cadence``:
+The subcategory set is chosen by ``--cadence``:
   - ``due``     -> only fields holding a conference due for a per-series
-    auto-check (``refresh.due_categories``); rows in the refreshed fields are
+    auto-check (``refresh.due_subcategories``); rows in the refreshed fields are
     stamped as checked afterward so the two-week interval is honored. This is
     the targeted "auto-check": run it often (e.g. daily) and it spends discovery
     calls only on series whose next edition is plausibly about to be announced.
-  - ``weekly``  -> flagship fields (``config.weekly_categories()``)
-  - ``monthly`` -> everything else (``config.monthly_categories()``)
+  - ``weekly``  -> flagship fields (``config.weekly_subcategories()``)
+  - ``monthly`` -> everything else (``config.monthly_subcategories()``)
   - ``all``     -> every seeded field (default)
-``--category`` overrides the cadence selection entirely.
+``--subcategory`` overrides the cadence selection entirely.
 
 Usage:
-    python scripts/daily_update.py [--cadence due|weekly|monthly|all] [--category radiology] [--no-email]
+    python scripts/daily_update.py [--cadence due|weekly|monthly|all] [--subcategory radiology] [--no-email]
 """
 
 from __future__ import annotations
@@ -29,25 +29,25 @@ import os
 
 from conference_agent.config import (
     DEFAULT_DATABASE_URL,
-    STANDING_CATEGORIES,
-    monthly_categories,
-    weekly_categories,
+    STANDING_SUBCATEGORIES,
+    monthly_subcategories,
+    weekly_subcategories,
 )
-from conference_agent.database import upsert_conferences
+from conference_agent.database import known_attendance_sources, upsert_conferences
 from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS, discover_conferences
 from conference_agent.notify import notify_refresh
-from conference_agent.refresh import due_categories, mark_categories_checked
+from conference_agent.refresh import due_subcategories, mark_subcategories_checked
 
-# Categories are derived from the seed list (``config``), so adding a field's
-# seeds extends the refresh; ``WEEKLY_CATEGORIES`` controls which run weekly. The
-# ``due`` cadence is data-dependent (it inspects the stored rows), so it is
+# Subcategories are derived from the seed list (``config``), so adding a field's
+# seeds extends the refresh; ``WEEKLY_SUBCATEGORIES`` controls which run weekly.
+# The ``due`` cadence is data-dependent (it inspects the stored rows), so it is
 # resolved separately in ``main`` rather than from this static map.
-_CADENCE_CATEGORIES = {
-    "weekly": weekly_categories,
-    "monthly": monthly_categories,
-    "all": lambda: list(STANDING_CATEGORIES),
+_CADENCE_SUBCATEGORIES = {
+    "weekly": weekly_subcategories,
+    "monthly": monthly_subcategories,
+    "all": lambda: list(STANDING_SUBCATEGORIES),
 }
-_CADENCE_CHOICES = sorted([*_CADENCE_CATEGORIES, "due"])
+_CADENCE_CHOICES = sorted([*_CADENCE_SUBCATEGORIES, "due"])
 
 
 def main() -> None:
@@ -60,9 +60,9 @@ def main() -> None:
         "(flagship), monthly (rest), or all.",
     )
     parser.add_argument(
-        "--category",
+        "--subcategory",
         action="append",
-        help="Override the cadence selection with explicit categories (repeatable).",
+        help="Override the cadence selection with explicit subcategories (repeatable).",
     )
     parser.add_argument(
         "--db",
@@ -79,37 +79,40 @@ def main() -> None:
     parser.add_argument("--no-email", action="store_true", help="Do not send a summary email")
     args = parser.parse_args()
 
-    if args.category:
-        categories = args.category
+    if args.subcategory:
+        subcategories = args.subcategory
     elif args.cadence == "due":
-        categories = due_categories(args.db)
+        subcategories = due_subcategories(args.db)
     else:
-        categories = _CADENCE_CATEGORIES[args.cadence]()
-    if not categories:
+        subcategories = _CADENCE_SUBCATEGORIES[args.cadence]()
+    if not subcategories:
         if args.cadence == "due":
             print("No conferences are due for an auto-check.")
         else:
-            print(f"No categories to refresh for cadence '{args.cadence}'.")
+            print(f"No subcategories to refresh for cadence '{args.cadence}'.")
         return
-    print(f"Refreshing {len(categories)} categor(ies) [{args.cadence}]: {', '.join(categories)}")
+    print(f"Refreshing {len(subcategories)} subcategor(ies) [{args.cadence}]: {', '.join(subcategories)}")
     os.makedirs("data", exist_ok=True)
 
     total = 0
     all_conferences = []
-    for category in categories:
-        conferences = discover_conferences(categories=[category], backend=args.backend)
+    for subcategory in subcategories:
+        hints = known_attendance_sources(db_url=args.db, subcategories=[subcategory])
+        conferences = discover_conferences(
+            subcategories=[subcategory], backend=args.backend, attendance_hints=hints
+        )
         written = upsert_conferences(conferences, db_url=args.db)
         all_conferences.extend(conferences)
         total += written
-        print(f"{category}: upserted {written} conference(s)")
+        print(f"{subcategory}: upserted {written} conference(s)")
 
     print(f"Done. Upserted {total} conference(s) into {args.db}")
 
     # For the auto-check cadence, record that every row in the refreshed fields
     # was just covered, so the two-week interval gates the next run. (Whether a
     # given row was "updated" is decided at selection time on the next run.)
-    if args.cadence == "due" and not args.category:
-        stamped = mark_categories_checked(categories, db_url=args.db)
+    if args.cadence == "due" and not args.subcategory:
+        stamped = mark_subcategories_checked(subcategories, db_url=args.db)
         print(f"Marked {stamped} row(s) as checked.")
 
     if not args.no_email:

@@ -3,9 +3,8 @@
 Use this to reconcile the deployment with a known-good local table: it reads all
 rows from ``--source`` and upserts them into ``--target`` keyed on the conference
 acronym, so the target ends up matching the source. Because it goes through
-:func:`database.upsert_conferences`, the house reputation floor and the curated
-url/category floors are reapplied on write -- so a flagship like ECCV lands as
-``big`` regardless of what the target held before.
+:func:`database.upsert_conferences`, the curated url/category floors are reapplied
+on write, and each row's ``size`` is recomputed from its attendance figure.
 
 Idempotent and safe to re-run. Nothing is deleted: rows present only in the
 target are left untouched (the source is treated as authoritative for the rows it

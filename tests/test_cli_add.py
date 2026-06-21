@@ -30,13 +30,15 @@ def test_add_new_conference_via_flags(tmp_path):
             "add",
             "--conference",
             "ZZT - Test Imaging Conference",
-            "--category",
+            "--subcategory",
             "radiology",
             "machine learning",
             "--location",
             "Chicago, IL",
-            "--reputation",
-            "big",
+            "--attendance",
+            "45000",
+            "--attendance-year",
+            "2025",
             "--remote-option",
             "hybrid",
             "--cost",
@@ -56,9 +58,11 @@ def test_add_new_conference_via_flags(tmp_path):
     conf = _by_id(url)["ZZT"]
     assert conf.acronym == "ZZT"
     assert conf.name == "Test Imaging Conference"
-    assert conf.categories == ["radiology", "machine learning"]
+    assert conf.subcategories == ["radiology", "machine learning"]
     assert conf.location == "Chicago, IL"
-    assert conf.reputation.value == "big"
+    assert conf.attendance == 45000
+    assert conf.attendance_year == 2025
+    assert conf.size.value == "large"  # derived from attendance
     assert conf.remote_option.value == "hybrid"
     assert conf.cost == "$500"
     assert conf.url == "example.org/zzt"
@@ -72,10 +76,56 @@ def test_add_new_conference_via_flags(tmp_path):
     assert conf.conference_month == 11
 
 
+def test_add_formats_via_flag(tmp_path):
+    url = _db_url(tmp_path)
+    code = main(
+        [
+            "--db",
+            url,
+            "add",
+            "--conference",
+            "ZZT - Test Imaging Conference",
+            "--subcategory",
+            "radiology",
+            "--format",
+            "abstract",
+            "poster",
+            "oral",
+        ]
+    )
+    assert code == 0
+    # Stored in the canonical abstract/paper/poster/oral order.
+    assert _by_id(url)["ZZT"].formats == ["abstract", "poster", "oral"]
+
+
+def test_add_rejects_invalid_format_value(tmp_path):
+    url = _db_url(tmp_path)
+    # argparse `choices` rejects an out-of-vocabulary format before any write.
+    try:
+        main(["--db", url, "add", "--conference", "ZZT - X", "--subcategory", "y", "--format", "keynote"])
+        raised = False
+    except SystemExit as exc:
+        raised = exc.code != 0
+    assert raised
+
+
+def test_add_formats_from_csv_column(tmp_path):
+    url = _db_url(tmp_path)
+    csv_path = tmp_path / "confs.csv"
+    csv_path.write_text(
+        "conference,category,format\n"
+        'ZZT - Test Imaging Conference,radiology,"poster, oral"\n',
+        encoding="utf-8",
+    )
+    code = main(["--db", url, "add", "--csv", str(csv_path)])
+    assert code == 0
+    assert _by_id(url)["ZZT"].formats == ["poster", "oral"]
+
+
 def test_conference_dates_accepts_single_start(tmp_path):
     url = _db_url(tmp_path)
     code = main(
-        ["--db", url, "add", "--conference", "ZZT - T", "--category", "radiology", "--conference-dates", "2026-11-29"]
+        ["--db", url, "add", "--conference", "ZZT - T", "--subcategory", "radiology", "--conference-dates", "2026-11-29"]
     )
     assert code == 0
     conf = _by_id(url)["ZZT"]
@@ -92,7 +142,7 @@ def test_conference_dates_rejects_more_than_two(tmp_path, capsys):
             "add",
             "--conference",
             "ZZT - T",
-            "--category",
+            "--subcategory",
             "radiology",
             "--conference-dates",
             "2026-11-29",
@@ -113,7 +163,7 @@ def test_bare_acronym_updates_existing_and_preserves_fields(tmp_path):
             "add",
             "--conference",
             "ZZT - Test Imaging Conference",
-            "--category",
+            "--subcategory",
             "radiology",
             "--conference-dates",
             "2026-11-29",
@@ -125,14 +175,14 @@ def test_bare_acronym_updates_existing_and_preserves_fields(tmp_path):
     assert code == 0
     conf = _by_id(url)["ZZT"]
     assert conf.name == "Test Imaging Conference"
-    assert conf.categories == ["radiology"]
+    assert conf.subcategories == ["radiology"]
     assert conf.upcoming_start_date == date(2026, 11, 29)
     assert conf.upcoming_abstract_deadline == date(2026, 4, 8)
 
 
 def test_conference_accepts_em_dash_separator(tmp_path):
     url = _db_url(tmp_path)
-    code = main(["--db", url, "add", "--conference", "ZZT — Test Imaging Conference", "--category", "radiology"])
+    code = main(["--db", url, "add", "--conference", "ZZT — Test Imaging Conference", "--subcategory", "radiology"])
     assert code == 0
     assert _by_id(url)["ZZT"].name == "Test Imaging Conference"
 
@@ -146,22 +196,23 @@ def test_add_overwrite_clears_unsupplied_fields(tmp_path):
             "add",
             "--conference",
             "ZZT - Test Imaging Conference",
-            "--category",
+            "--subcategory",
             "radiology",
-            "--reputation",
-            "big",
+            "--attendance",
+            "45000",
             "--conference-dates",
             "2026-11-29",
         ]
     )
     code = main(
-        ["--db", url, "add", "--yes", "--overwrite", "--conference", "ZZT - Test Imaging Conference", "--category", "radiology"]
+        ["--db", url, "add", "--yes", "--overwrite", "--conference", "ZZT - Test Imaging Conference", "--subcategory", "radiology"]
     )
     assert code == 0
     conf = _by_id(url)["ZZT"]
     assert conf.name == "Test Imaging Conference"
-    # Fields not supplied to --overwrite are cleared.
-    assert conf.reputation is None
+    # Fields not supplied to --overwrite are cleared (and size follows attendance).
+    assert conf.attendance is None
+    assert conf.size is None
     assert conf.upcoming_start_date is None
 
 
@@ -170,9 +221,9 @@ def test_add_from_csv_inserts_multiple_rows(tmp_path):
     csv_path = tmp_path / "confs.csv"
     # Column names are the stored fields, so the web table's CSV export round-trips.
     csv_path.write_text(
-        "acronym,name,category,upcoming_start_date,reputation,remote_option\n"
-        "AAA,Conf A,radiology,2026-05-12,medium,in-person\n"
-        "BBB,Conf B,genomics,2026-09-23,big,hybrid\n",
+        "acronym,name,category,upcoming_start_date,attendance,remote_option\n"
+        "AAA,Conf A,radiology,2026-05-12,500,in-person\n"
+        "BBB,Conf B,genomics,2026-09-23,12000,hybrid\n",
         encoding="utf-8",
     )
     code = main(["--db", url, "add", "--csv", str(csv_path)])
@@ -180,7 +231,9 @@ def test_add_from_csv_inserts_multiple_rows(tmp_path):
     stored = _by_id(url)
     assert set(stored) == {"AAA", "BBB"}
     assert stored["AAA"].upcoming_start_date == date(2026, 5, 12)
-    assert stored["BBB"].reputation.value == "big"
+    assert stored["AAA"].size.value == "medium"  # 500 attendees
+    assert stored["BBB"].attendance == 12000
+    assert stored["BBB"].size.value == "large"  # 12000 attendees
     assert stored["BBB"].remote_option.value == "hybrid"
 
 
@@ -190,16 +243,16 @@ def test_add_from_csv_with_table_facing_columns(tmp_path):
     # The CSV header uses the same friendly column names as the flags: a
     # "conference" column (ACRONYM - Name) and a space-separated "conference_dates".
     csv_path.write_text(
-        "conference,category,reputation,remote_option,abstract_due,conference_dates\n"
-        'ZZT - Test Imaging Conference,"radiology, machine learning",big,hybrid,2026-04-08,2026-11-29 2026-12-03\n',
+        "conference,category,attendance,remote_option,abstract_due,conference_dates\n"
+        'ZZT - Test Imaging Conference,"radiology, machine learning",12000,hybrid,2026-04-08,2026-11-29 2026-12-03\n',
         encoding="utf-8",
     )
     code = main(["--db", url, "add", "--csv", str(csv_path)])
     assert code == 0
     conf = _by_id(url)["ZZT"]
     assert conf.name == "Test Imaging Conference"
-    assert conf.categories == ["radiology", "machine learning"]
-    assert conf.reputation.value == "big"
+    assert conf.subcategories == ["radiology", "machine learning"]
+    assert conf.size.value == "large"  # derived from 12000 attendees
     assert conf.upcoming_abstract_deadline == date(2026, 4, 8)
     assert conf.upcoming_start_date == date(2026, 11, 29)
     assert conf.upcoming_end_date == date(2026, 12, 3)
@@ -216,7 +269,7 @@ def test_add_csv_row_without_identity_errors(tmp_path, capsys):
 
 def test_add_requires_conference_without_csv(tmp_path, capsys):
     url = _db_url(tmp_path)
-    code = main(["--db", url, "add", "--category", "radiology"])
+    code = main(["--db", url, "add", "--subcategory", "radiology"])
     assert code == 1
     assert "--conference is required" in capsys.readouterr().err
 
@@ -227,12 +280,12 @@ def test_add_new_without_name_is_not_inserted(tmp_path, capsys):
     code = main(["--db", url, "add", "--conference", "GHOST", "--conference-dates", "2027-01-01"])
     assert code == 0
     assert _by_id(url) == {}
-    assert "require at least name and category" in capsys.readouterr().err
+    assert "require at least name and a subcategory" in capsys.readouterr().err
 
 
 def test_add_overwrite_without_name_errors(tmp_path, capsys):
     url = _db_url(tmp_path)
-    code = main(["--db", url, "add", "--overwrite", "--conference", "ZZT", "--category", "radiology"])
+    code = main(["--db", url, "add", "--overwrite", "--conference", "ZZT", "--subcategory", "radiology"])
     assert code == 1
     assert "cannot build conference" in capsys.readouterr().err
     assert _by_id(url) == {}
@@ -240,24 +293,24 @@ def test_add_overwrite_without_name_errors(tmp_path, capsys):
 
 def test_add_rejects_invalid_enum_value(tmp_path):
     url = _db_url(tmp_path)
-    # argparse `choices` rejects an out-of-vocabulary reputation before any write.
+    # argparse `choices` rejects an out-of-vocabulary remote option before any write.
     try:
-        main(["--db", url, "add", "--conference", "ZZT - X", "--category", "y", "--reputation", "huge"])
+        main(["--db", url, "add", "--conference", "ZZT - X", "--subcategory", "y", "--remote-option", "telepathic"])
         raised = False
     except SystemExit as exc:
         raised = exc.code != 0
     assert raised
 
 
-def test_add_warns_on_new_category_but_still_writes(tmp_path, capsys):
+def test_add_warns_on_new_subcategory_but_still_writes(tmp_path, capsys):
     url = _db_url(tmp_path)
-    code = main(["--db", url, "add", "--conference", "ZZT - Test", "--category", "radiology", "quantum imaging"])
+    code = main(["--db", url, "add", "--conference", "ZZT - Test", "--subcategory", "radiology", "quantum imaging"])
     assert code == 0
     err = capsys.readouterr().err
-    # The unfamiliar tag is flagged; the known seed category is not.
+    # The unfamiliar tag is flagged; the known seed subcategory is not.
     assert "quantum imaging" in err
     assert "radiology" not in err
-    assert _by_id(url)["ZZT"].categories == ["radiology", "quantum imaging"]
+    assert _by_id(url)["ZZT"].subcategories == ["radiology", "quantum imaging"]
 
 
 def _seed_zzt(url):
@@ -268,7 +321,7 @@ def _seed_zzt(url):
             "add",
             "--conference",
             "ZZT - Test Imaging Conference",
-            "--category",
+            "--subcategory",
             "radiology",
             "--conference-dates",
             "2026-11-29",
@@ -325,6 +378,6 @@ def test_add_new_conference_not_prompted(tmp_path, monkeypatch):
         raise AssertionError("a brand-new conference must not trigger the match prompt")
 
     monkeypatch.setattr("builtins.input", boom)
-    code = main(["--db", url, "add", "--conference", "ZZT - Test Imaging Conference", "--category", "radiology"])
+    code = main(["--db", url, "add", "--conference", "ZZT - Test Imaging Conference", "--subcategory", "radiology"])
     assert code == 0
     assert _by_id(url)["ZZT"].name == "Test Imaging Conference"

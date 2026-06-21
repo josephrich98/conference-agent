@@ -20,18 +20,21 @@ from conference_agent.config import (
     DEFAULT_DATABASE_URL,
 )
 from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS
-from conference_agent.models import ConferenceTier, RemoteOption
+from conference_agent.models import CONFERENCE_FORMATS, RemoteOption
 
 # The `add` flags and the --csv header share one vocabulary: the web table's
 # column names (the only extra is url, the link behind the conference name). Each
 # entry maps a table-facing column to the stored record field. The month columns
 # are derived from the dates by the database, so they are not inputs; conference
-# (acronym + name), category (multi-valued), and conference_dates (start/end pair)
-# are handled separately in _build_record. Raw stored field names appear on the
-# right as their own keys too, so a table "Export CSV" re-imports unchanged.
+# (acronym + name), subcategory (multi-valued), and conference_dates (start/end
+# pair) are handled separately in _build_record. Raw stored field names appear on
+# the right as their own keys too, so a table "Export CSV" re-imports unchanged.
 _COLUMN_TO_FIELD = {
     "location": "location",
-    "reputation": "reputation",
+    "size": "size",  # accepted from a CSV export but ignored on write (derived)
+    "attendance": "attendance",
+    "attendance_year": "attendance_year",
+    "attendance_source": "attendance_source",
     "remote": "remote_option",
     "remote_option": "remote_option",
     "cost": "cost",
@@ -40,14 +43,17 @@ _COLUMN_TO_FIELD = {
     "name": "name",
     "abstract_due": "upcoming_abstract_deadline",
     "paper_due": "upcoming_paper_deadline",
+    "registration": "upcoming_registration",
     "upcoming_abstract_deadline": "upcoming_abstract_deadline",
     "upcoming_paper_deadline": "upcoming_paper_deadline",
     "upcoming_start_date": "upcoming_start_date",
     "upcoming_end_date": "upcoming_end_date",
+    "upcoming_registration": "upcoming_registration",
     "prior_abstract_deadline": "prior_abstract_deadline",
     "prior_paper_deadline": "prior_paper_deadline",
     "prior_start_date": "prior_start_date",
     "prior_end_date": "prior_end_date",
+    "prior_registration": "prior_registration",
 }
 
 # The table's "Conference" column reads "ACRONYM — Name"; --conference (and the
@@ -69,11 +75,14 @@ def _build_record(fields: dict) -> dict:
     """Build a storage record from table-facing column/flag values.
 
     ``fields`` maps the table's column names -- the vocabulary shared by the flags
-    and the ``--csv`` header (conference, category, location, reputation,
-    remote/remote_option, cost, abstract_due, paper_due, conference_dates, url,
-    notes) -- to their (string or list) values. The raw stored field names are
-    accepted as aliases too, so a table CSV export round-trips. Returns a dict
-    keyed by stored field names, suitable for ``merge_records`` / ``Conference``.
+    and the ``--csv`` header (conference, subcategory, location, attendance,
+    attendance_year, attendance_source, remote/remote_option, cost, abstract_due,
+    paper_due, conference_dates, registration, url, notes) -- to their (string or
+    list) values.
+    The raw stored field names are accepted as aliases too, so a table CSV export
+    round-trips (the derived ``size`` and ``category`` columns are accepted but
+    ignored on write). Returns a dict keyed by stored field names, suitable for
+    ``merge_records`` / ``Conference``.
     """
     record: dict = {}
     # Identity: the "conference" column is "ACRONYM - Name"; explicit acronym / id
@@ -93,8 +102,26 @@ def _build_record(fields: dict) -> dict:
         if value not in (None, ""):
             record[field] = value
 
-    if fields.get("category") not in (None, "", []):
-        record["category"] = fields["category"]
+    # Subcategory (the granular tag column): a list (flags) or a delimited cell
+    # (csv). Accepts "subcategory"/"subcategories", and the legacy "category"
+    # column as an alias so older exports still ingest. The broad "category" column
+    # of a current export is derived, so it is ignored here (subcategory wins).
+    subcategory = fields.get("subcategory")
+    if subcategory in (None, "", []):
+        subcategory = fields.get("subcategories")
+    if subcategory in (None, "", []):
+        subcategory = fields.get("category")  # legacy export column
+    if subcategory not in (None, "", []):
+        record["subcategory"] = subcategory
+
+    # Formats (abstract/paper/poster/oral): a list (flags) or a delimited cell
+    # (csv). Accepts the singular "format" or plural "formats" column; normalized
+    # downstream. Mirrors subcategory -- multi-valued, handled separately here.
+    formats = fields.get("format")
+    if formats in (None, "", []):
+        formats = fields.get("formats")
+    if formats not in (None, "", []):
+        record["format"] = formats
 
     # conference_dates is the upcoming START [END] pair: a list (flags) or a
     # whitespace-separated cell (csv), mirroring the table's single dates column.
@@ -120,7 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_discover = sub.add_parser("discover", help="Discover conferences and store them")
     p_discover.add_argument(
-        "--category", action="append", help="Category to search, e.g. radiology (repeatable)"
+        "--subcategory",
+        action="append",
+        help="Subcategory (specific field) to search, e.g. radiology (repeatable)",
     )
     p_discover.add_argument(
         "--backend",
@@ -159,9 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument(
         "--csv",
         help="CSV file whose header columns are field names (acronym or id, name, "
-        "category, location, reputation, remote_option, cost, url, the upcoming_*/"
-        "prior_* date columns, notes). The web table's 'Export CSV' is a valid "
-        "input. Each row is one conference.",
+        "subcategory, location, attendance, attendance_year, attendance_source, "
+        "remote_option, cost, url, the upcoming_*/prior_* date columns, notes). The "
+        "web table's 'Export CSV' is a valid input (the derived 'size' and "
+        "'category' columns are ignored on write). Each row is one conference.",
     )
     p_add.add_argument(
         "--conference",
@@ -172,17 +202,39 @@ def build_parser() -> argparse.ArgumentParser:
         "Required unless --csv.",
     )
     p_add.add_argument(
-        "--category",
+        "--subcategory",
         nargs="+",
         metavar="TAG",
-        help="One or more category tags, space-separated, e.g. "
-        "--category radiology 'machine learning'",
+        help="One or more subcategory (specific-field) tags, space-separated, e.g. "
+        "--subcategory radiology 'machine learning'. The broad Category column is "
+        "derived from these automatically.",
+    )
+    p_add.add_argument(
+        "--format",
+        nargs="+",
+        choices=list(CONFERENCE_FORMATS),
+        metavar="FORMAT",
+        help="One or more submission/presentation formats the conference offers, "
+        "space-separated: any of abstract, paper, poster, oral "
+        "(e.g. --format abstract poster oral)",
     )
     p_add.add_argument("--location", help="Host city / venue")
     p_add.add_argument(
-        "--reputation",
-        choices=[t.value for t in ConferenceTier],
-        help="Reputability tier: big / medium / small",
+        "--attendance",
+        type=int,
+        metavar="N",
+        help="Typical annual attendee count, e.g. 45000 (the Size column is derived "
+        "from this automatically).",
+    )
+    p_add.add_argument(
+        "--attendance-year",
+        type=int,
+        metavar="YYYY",
+        help="Year the attendance figure describes, e.g. 2025",
+    )
+    p_add.add_argument(
+        "--attendance-source",
+        help="Source URL the attendance figure was taken from (stored for provenance)",
     )
     p_add.add_argument(
         "--remote-option",
@@ -202,12 +254,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="YYYY-MM-DD",
         help="Upcoming conference date(s): START [END]",
     )
+    p_add.add_argument(
+        "--registration",
+        metavar="TEXT",
+        help="Upcoming registration info, free text (e.g. 'Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference')",
+    )
     p_add.add_argument("--url", help="Official conference website (the conference-name link)")
     p_add.add_argument(
         "--overwrite",
         action="store_true",
         help="Replace the entire row instead of merging: fields you do not supply "
-        "are cleared (requires acronym, name, and category per conference).",
+        "are cleared (requires acronym, name, and a subcategory per conference).",
     )
     p_add.add_argument(
         "-y",
@@ -218,8 +275,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_list = sub.add_parser("list", help="Print the stored conference table")
-    p_list.add_argument("--category", help="Filter by category")
-    p_list.add_argument("--reputation", help="Filter by reputation (big/medium/small)")
+    p_list.add_argument("--category", help="Filter by broad category (e.g. medicine)")
+    p_list.add_argument("--subcategory", help="Filter by subcategory (e.g. radiology)")
+    p_list.add_argument("--size", help="Filter by size (large/medium/small)")
 
     p_serve = sub.add_parser("serve", help="Launch the web table interface")
     p_serve.add_argument("--host", default="127.0.0.1")
@@ -231,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _cmd_discover(args) -> int:
     import os
 
-    from conference_agent.database import upsert_conferences
+    from conference_agent.database import known_attendance_sources, upsert_conferences
     from conference_agent.discover import discover_conferences
 
     if args.backend == "api" and not os.environ.get(ANTHROPIC_API_KEY_ENV):
@@ -241,8 +299,11 @@ def _cmd_discover(args) -> int:
         )
         return 1
 
+    # Feed prior attendance sources back in so a refresh re-checks them first.
+    hints = known_attendance_sources(db_url=args.db, subcategories=args.subcategory)
     conferences = discover_conferences(
-        categories=args.category, backend=args.backend, model=args.model
+        subcategories=args.subcategory, backend=args.backend, model=args.model,
+        attendance_hints=hints,
     )
     written = upsert_conferences(conferences, db_url=args.db)
     print(f"Discovered and stored {written} conference(s).")
@@ -288,14 +349,18 @@ def _load_add_records(args) -> list[dict]:
         raise ValueError("--conference is required when not using --csv.")
     fields = {
         "conference": args.conference,
-        "category": args.category,
+        "subcategory": args.subcategory,
+        "format": args.format,
         "location": args.location,
-        "reputation": args.reputation,
+        "attendance": args.attendance,
+        "attendance_year": args.attendance_year,
+        "attendance_source": args.attendance_source,
         "remote_option": args.remote_option,
         "cost": args.cost,
         "abstract_due": args.abstract_due,
         "paper_due": args.paper_due,
         "conference_dates": args.conference_dates,
+        "registration": args.registration,
         "url": args.url,
     }
     record = _build_record({k: v for k, v in fields.items() if v not in (None, "")})
@@ -304,26 +369,26 @@ def _load_add_records(args) -> list[dict]:
     return [record]
 
 
-def _warn_new_categories(records: list[dict], db_url: str) -> None:
-    """Warn (without failing) when a record introduces an unfamiliar category tag.
+def _warn_new_subcategories(records: list[dict], db_url: str) -> None:
+    """Warn (without failing) when a record introduces an unfamiliar subcategory tag.
 
-    Category is the one free-form categorical column, so a typo would silently
+    Subcategory is the one free-form categorical column, so a typo would silently
     create a new tag. Compare each tag against the known vocabulary -- the seed
     taxonomy plus tags already in the table -- and flag any newcomer on stderr.
     """
-    from conference_agent.config import seed_categories
-    from conference_agent.database import distinct_categories
-    from conference_agent.models import normalize_categories
+    from conference_agent.config import seed_subcategories
+    from conference_agent.database import _record_subcategory, distinct_subcategories
+    from conference_agent.models import normalize_subcategories
 
-    known = set(seed_categories()) | distinct_categories(db_url)
+    known = set(seed_subcategories()) | distinct_subcategories(db_url)
     flagged: list[str] = []
     for record in records:
-        for tag in normalize_categories(record.get("category")):
+        for tag in normalize_subcategories(_record_subcategory(record)):
             if tag not in known and tag not in flagged:
                 flagged.append(tag)
     for tag in flagged:
         print(
-            f"Warning: '{tag}' is a new category not used by any existing "
+            f"Warning: '{tag}' is a new subcategory not used by any existing "
             "conference; adding it anyway.",
             file=sys.stderr,
         )
@@ -386,7 +451,7 @@ def _cmd_add(args) -> int:
         print("No conference records to add.", file=sys.stderr)
         return 1
 
-    _warn_new_categories(records, args.db)
+    _warn_new_subcategories(records, args.db)
 
     records = _confirm_existing_matches(records, args.db, args.yes)
     if not records:
@@ -413,14 +478,12 @@ def _cmd_add(args) -> int:
         print(f"Overwrote {written} conference row(s).")
         return 0
 
-    # Manual `add` is a curator action, so the explicit reputation is stored as
-    # given rather than capped by the flagship floor (that floor guards discovery).
-    written = merge_records(records, db_url=args.db, enforce_reputation_floor=False)
+    written = merge_records(records, db_url=args.db)
     print(f"Added/updated {written} conference(s).")
     if written < len(records):
         print(
-            "Note: new conferences require at least name and category; existing "
-            "rows update only the fields you supply.",
+            "Note: new conferences require at least name and a subcategory; "
+            "existing rows update only the fields you supply.",
             file=sys.stderr,
         )
     return 0
@@ -431,7 +494,9 @@ def _cmd_list(args) -> int:
 
     from conference_agent.database import query_conferences
 
-    rows = query_conferences(category=args.category, reputation=args.reputation, db_url=args.db)
+    rows = query_conferences(
+        subcategory=args.subcategory, category=args.category, size=args.size, db_url=args.db
+    )
     if not rows:
         print("No conferences stored. Run `conference-agent discover` first.")
         return 0
@@ -440,7 +505,9 @@ def _cmd_list(args) -> int:
         [
             c.acronym,
             c.category,
-            c.reputation.value if c.reputation else "",
+            c.subcategory,
+            c.size.value if c.size else "",
+            c.attendance_display or "",
             c.upcoming_abstract_deadline or "",
             c.upcoming_start_date or "",
             c.conference_month_name or "",
@@ -448,7 +515,7 @@ def _cmd_list(args) -> int:
         ]
         for c in rows
     ]
-    headers = ["Acronym", "Category", "Tier", "Abstract due", "Upcoming", "Conf. month", "Remote"]
+    headers = ["Acronym", "Category", "Subcategory", "Size", "Attendance", "Abstract due", "Upcoming", "Conf. month", "Remote"]
     print(tabulate(table, headers=headers, tablefmt="github"))
     return 0
 

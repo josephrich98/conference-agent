@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "https://dvkzefjrppdt8.cloudfront.net/$1"
+    }
+  ]
+}

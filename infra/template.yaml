@@ -1,10 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  conference-agent web service: a FastAPI app on AWS Lambda (behind a public
-  Function URL) backed by an RDS PostgreSQL database. The Lambda and the database
+  conference-agent web service: a FastAPI app on AWS Lambda, fronted by a
+  CloudFront distribution (Origin Access Control over an IAM-protected Function
+  URL) and backed by an RDS PostgreSQL database. The Lambda and the database
   share a VPC; by default the database is reachable only from the Lambda's
   security group. Set DbAdminCidr to also reach it from your IP for data loading.
+  Set DomainName + AcmCertificateArn to serve on a custom domain.
 
 Parameters:
   DBName:
@@ -43,9 +45,26 @@ Parameters:
       Optional. A CIDR (e.g. 203.0.113.4/32) allowed to reach the database on
       5432 for loading data from your laptop. Leave empty to keep the database
       private to the Lambda. When set, the instance is made publicly accessible.
+  DomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. A custom domain for the site (e.g. conferences.example.com).
+      Leave empty to serve on the default CloudFront *.cloudfront.net URL. When
+      set, you must also provide AcmCertificateArn (an ACM cert in us-east-1
+      covering this name) and point the name's DNS at the CloudFront domain.
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    # Empty (no custom domain) or a us-east-1 ACM certificate ARN.
+    AllowedPattern: '^$|^arn:aws[a-zA-Z-]*:acm:[a-z0-9-]+:\d{12}:certificate/.+$'
+    Description: >
+      Optional. ARN of an ACM certificate (must be in us-east-1, CloudFront's
+      region) covering DomainName. Required only when DomainName is set.
 
 Conditions:
   ExposeDb: !Not [!Equals [!Ref DbAdminCidr, ""]]
+  HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
 
 Globals:
   Function:
@@ -135,16 +154,111 @@ Resources:
         SecurityGroupIds:
           - !GetAtt LambdaSecurityGroup.GroupId
         SubnetIds: !Ref SubnetIds
+      # AWS_IAM (not NONE): the Function URL is reachable only by callers that can
+      # sign requests. CloudFront does so via the Origin Access Control below, so
+      # the function can no longer be hit directly at its lambda-url host — all
+      # public traffic comes through the CloudFront distribution (and, later, the
+      # custom domain). FunctionUrlCloudFrontPermission grants that one caller.
       FunctionUrlConfig:
-        AuthType: NONE
+        AuthType: AWS_IAM
         Cors:
           AllowOrigins: ["*"]
           AllowMethods: ["GET", "POST"]
 
+  # Lets CloudFront (and only CloudFront, scoped to this distribution) invoke the
+  # IAM-protected Function URL. Pairs with the OAC's SigV4 request signing.
+  FunctionUrlCloudFrontPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ConferenceFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: cloudfront.amazonaws.com
+      FunctionUrlAuthType: AWS_IAM
+      SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # Since October 2025, CloudFront OAC to a Lambda Function URL requires
+  # lambda:InvokeFunction IN ADDITION to lambda:InvokeFunctionUrl above. Without
+  # this second grant, CloudFront's signed origin request is rejected with a 403
+  # AccessDeniedException even though every other piece is configured correctly.
+  FunctionCloudFrontInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ConferenceFunction
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # Origin Access Control: CloudFront signs each origin request (SigV4) as the
+  # "lambda" origin type, satisfying the Function URL's AWS_IAM auth so the URL
+  # need not be public.
+  FunctionUrlOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-func-url-oac"
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} web (FastAPI via Lambda Function URL)"
+        # PriceClass_100 = North America + Europe edges only (cheapest). Bump to
+        # PriceClass_All for global low latency.
+        PriceClass: PriceClass_100
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        # Present only when a custom domain is configured; otherwise the default
+        # *.cloudfront.net name (and its certificate) is used.
+        Aliases: !If [HasCustomDomain, [!Ref DomainName], !Ref "AWS::NoValue"]
+        Origins:
+          - Id: LambdaFunctionUrl
+            # The Function URL's host, stripped of scheme and trailing slash:
+            # https://<id>.lambda-url.<region>.on.aws/ -> <id>.lambda-url...on.aws
+            DomainName: !Select [2, !Split ["/", !GetAtt ConferenceFunctionUrl.FunctionUrl]]
+            OriginAccessControlId: !GetAtt FunctionUrlOAC.Id
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: LambdaFunctionUrl
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          # CachingDisabled: the app is dynamic and sets its own Cache-Control
+          # (the table shell and .ics feed are no-cache, search results vary by
+          # query), so CloudFront should not introduce stale data. Switch to the
+          # managed CachingOptimized policy if you later cache hashed static
+          # assets aggressively.
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          # AllViewerExceptHostHeader: forward everything the viewer sent EXCEPT
+          # Host. The Function URL rejects a mismatched Host, and OAC re-signs
+          # with the origin host, so the viewer Host must be dropped here.
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+
 Outputs:
   WebsiteUrl:
     Description: Public URL of the conference-agent website and REST API.
-    Value: !GetAtt ConferenceFunctionUrl.FunctionUrl
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://${DomainName}/"
+      - !Sub "https://${Distribution.DomainName}/"
+  CloudFrontDomainName:
+    Description: >
+      The CloudFront distribution domain. Point a custom domain's DNS (Route 53
+      alias or a CNAME) at this value, then redeploy with DomainName +
+      AcmCertificateArn set.
+    Value: !GetAtt Distribution.DomainName
   DatabaseEndpoint:
     Description: RDS endpoint host.
     Value: !GetAtt Database.Endpoint.Address

@@ -21,7 +21,7 @@ def _conf(**overrides):
     base = dict(
         acronym="RSNA",
         name="Radiological Society of North America",
-        category="radiology",
+        subcategory="radiology",
         upcoming_abstract_deadline=date(2026, 4, 8),
         upcoming_paper_deadline=date(2026, 9, 1),
         upcoming_start_date=date(2026, 11, 29),
@@ -55,6 +55,14 @@ def test_full_edition_yields_three_events():
     assert "SUMMARY:RSNA — abstract deadline" in ics
     assert "SUMMARY:RSNA — paper deadline" in ics
     assert "SUMMARY:RSNA 2026" in ics
+
+
+def test_registration_text_yields_no_event():
+    # Registration is free text (windows, not a date), so it produces no event:
+    # the feed still has only the three deadline/date events.
+    ics = _ics([_conf(upcoming_registration="Early bird: Jan 5 - Mar 1")])
+    assert ics.count("BEGIN:VEVENT") == 3
+    assert "registration" not in ics.lower()
 
 
 def test_conference_dates_use_exclusive_all_day_end():

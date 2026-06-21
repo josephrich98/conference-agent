@@ -11,16 +11,16 @@ from conference_agent.database import ConferenceRow, upsert_conferences
 from conference_agent.models import Conference
 from conference_agent.refresh import (
     _add_months,
-    due_categories,
+    due_subcategories,
     is_due_for_check,
-    mark_categories_checked,
+    mark_subcategories_checked,
 )
 
 TODAY = date(2026, 6, 17)
 
 
 def _row(**overrides) -> ConferenceRow:
-    base = dict(id="X", acronym="X", name="X", category="radiology")
+    base = dict(id="X", acronym="X", name="X", subcategory="radiology")
     base.update(overrides)
     return ConferenceRow(**base)
 
@@ -88,24 +88,24 @@ def _db_url(tmp_path):
     return f"sqlite:///{tmp_path / 'test.db'}"
 
 
-def test_due_categories_and_marking_round_trip(tmp_path):
+def test_due_subcategories_and_marking_round_trip(tmp_path):
     url = _db_url(tmp_path)
     upsert_conferences(
         [
             # Due: prior edition 8 months ago, no upcoming.
-            Conference(acronym="A", name="A", category="radiology",
+            Conference(acronym="A", name="A", subcategory="radiology",
                        prior_start_date=date(2025, 10, 17)),
             # Updated: future upcoming edition on record.
-            Conference(acronym="B", name="B", category="cardiology",
+            Conference(acronym="B", name="B", subcategory="cardiology",
                        upcoming_start_date=date(2026, 11, 1)),
         ],
         db_url=url,
     )
 
-    assert due_categories(url, TODAY) == ["radiology"]
+    assert due_subcategories(url, TODAY) == ["radiology"]
 
     # Stamping the refreshed field records the check for every row in it, so the
     # series is no longer due until the interval elapses.
-    assert mark_categories_checked(["radiology"], db_url=url, today=TODAY) == 1
-    assert due_categories(url, TODAY) == []
-    assert due_categories(url, TODAY + timedelta(days=14)) == ["radiology"]
+    assert mark_subcategories_checked(["radiology"], db_url=url, today=TODAY) == 1
+    assert due_subcategories(url, TODAY) == []
+    assert due_subcategories(url, TODAY + timedelta(days=14)) == ["radiology"]

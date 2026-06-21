@@ -8,33 +8,44 @@ flagships were chosen and flags the decisions that need your sign-off.
 
 ## How the taxonomy maps to the code
 
-- **Field = one or more lowercase category tags.** A seed's category element is
+- **Two levels: category → subcategory.** Each conference carries one or more
+  granular **subcategory** tags (the specific field) and a broad **category** (one
+  of ten top-level buckets: humanities, social science, medicine, biology,
+  chemistry, physics, math, stats, computer science, artificial intelligence). The
+  category is **derived**, never hand-set: every subcategory maps to exactly one
+  category via `models.SUBCATEGORY_TO_CATEGORY`, and a series' category is the
+  de-duplicated set of its subcategories' buckets (so MICCAI — radiology +
+  machine learning — is `medicine, artificial intelligence`). Editing a
+  subcategory's bucket is one map entry.
+- **Subcategory = one or more lowercase tags.** A seed's subcategory element is
   either a single string (e.g. `cardiology`) or a tuple when a conference spans
   fields (e.g. SPR is `("radiology", "pediatrics")`; MICCAI is `("radiology",
   "machine learning")`; every CSHL meeting carries a `genomics` tag alongside any
-  clinical field). `normalize_categories` flattens either form, and a conference
-  is covered by every field it is tagged with. Subspecialties *within* a single
-  field are not separate tags; they ride inside the parent field's seeds (as
-  radiology does).
+  clinical field). `normalize_subcategories` flattens either form, and a
+  conference is covered by every field it is tagged with. Subspecialties *within*
+  a single field are not separate tags; they ride inside the parent field's seeds
+  (as radiology does).
 - **Coverage is flagship-only.** Each field carries ~2-5 marquee meetings; the
   discovery agent finds the long tail and verifies dates against official sites.
-- **Adding a field = adding its flagship seeds.** `seed_categories()` derives the
-  standing category list from the seed table; `weekly_categories()` /
-  `monthly_categories()` derive the refresh schedule. No second list to maintain.
+- **Adding a field = adding its flagship seeds (+ one map entry).**
+  `seed_subcategories()` derives the standing subcategory list from the seed
+  table; `weekly_subcategories()` / `monthly_subcategories()` derive the refresh
+  schedule. A brand-new subcategory also needs a `SUBCATEGORY_TO_CATEGORY` entry
+  so its category derives (a test enforces this). No second list to maintain.
 
 ## Refresh cadence
 
-Discovery runs **per field** (one web-search pass per category), so cadence is
+Discovery runs **per field** (one web-search pass per subcategory), so cadence is
 set per field, not per conference.
 
-- **Weekly** — flagship, fast-moving fields. Controlled by `WEEKLY_CATEGORIES`:
+- **Weekly** — flagship, fast-moving fields. Controlled by `WEEKLY_SUBCATEGORIES`:
   `radiology`, `cardiology`, `oncology`, `genomics`, `machine learning`.
   Workflow: `.github/workflows/weekly_update.yml` → `daily_update.py --cadence weekly`.
 - **Monthly** — every other field. Workflow:
   `.github/workflows/monthly_update.yml` → `daily_update.py --cadence monthly`.
 
 Weekly and monthly are disjoint and together cover every seeded field. To change
-a field's cadence, move it in/out of `WEEKLY_CATEGORIES` (one edit).
+a field's cadence, move it in/out of `WEEKLY_SUBCATEGORIES` (one edit).
 
 ### Auto-check (per-series, targeted)
 

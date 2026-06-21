@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from conference_agent.models import ConferenceTier, normalize_categories
+from conference_agent.models import normalize_subcategories
 
 # --- Discovery agent -------------------------------------------------------
 
@@ -18,6 +18,20 @@ from conference_agent.models import ConferenceTier, normalize_categories
 ANTHROPIC_MODEL = os.environ.get("CONFERENCE_AGENT_MODEL", "claude-opus-4-8")
 
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
+
+# --- Natural-language search (local LLM) -----------------------------------
+
+# Optional natural-language → boolean-query translation for the web table runs
+# against a free, local Ollama server (https://ollama.com), so it needs no API
+# key and no network egress. The base URL points at Ollama's HTTP API; the model
+# is a small, fast instruction model (e.g. ``llama3.2:3b`` or ``qwen2.5:1.5b``).
+# Both are overridable via the environment. The feature degrades gracefully: when
+# the server is unreachable the web UI still works with the manual boolean box.
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+NL_QUERY_MODEL = os.environ.get("CONFERENCE_NL_QUERY_MODEL", "qwen2.5:1.5b")
+# Seconds to wait on the local model before giving up (small models are fast, but
+# a cold load can take a few seconds).
+NL_QUERY_TIMEOUT = float(os.environ.get("CONFERENCE_NL_QUERY_TIMEOUT", "30"))
 
 # --- Storage ---------------------------------------------------------------
 
@@ -49,311 +63,315 @@ CALENDAR_REMINDER_LEAD_DAYS = (28, 7, 1)
 # ``calendar_sync._alarm_trigger``).
 CALENDAR_REMINDER_HOUR = 9
 
-# --- Reputation policy ------------------------------------------------------
-
-# Only these flagship meetings warrant the "big" tier. Every other conference is
-# capped at "medium" (a model-assigned "big" is demoted); "medium"/"small"
-# assignments are otherwise preserved. Centralized here so the rule is changed in
-# one place and applied deterministically during discovery. Matching is
-# case-insensitive (see ``normalize_reputation``), so entries are uppercase.
-BIG_CONFERENCE_ACRONYMS = {
-    # Radiology / medical imaging (MICCAI is the flagship medical-image-computing venue)
-    "RSNA", "ECR", "MICCAI",
-    # Data science / machine learning
-    "NEURIPS", "ICML", "ICLR", "CVPR", "ICCV", "ECCV",
-    # Genomics / bioinformatics (ISMB is ISCB's flagship meeting)
-    "RECOMB", "ASHG", "ISMB",
-    # Medicine (one or more flagships per specialty)
-    "AAFP", "AAP", "ACP", "CORD", "AAN", "ASA", "ACS", "ASC",
-    "SAGES", "STS", "ACNP", "APA", "PAS", "AAOS", "USCAP", "CAP", "ARVO",
-    "AAO", "ACOG", "AAOHNS", "COSM", "VAM", "ASCO", "AACR", "CNS", "AAD",
-    "AUA",
-    # WARC (Western Anesthesia Residents' Conference) is intentionally excluded:
-    # a regional residents' meeting, capped below the national flagships.
-}
-
-
-def normalize_reputation(
-    acronym: str, tier: "ConferenceTier | None"
-) -> "ConferenceTier | None":
-    """Apply the house reputation policy to a (model- or seed-) assigned tier.
-
-    Flagship conferences (:data:`BIG_CONFERENCE_ACRONYMS`) are always ``big``;
-    any other conference assigned ``big`` is downgraded to ``medium``. Tiers of
-    ``medium``/``small``/``None`` pass through unchanged.
-    """
-    if acronym and acronym.upper() in BIG_CONFERENCE_ACRONYMS:
-        return ConferenceTier.BIG
-    if tier == ConferenceTier.BIG:
-        return ConferenceTier.MEDIUM
-    return tier
-
-
 # --- Seed list -------------------------------------------------------------
 
 # A seed of flagship conferences to bootstrap and sanity-check the discovery
-# agent. The category element is one or more lowercase field tags: either a
+# agent. The subcategory element is one or more lowercase field tags: either a
 # single string (e.g. "radiology") or a tuple when a conference spans fields
 # (e.g. SPR is ("radiology", "pediatrics"); MICCAI is ("radiology", "machine
-# learning")). ``normalize_categories`` flattens either form, so a conference
+# learning")). ``normalize_subcategories`` flattens either form, so a conference
 # tagged with a field is covered by that field's ``discover`` run --
 # ``_seed_checklist`` filters seeds by whether any tag matches the requested
-# category. Subspecialties within a single field are still noted inline rather
-# than given their own tag. Each field carries only its flagship meetings
-# (coverage is "flagship only"); the discovery agent finds the rest and verifies
-# details against official sources.
+# subcategory. The broad ``category`` (one of ``models.CATEGORIES``) is derived
+# from these tags, never seeded directly. Subspecialties within a single field are
+# still noted inline rather than given their own tag. Each field carries only its
+# flagship meetings (coverage is "flagship only"); the discovery agent finds the
+# rest and verifies details against official sources.
 #
-# Adding a new field is just adding its flagship seeds here: ``seed_categories()``
-# below derives the standing category list from this table, so a new field is
-# automatically picked up by the daily refresh.
+# Adding a new field is just adding its flagship seeds here: ``seed_subcategories()``
+# below derives the standing subcategory list from this table, so a new field is
+# automatically picked up by the daily refresh. A brand-new subcategory must also
+# be mapped in ``models.SUBCATEGORY_TO_CATEGORY`` so its category derives.
 #
-# Reputation tiers are illustrative starting points, not authoritative;
-# ``normalize_reputation`` caps non-flagship meetings at "medium". The designated
-# "big" meetings span every domain (see ``BIG_CONFERENCE_ACRONYMS``); remaining
-# seeds are "medium" until designated as their field's apex meeting.
-# (acronym, full name, category, reputation)
+# A seed carries only identity and classification -- no size. Size is derived from
+# a sourced attendance figure (see ``models.size_for_attendance``), which is a
+# discovered fact like dates, links, and cost; discovery fills it in, and a row's
+# size stays blank until then.
+# (acronym, full name, subcategory)
 SEED_CONFERENCES = [
     # --- Radiology ---------------------------------------------------------
     # General / cross-subspecialty
-    ("RSNA", "Radiological Society of North America Annual Meeting", "radiology", ConferenceTier.BIG),
-    ("ECR", "European Congress of Radiology", "radiology", ConferenceTier.BIG),
-    ("ARRS", "American Roentgen Ray Society Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("ACR", "American College of Radiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("AAR", "Association of Academic Radiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("CAR", "Canadian Association of Radiologists Annual Scientific Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("RANZCR", "Royal Australian and New Zealand College of Radiologists Annual Scientific Meeting", "radiology", ConferenceTier.MEDIUM),
+    ("RSNA", "Radiological Society of North America Annual Meeting", "radiology"),
+    ("ECR", "European Congress of Radiology", "radiology"),
+    ("ARRS", "American Roentgen Ray Society Annual Meeting", "radiology"),
+    ("ACR", "American College of Radiology Annual Meeting", "radiology"),
+    ("AAR", "Association of Academic Radiology Annual Meeting", "radiology"),
+    ("CAR", "Canadian Association of Radiologists Annual Scientific Meeting", "radiology"),
+    ("RANZCR", "Royal Australian and New Zealand College of Radiologists Annual Scientific Meeting", "radiology"),
     # Subspecialty societies
-    ("SPR", "Society for Pediatric Radiology Annual Meeting", ("radiology", "pediatrics"), ConferenceTier.MEDIUM),
-    ("ASNR", "American Society of Neuroradiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("ASHNR", "American Society of Head and Neck Radiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("SIR", "Society of Interventional Radiology Annual Scientific Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("SAR", "Society of Abdominal Radiology Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("SBI", "Society of Breast Imaging Annual Symposium", "radiology", ConferenceTier.MEDIUM),
-    ("ISS", "International Skeletal Society Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("SNMMI", "Society of Nuclear Medicine and Molecular Imaging Annual Meeting", "radiology", ConferenceTier.MEDIUM),
-    ("SIIM", "Society for Imaging Informatics in Medicine Annual Meeting", ("radiology", "machine learning"), ConferenceTier.MEDIUM),
+    ("SPR", "Society for Pediatric Radiology Annual Meeting", ("radiology", "pediatrics")),
+    ("ASNR", "American Society of Neuroradiology Annual Meeting", "radiology"),
+    ("ASHNR", "American Society of Head and Neck Radiology Annual Meeting", "radiology"),
+    ("SIR", "Society of Interventional Radiology Annual Scientific Meeting", "radiology"),
+    ("SAR", "Society of Abdominal Radiology Annual Meeting", "radiology"),
+    ("SBI", "Society of Breast Imaging Annual Symposium", "radiology"),
+    ("ISS", "International Skeletal Society Annual Meeting", "radiology"),
+    ("SNMMI", "Society of Nuclear Medicine and Molecular Imaging Annual Meeting", "radiology"),
+    ("SIIM", "Society for Imaging Informatics in Medicine Annual Meeting", ("radiology", "machine learning")),
     # Medical image computing (technical / proceedings-based, not a clinical
     # society); tagged both radiology and machine learning.
-    ("MICCAI", "Medical Image Computing and Computer Assisted Intervention", ("radiology", "machine learning"), ConferenceTier.BIG),
+    ("MICCAI", "Medical Image Computing and Computer Assisted Intervention", ("radiology", "machine learning")),
 
     # --- Medicine (other specialties) --------------------------------------
     # Flagship conference(s) per specialty. Sourced from Med School Insiders'
     # "Medical Conferences by Specialty" (see SEED_CONFERENCE_SOURCES); the
     # discovery agent finds the rest of each field.
     # Anesthesiology
-    ("ASA", "American Society of Anesthesiologists Annual Meeting", "anesthesiology", ConferenceTier.BIG),
-    ("IARS", "International Anesthesia Research Society Annual Meeting", "anesthesiology", ConferenceTier.MEDIUM),
-    ("ESAIC", "Euroanaesthesia (European Society of Anaesthesiology and Intensive Care)", "anesthesiology", ConferenceTier.MEDIUM),
-    ("WARC", "Western Anesthesia Residents' Conference", "anesthesiology", ConferenceTier.SMALL),
+    ("ASA", "American Society of Anesthesiologists Annual Meeting", "anesthesiology"),
+    ("IARS", "International Anesthesia Research Society Annual Meeting", "anesthesiology"),
+    ("ESAIC", "Euroanaesthesia (European Society of Anaesthesiology and Intensive Care)", "anesthesiology"),
+    ("WARC", "Western Anesthesia Residents' Conference", "anesthesiology"),
     # Cardiology
-    ("ACC", "American College of Cardiology Annual Scientific Session", "cardiology", ConferenceTier.MEDIUM),
-    ("AHA", "American Heart Association Scientific Sessions", "cardiology", ConferenceTier.MEDIUM),
-    ("ESC", "European Society of Cardiology Congress", "cardiology", ConferenceTier.MEDIUM),
-    ("HRS", "Heart Rhythm Society Annual Scientific Sessions", "cardiology", ConferenceTier.MEDIUM),
-    ("TCT", "Transcatheter Cardiovascular Therapeutics", "cardiology", ConferenceTier.MEDIUM),
+    ("ACC", "American College of Cardiology Annual Scientific Session", "cardiology"),
+    ("AHA", "American Heart Association Scientific Sessions", "cardiology"),
+    ("ESC", "European Society of Cardiology Congress", "cardiology"),
+    ("HRS", "Heart Rhythm Society Annual Scientific Sessions", "cardiology"),
+    ("TCT", "Transcatheter Cardiovascular Therapeutics", "cardiology"),
     # Dermatology
-    ("AAD", "American Academy of Dermatology Annual Meeting", "dermatology", ConferenceTier.BIG),
-    ("SID", "Society for Investigative Dermatology Annual Meeting", "dermatology", ConferenceTier.MEDIUM),
-    ("EADV", "European Academy of Dermatology and Venereology Congress", "dermatology", ConferenceTier.MEDIUM),
+    ("AAD", "American Academy of Dermatology Annual Meeting", "dermatology"),
+    ("SID", "Society for Investigative Dermatology Annual Meeting", "dermatology"),
+    ("EADV", "European Academy of Dermatology and Venereology Congress", "dermatology"),
     # Emergency medicine
-    ("ACEP", "American College of Emergency Physicians Scientific Assembly", "emergency medicine", ConferenceTier.MEDIUM),
-    ("SAEM", "Society for Academic Emergency Medicine Annual Meeting", "emergency medicine", ConferenceTier.MEDIUM),
-    ("ICEM", "International Conference on Emergency Medicine", "emergency medicine", ConferenceTier.MEDIUM),
-    ("CORD", "Council of Residency Directors in Emergency Medicine Academic Assembly", "emergency medicine", ConferenceTier.BIG),
+    ("ACEP", "American College of Emergency Physicians Scientific Assembly", "emergency medicine"),
+    ("SAEM", "Society for Academic Emergency Medicine Annual Meeting", "emergency medicine"),
+    ("ICEM", "International Conference on Emergency Medicine", "emergency medicine"),
+    ("CORD", "Council of Residency Directors in Emergency Medicine Academic Assembly", "emergency medicine"),
     # Endocrinology
-    ("ENDO", "Endocrine Society Annual Meeting", "endocrinology", ConferenceTier.MEDIUM),
-    ("ADA", "American Diabetes Association Scientific Sessions", "endocrinology", ConferenceTier.MEDIUM),
-    ("EASD", "European Association for the Study of Diabetes Annual Meeting", "endocrinology", ConferenceTier.MEDIUM),
+    ("ENDO", "Endocrine Society Annual Meeting", "endocrinology"),
+    ("ADA", "American Diabetes Association Scientific Sessions", "endocrinology"),
+    ("EASD", "European Association for the Study of Diabetes Annual Meeting", "endocrinology"),
     # Family medicine
-    ("AAFP", "American Academy of Family Physicians (FMX)", "family medicine", ConferenceTier.BIG),
-    ("STFM", "Society of Teachers of Family Medicine Annual Spring Conference", "family medicine", ConferenceTier.MEDIUM),
-    ("WONCA", "World Organization of Family Doctors World Conference", "family medicine", ConferenceTier.MEDIUM),
+    ("AAFP", "American Academy of Family Physicians (FMX)", "family medicine"),
+    ("STFM", "Society of Teachers of Family Medicine Annual Spring Conference", "family medicine"),
+    ("WONCA", "World Organization of Family Doctors World Conference", "family medicine"),
     # Gastroenterology
-    ("DDW", "Digestive Disease Week", "gastroenterology", ConferenceTier.MEDIUM),
-    ("ACG", "American College of Gastroenterology Annual Scientific Meeting", "gastroenterology", ConferenceTier.MEDIUM),
-    ("UEGW", "United European Gastroenterology Week", "gastroenterology", ConferenceTier.MEDIUM),
-    ("AASLD", "American Association for the Study of Liver Diseases (The Liver Meeting)", "gastroenterology", ConferenceTier.MEDIUM),
-    ("EASL", "European Association for the Study of the Liver (International Liver Congress)", "gastroenterology", ConferenceTier.MEDIUM),
+    ("DDW", "Digestive Disease Week", "gastroenterology"),
+    ("ACG", "American College of Gastroenterology Annual Scientific Meeting", "gastroenterology"),
+    ("UEGW", "United European Gastroenterology Week", "gastroenterology"),
+    ("AASLD", "American Association for the Study of Liver Diseases (The Liver Meeting)", "gastroenterology"),
+    ("EASL", "European Association for the Study of the Liver (International Liver Congress)", "gastroenterology"),
     # Internal medicine
-    ("ACP", "American College of Physicians Internal Medicine Meeting", "internal medicine", ConferenceTier.BIG),
-    ("SHM", "Society of Hospital Medicine Annual Conference", "internal medicine", ConferenceTier.MEDIUM),
-    ("EFIM", "European Federation of Internal Medicine Congress", "internal medicine", ConferenceTier.MEDIUM),
+    ("ACP", "American College of Physicians Internal Medicine Meeting", "internal medicine"),
+    ("SHM", "Society of Hospital Medicine Annual Conference", "internal medicine"),
+    ("EFIM", "European Federation of Internal Medicine Congress", "internal medicine"),
     # Neurology
-    ("AAN", "American Academy of Neurology Annual Meeting", "neurology", ConferenceTier.BIG),
-    ("SfN", "Society for Neuroscience Annual Meeting", "neurology", ConferenceTier.MEDIUM),
-    ("EAN", "European Academy of Neurology Congress", "neurology", ConferenceTier.MEDIUM),
-    ("AES", "American Epilepsy Society Annual Meeting", "neurology", ConferenceTier.MEDIUM),
-    ("ISC", "International Stroke Conference", "neurology", ConferenceTier.MEDIUM),
-    ("MDS", "International Parkinson and Movement Disorder Society Congress", "neurology", ConferenceTier.MEDIUM),
+    ("AAN", "American Academy of Neurology Annual Meeting", "neurology"),
+    ("SfN", "Society for Neuroscience Annual Meeting", "neurology"),
+    ("EAN", "European Academy of Neurology Congress", "neurology"),
+    ("AES", "American Epilepsy Society Annual Meeting", "neurology"),
+    ("ISC", "International Stroke Conference", "neurology"),
+    ("MDS", "International Parkinson and Movement Disorder Society Congress", "neurology"),
     # Obstetrics & gynecology
-    ("ACOG", "American College of Obstetricians and Gynecologists Annual Meeting", "obstetrics and gynecology", ConferenceTier.BIG),
-    ("SMFM", "Society for Maternal-Fetal Medicine Annual Pregnancy Meeting", "obstetrics and gynecology", ConferenceTier.MEDIUM),
-    ("FIGO", "International Federation of Gynecology and Obstetrics World Congress", "obstetrics and gynecology", ConferenceTier.MEDIUM),
+    ("ACOG", "American College of Obstetricians and Gynecologists Annual Meeting", "obstetrics and gynecology"),
+    ("SMFM", "Society for Maternal-Fetal Medicine Annual Pregnancy Meeting", "obstetrics and gynecology"),
+    ("FIGO", "International Federation of Gynecology and Obstetrics World Congress", "obstetrics and gynecology"),
     # Oncology
-    ("ASCO", "American Society of Clinical Oncology Annual Meeting", "oncology", ConferenceTier.BIG),
-    ("ESMO", "European Society for Medical Oncology Congress", "oncology", ConferenceTier.MEDIUM),
-    ("AACR", "American Association for Cancer Research Annual Meeting", "oncology", ConferenceTier.BIG),
-    ("SABCS", "San Antonio Breast Cancer Symposium", "oncology", ConferenceTier.MEDIUM),
-    ("SITC", "Society for Immunotherapy of Cancer Annual Meeting", "oncology", ConferenceTier.MEDIUM),
-    ("SGO", "Society of Gynecologic Oncology Annual Meeting on Women's Cancer", "oncology", ConferenceTier.MEDIUM),
+    ("ASCO", "American Society of Clinical Oncology Annual Meeting", "oncology"),
+    ("ESMO", "European Society for Medical Oncology Congress", "oncology"),
+    ("AACR", "American Association for Cancer Research Annual Meeting", "oncology"),
+    ("SABCS", "San Antonio Breast Cancer Symposium", "oncology"),
+    ("SITC", "Society for Immunotherapy of Cancer Annual Meeting", "oncology"),
+    ("SGO", "Society of Gynecologic Oncology Annual Meeting on Women's Cancer", "oncology"),
     # Ophthalmology
-    ("AAO", "American Academy of Ophthalmology Annual Meeting", "ophthalmology", ConferenceTier.BIG),
-    ("ARVO", "Association for Research in Vision and Ophthalmology Annual Meeting", "ophthalmology", ConferenceTier.BIG),
-    ("ESCRS", "European Society of Cataract and Refractive Surgeons Congress", "ophthalmology", ConferenceTier.MEDIUM),
+    ("AAO", "American Academy of Ophthalmology Annual Meeting", "ophthalmology"),
+    ("ARVO", "Association for Research in Vision and Ophthalmology Annual Meeting", "ophthalmology"),
+    ("ESCRS", "European Society of Cataract and Refractive Surgeons Congress", "ophthalmology"),
     # Orthopedics
-    ("AAOS", "American Academy of Orthopaedic Surgeons Annual Meeting", "orthopedics", ConferenceTier.BIG),
-    ("ORS", "Orthopaedic Research Society Annual Meeting", "orthopedics", ConferenceTier.MEDIUM),
-    ("EFORT", "European Federation of National Associations of Orthopaedics and Traumatology Congress", "orthopedics", ConferenceTier.MEDIUM),
+    ("AAOS", "American Academy of Orthopaedic Surgeons Annual Meeting", "orthopedics"),
+    ("ORS", "Orthopaedic Research Society Annual Meeting", "orthopedics"),
+    ("EFORT", "European Federation of National Associations of Orthopaedics and Traumatology Congress", "orthopedics"),
     # Pediatrics
-    ("AAP", "American Academy of Pediatrics National Conference & Exhibition", "pediatrics", ConferenceTier.BIG),
-    ("PAS", "Pediatric Academic Societies Annual Meeting", "pediatrics", ConferenceTier.BIG),
-    ("EAP", "European Academy of Pediatrics Congress", "pediatrics", ConferenceTier.MEDIUM),
+    ("AAP", "American Academy of Pediatrics National Conference & Exhibition", "pediatrics"),
+    ("PAS", "Pediatric Academic Societies Annual Meeting", "pediatrics"),
+    ("EAP", "European Academy of Pediatrics Congress", "pediatrics"),
     # Psychiatry
-    ("APA", "American Psychiatric Association Annual Meeting", "psychiatry", ConferenceTier.BIG),
-    ("EPA", "European Congress of Psychiatry", "psychiatry", ConferenceTier.MEDIUM),
-    ("ACNP", "American College of Neuropsychopharmacology Annual Meeting", "psychiatry", ConferenceTier.BIG),
+    ("APA", "American Psychiatric Association Annual Meeting", "psychiatry"),
+    ("EPA", "European Congress of Psychiatry", "psychiatry"),
+    ("ACNP", "American College of Neuropsychopharmacology Annual Meeting", "psychiatry"),
     # Pulmonology / critical care
-    ("ATS", "American Thoracic Society International Conference", "pulmonology", ConferenceTier.MEDIUM),
-    ("CHEST", "American College of Chest Physicians Annual Meeting (CHEST)", "pulmonology", ConferenceTier.MEDIUM),
-    ("ERS", "European Respiratory Society International Congress", "pulmonology", ConferenceTier.MEDIUM),
+    ("ATS", "American Thoracic Society International Conference", "pulmonology"),
+    ("CHEST", "American College of Chest Physicians Annual Meeting (CHEST)", "pulmonology"),
+    ("ERS", "European Respiratory Society International Congress", "pulmonology"),
     # Surgery
-    ("ACS", "American College of Surgeons Clinical Congress", "surgery", ConferenceTier.BIG),
-    ("STS", "Society of Thoracic Surgeons Annual Meeting", "surgery", ConferenceTier.BIG),
-    ("VAM", "Vascular Annual Meeting (Society for Vascular Surgery)", "surgery", ConferenceTier.BIG),
-    ("ASC", "Academic Surgical Congress", "surgery", ConferenceTier.BIG),
-    ("SAGES", "Society of American Gastrointestinal and Endoscopic Surgeons Annual Meeting", "surgery", ConferenceTier.BIG),
+    ("ACS", "American College of Surgeons Clinical Congress", "surgery"),
+    ("STS", "Society of Thoracic Surgeons Annual Meeting", "surgery"),
+    ("VAM", "Vascular Annual Meeting (Society for Vascular Surgery)", "surgery"),
+    ("ASC", "Academic Surgical Congress", "surgery"),
+    ("SAGES", "Society of American Gastrointestinal and Endoscopic Surgeons Annual Meeting", "surgery"),
     # Urology
-    ("AUA", "American Urological Association Annual Meeting", "urology", ConferenceTier.BIG),
-    ("EAU", "European Association of Urology Annual Congress", "urology", ConferenceTier.MEDIUM),
+    ("AUA", "American Urological Association Annual Meeting", "urology"),
+    ("EAU", "European Association of Urology Annual Congress", "urology"),
     # Allergy & immunology
-    ("AAAAI", "American Academy of Allergy, Asthma & Immunology Annual Meeting", "allergy and immunology", ConferenceTier.MEDIUM),
-    ("ACAAI", "American College of Allergy, Asthma & Immunology Annual Scientific Meeting", "allergy and immunology", ConferenceTier.MEDIUM),
-    ("EAACI", "European Academy of Allergy and Clinical Immunology Congress", "allergy and immunology", ConferenceTier.MEDIUM),
+    ("AAAAI", "American Academy of Allergy, Asthma & Immunology Annual Meeting", "allergy and immunology"),
+    ("ACAAI", "American College of Allergy, Asthma & Immunology Annual Scientific Meeting", "allergy and immunology"),
+    ("EAACI", "European Academy of Allergy and Clinical Immunology Congress", "allergy and immunology"),
     # Critical care medicine
-    ("SCCM", "Society of Critical Care Medicine Critical Care Congress", "critical care medicine", ConferenceTier.MEDIUM),
-    ("ESICM", "European Society of Intensive Care Medicine Annual Congress (LIVES)", "critical care medicine", ConferenceTier.MEDIUM),
+    ("SCCM", "Society of Critical Care Medicine Critical Care Congress", "critical care medicine"),
+    ("ESICM", "European Society of Intensive Care Medicine Annual Congress (LIVES)", "critical care medicine"),
     # Geriatrics
-    ("AGS", "American Geriatrics Society Annual Scientific Meeting", "geriatrics", ConferenceTier.MEDIUM),
-    ("GSA", "Gerontological Society of America Annual Scientific Meeting", "geriatrics", ConferenceTier.MEDIUM),
-    ("IAGG", "International Association of Gerontology and Geriatrics World Congress", "geriatrics", ConferenceTier.MEDIUM),
+    ("AGS", "American Geriatrics Society Annual Scientific Meeting", "geriatrics"),
+    ("GSA", "Gerontological Society of America Annual Scientific Meeting", "geriatrics"),
+    ("IAGG", "International Association of Gerontology and Geriatrics World Congress", "geriatrics"),
     # Hematology
-    ("ASH", "American Society of Hematology Annual Meeting", "hematology", ConferenceTier.MEDIUM),
-    ("EHA", "European Hematology Association Congress", "hematology", ConferenceTier.MEDIUM),
-    ("ISTH", "International Society on Thrombosis and Haemostasis Congress", "hematology", ConferenceTier.MEDIUM),
+    ("ASH", "American Society of Hematology Annual Meeting", "hematology"),
+    ("EHA", "European Hematology Association Congress", "hematology"),
+    ("ISTH", "International Society on Thrombosis and Haemostasis Congress", "hematology"),
     # Infectious disease
-    ("IDWeek", "IDWeek (Infectious Diseases Society of America and partners)", "infectious disease", ConferenceTier.MEDIUM),
-    ("CROI", "Conference on Retroviruses and Opportunistic Infections", "infectious disease", ConferenceTier.MEDIUM),
-    ("ECCMID", "ESCMID Global (European Congress of Clinical Microbiology & Infectious Diseases)", "infectious disease", ConferenceTier.MEDIUM),
+    ("IDWeek", "IDWeek (Infectious Diseases Society of America and partners)", "infectious disease"),
+    ("CROI", "Conference on Retroviruses and Opportunistic Infections", "infectious disease"),
+    ("ECCMID", "ESCMID Global (European Congress of Clinical Microbiology & Infectious Diseases)", "infectious disease"),
     # Medical physics (imaging-adjacent)
-    ("AAPM", "American Association of Physicists in Medicine Annual Meeting", "medical physics", ConferenceTier.MEDIUM),
+    ("AAPM", "American Association of Physicists in Medicine Annual Meeting", "medical physics"),
     # Nephrology
-    ("ASN", "American Society of Nephrology Kidney Week", "nephrology", ConferenceTier.MEDIUM),
-    ("ERA", "European Renal Association Congress", "nephrology", ConferenceTier.MEDIUM),
-    ("WCN", "World Congress of Nephrology", "nephrology", ConferenceTier.MEDIUM),
+    ("ASN", "American Society of Nephrology Kidney Week", "nephrology"),
+    ("ERA", "European Renal Association Congress", "nephrology"),
+    ("WCN", "World Congress of Nephrology", "nephrology"),
     # Neurosurgery
-    ("AANS", "American Association of Neurological Surgeons Annual Scientific Meeting", "neurosurgery", ConferenceTier.MEDIUM),
-    ("CNS", "Congress of Neurological Surgeons Annual Meeting", "neurosurgery", ConferenceTier.BIG),
-    ("WFNS", "World Federation of Neurosurgical Societies World Congress", "neurosurgery", ConferenceTier.MEDIUM),
+    ("AANS", "American Association of Neurological Surgeons Annual Scientific Meeting", "neurosurgery"),
+    ("CNS", "Congress of Neurological Surgeons Annual Meeting", "neurosurgery"),
+    ("WFNS", "World Federation of Neurosurgical Societies World Congress", "neurosurgery"),
     # Otolaryngology (ENT)
-    ("AAOHNS", "American Academy of Otolaryngology-Head and Neck Surgery Annual Meeting", "otolaryngology", ConferenceTier.BIG),
-    ("COSM", "Combined Otolaryngology Spring Meetings", "otolaryngology", ConferenceTier.BIG),
-    ("IFOS", "International Federation of Otorhinolaryngological Societies World Congress", "otolaryngology", ConferenceTier.MEDIUM),
+    ("AAOHNS", "American Academy of Otolaryngology-Head and Neck Surgery Annual Meeting", "otolaryngology"),
+    ("COSM", "Combined Otolaryngology Spring Meetings", "otolaryngology"),
+    ("IFOS", "International Federation of Otorhinolaryngological Societies World Congress", "otolaryngology"),
     # Palliative care
-    ("AAHPM", "American Academy of Hospice and Palliative Medicine Annual Assembly", "palliative care", ConferenceTier.MEDIUM),
-    ("EAPC", "European Association for Palliative Care World Congress", "palliative care", ConferenceTier.MEDIUM),
+    ("AAHPM", "American Academy of Hospice and Palliative Medicine Annual Assembly", "palliative care"),
+    ("EAPC", "European Association for Palliative Care World Congress", "palliative care"),
     # Pathology
-    ("USCAP", "United States and Canadian Academy of Pathology Annual Meeting", "pathology", ConferenceTier.BIG),
-    ("CAP", "College of American Pathologists Annual Meeting", "pathology", ConferenceTier.BIG),
-    ("ECP", "European Congress of Pathology", "pathology", ConferenceTier.MEDIUM),
+    ("USCAP", "United States and Canadian Academy of Pathology Annual Meeting", "pathology"),
+    ("CAP", "College of American Pathologists Annual Meeting", "pathology"),
+    ("ECP", "European Congress of Pathology", "pathology"),
     # Physical medicine & rehabilitation
-    ("AAPMR", "American Academy of Physical Medicine and Rehabilitation Annual Assembly", "physical medicine and rehabilitation", ConferenceTier.MEDIUM),
-    ("ISPRM", "International Society of Physical and Rehabilitation Medicine World Congress", "physical medicine and rehabilitation", ConferenceTier.MEDIUM),
+    ("AAPMR", "American Academy of Physical Medicine and Rehabilitation Annual Assembly", "physical medicine and rehabilitation"),
+    ("ISPRM", "International Society of Physical and Rehabilitation Medicine World Congress", "physical medicine and rehabilitation"),
     # Plastic surgery
-    ("ASPS", "American Society of Plastic Surgeons (Plastic Surgery The Meeting)", "plastic surgery", ConferenceTier.MEDIUM),
-    ("AAPS", "American Association of Plastic Surgeons Annual Meeting", "plastic surgery", ConferenceTier.MEDIUM),
-    ("IPRAS", "International Confederation for Plastic Reconstructive and Aesthetic Surgery World Congress", "plastic surgery", ConferenceTier.MEDIUM),
+    ("ASPS", "American Society of Plastic Surgeons (Plastic Surgery The Meeting)", "plastic surgery"),
+    ("AAPS", "American Association of Plastic Surgeons Annual Meeting", "plastic surgery"),
+    ("IPRAS", "International Confederation for Plastic Reconstructive and Aesthetic Surgery World Congress", "plastic surgery"),
     # Public health / preventive medicine
-    ("APHA", "American Public Health Association Annual Meeting & Expo", "public health", ConferenceTier.MEDIUM),
+    ("APHA", "American Public Health Association Annual Meeting & Expo", "public health"),
     # Radiation oncology
-    ("ASTRO", "American Society for Radiation Oncology Annual Meeting", "radiation oncology", ConferenceTier.MEDIUM),
-    ("ESTRO", "European Society for Radiotherapy and Oncology Congress", "radiation oncology", ConferenceTier.MEDIUM),
+    ("ASTRO", "American Society for Radiation Oncology Annual Meeting", "radiation oncology"),
+    ("ESTRO", "European Society for Radiotherapy and Oncology Congress", "radiation oncology"),
     # Rheumatology (note: the rheumatology "ACR" collides with American College of
     # Radiology, which already owns the "ACR" id above; a disambiguated id is used.)
-    ("ACR-RHEUM", "American College of Rheumatology Convergence", "rheumatology", ConferenceTier.MEDIUM),
-    ("EULAR", "European Alliance of Associations for Rheumatology Congress", "rheumatology", ConferenceTier.MEDIUM),
+    ("ACR-RHEUM", "American College of Rheumatology Convergence", "rheumatology"),
+    ("EULAR", "European Alliance of Associations for Rheumatology Congress", "rheumatology"),
     # Sports medicine
-    ("AMSSM", "American Medical Society for Sports Medicine Annual Meeting", "sports medicine", ConferenceTier.MEDIUM),
-    ("ACSM", "American College of Sports Medicine Annual Meeting", "sports medicine", ConferenceTier.MEDIUM),
+    ("AMSSM", "American Medical Society for Sports Medicine Annual Meeting", "sports medicine"),
+    ("ACSM", "American College of Sports Medicine Annual Meeting", "sports medicine"),
 
     # --- Genomics / bioinformatics -----------------------------------------
     # Human/medical genetics and computational biology flagships.
-    ("ASHG", "American Society of Human Genetics Annual Meeting", "genomics", ConferenceTier.BIG),
-    ("ESHG", "European Human Genetics Conference", "genomics", ConferenceTier.MEDIUM),
-    ("AGBT", "Advances in Genome Biology and Technology General Meeting", "genomics", ConferenceTier.MEDIUM),
-    ("ACMG", "American College of Medical Genetics and Genomics Annual Clinical Genetics Meeting", "genomics", ConferenceTier.MEDIUM),
-    ("ISMB", "Intelligent Systems for Molecular Biology", "genomics", ConferenceTier.BIG),
-    ("RECOMB", "Research in Computational Molecular Biology", "genomics", ConferenceTier.BIG),
-    ("ECCB", "European Conference on Computational Biology", "genomics", ConferenceTier.MEDIUM),
-    ("PSB", "Pacific Symposium on Biocomputing", "genomics", ConferenceTier.MEDIUM),
-    ("APBC", "Asia Pacific Bioinformatics Conference", "genomics", ConferenceTier.MEDIUM),
-    ("GLBIO", "Great Lakes Bioinformatics Conference", "genomics", ConferenceTier.MEDIUM),
-    ("BOSC", "Bioinformatics Open Source Conference", "genomics", ConferenceTier.MEDIUM),
-    ("GCC", "Galaxy Community Conference", "genomics", ConferenceTier.MEDIUM),
-    ("JOBIM", "Journees Ouvertes en Biologie, Informatique et Mathematiques", "genomics", ConferenceTier.MEDIUM),
-    ("GIW", "Genome Informatics Workshop (GIW/ISCB-Asia)", "genomics", ConferenceTier.MEDIUM),
-    ("RECOMB-SEQ", "RECOMB Satellite Workshop on Massively Parallel Sequencing", "genomics", ConferenceTier.MEDIUM),
-    ("RECOMB-CG", "RECOMB Satellite Workshop on Comparative Genomics", "genomics", ConferenceTier.MEDIUM),
-    ("RECOMB-GENETICS", "RECOMB Satellite Workshop on Computational Genetics", "genomics", ConferenceTier.MEDIUM),
-    ("PAG", "Plant and Animal Genome Conference", "genomics", ConferenceTier.MEDIUM),
-    ("HUGO", "Human Genome Meeting (Human Genome Organisation)", "genomics", ConferenceTier.MEDIUM),
-    ("TAGC", "The Allied Genetics Conference (Genetics Society of America)", "genomics", ConferenceTier.MEDIUM),
-    ("SCG", "Single Cell Genomics Conference", "genomics", ConferenceTier.MEDIUM),
-    ("BIOITWORLD", "Bio-IT World Conference & Expo", "genomics", ConferenceTier.MEDIUM),
-    ("MLCB", "Machine Learning in Computational Biology", ("genomics", "machine learning"), ConferenceTier.MEDIUM),
+    ("ASHG", "American Society of Human Genetics Annual Meeting", "genomics"),
+    ("ESHG", "European Human Genetics Conference", "genomics"),
+    ("AGBT", "Advances in Genome Biology and Technology General Meeting", "genomics"),
+    ("ACMG", "American College of Medical Genetics and Genomics Annual Clinical Genetics Meeting", "genomics"),
+    ("ISMB", "Intelligent Systems for Molecular Biology", "genomics"),
+    ("RECOMB", "Research in Computational Molecular Biology", "genomics"),
+    ("ECCB", "European Conference on Computational Biology", "genomics"),
+    ("PSB", "Pacific Symposium on Biocomputing", "genomics"),
+    ("APBC", "Asia Pacific Bioinformatics Conference", "genomics"),
+    ("GLBIO", "Great Lakes Bioinformatics Conference", "genomics"),
+    ("BOSC", "Bioinformatics Open Source Conference", "genomics"),
+    ("GCC", "Galaxy Community Conference", "genomics"),
+    ("JOBIM", "Journees Ouvertes en Biologie, Informatique et Mathematiques", "genomics"),
+    ("GIW", "Genome Informatics Workshop (GIW/ISCB-Asia)", "genomics"),
+    ("RECOMB-SEQ", "RECOMB Satellite Workshop on Massively Parallel Sequencing", "genomics"),
+    ("RECOMB-CG", "RECOMB Satellite Workshop on Comparative Genomics", "genomics"),
+    ("RECOMB-GENETICS", "RECOMB Satellite Workshop on Computational Genetics", "genomics"),
+    ("PAG", "Plant and Animal Genome Conference", "genomics"),
+    ("HUGO", "Human Genome Meeting (Human Genome Organisation)", "genomics"),
+    ("TAGC", "The Allied Genetics Conference (Genetics Society of America)", "genomics"),
+    ("SCG", "Single Cell Genomics Conference", "genomics"),
+    ("BIOITWORLD", "Bio-IT World Conference & Expo", "genomics"),
+    ("MLCB", "Machine Learning in Computational Biology", ("genomics", "machine learning")),
     # Cold Spring Harbor Laboratory meetings (meetings.cshl.edu). CSHL meetings
     # have no official acronyms, so a stable "CSHL-*" id is assigned. Meetings
     # whose topic is squarely oncology or neuroscience are filed under those
     # fields; the remainder (genomics, genetics, computational/molecular biology)
     # under "genomics".
-    ("CSHL-BOG", "CSHL Biology of Genomes", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-GENINFO", "CSHL Genome Informatics", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-PROBGEN", "CSHL Probabilistic Modeling in Genomics", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-BIODATA", "CSHL Biological Data Science", ("genomics", "machine learning"), ConferenceTier.MEDIUM),
-    ("CSHL-NETBIO", "CSHL Network Biology", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-CRISPR", "CSHL Genome Engineering: CRISPR Frontiers", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-EPIG", "CSHL Epigenetics & Chromatin", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-TE", "CSHL Transposable Elements", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-TELO", "CSHL Telomeres & Telomerase", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-GERM", "CSHL Germ Cells", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-TRANSCTRL", "CSHL Translational Control", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-NAT", "CSHL Nucleic Acid Therapies", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-UBIQ", "CSHL Ubiquitin and Ubiquitin-Like Modifiers", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-SINGLEBIO", "CSHL Single Biomolecules", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-CELLFUSION", "CSHL Cell & Membrane Fusion", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-CELLMODEL", "CSHL Cell Modeling in Space and Time", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-MICROBIOME", "CSHL Microbiome", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-RETRO", "CSHL Retroviruses", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-SYSIMM", "CSHL Systems Immunology", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-METAB", "CSHL Mechanisms of Metabolic Signaling", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-AGING", "CSHL Mechanisms of Aging", "genomics", ConferenceTier.MEDIUM),
-    ("CSHL-SOCINSECT", "CSHL Social Insects", "genomics", ConferenceTier.MEDIUM),
+    ("CSHL-BOG", "CSHL Biology of Genomes", "genomics"),
+    ("CSHL-GENINFO", "CSHL Genome Informatics", "genomics"),
+    ("CSHL-PROBGEN", "CSHL Probabilistic Modeling in Genomics", "genomics"),
+    ("CSHL-BIODATA", "CSHL Biological Data Science", ("genomics", "machine learning")),
+    ("CSHL-NETBIO", "CSHL Network Biology", "genomics"),
+    ("CSHL-CRISPR", "CSHL Genome Engineering: CRISPR Frontiers", "genomics"),
+    ("CSHL-EPIG", "CSHL Epigenetics & Chromatin", "genomics"),
+    ("CSHL-TE", "CSHL Transposable Elements", "genomics"),
+    ("CSHL-TELO", "CSHL Telomeres & Telomerase", "genomics"),
+    ("CSHL-GERM", "CSHL Germ Cells", "genomics"),
+    ("CSHL-TRANSCTRL", "CSHL Translational Control", "genomics"),
+    ("CSHL-NAT", "CSHL Nucleic Acid Therapies", "genomics"),
+    ("CSHL-UBIQ", "CSHL Ubiquitin and Ubiquitin-Like Modifiers", "genomics"),
+    ("CSHL-SINGLEBIO", "CSHL Single Biomolecules", "genomics"),
+    ("CSHL-CELLFUSION", "CSHL Cell & Membrane Fusion", "genomics"),
+    ("CSHL-CELLMODEL", "CSHL Cell Modeling in Space and Time", "genomics"),
+    ("CSHL-MICROBIOME", "CSHL Microbiome", "genomics"),
+    ("CSHL-RETRO", "CSHL Retroviruses", "genomics"),
+    ("CSHL-SYSIMM", "CSHL Systems Immunology", "genomics"),
+    ("CSHL-METAB", "CSHL Mechanisms of Metabolic Signaling", "genomics"),
+    ("CSHL-AGING", "CSHL Mechanisms of Aging", "genomics"),
+    ("CSHL-SOCINSECT", "CSHL Social Insects", "genomics"),
     # CSHL meetings routed to their clinical field. Every CSHL meeting also
     # carries a "genomics" tag (its home domain), so the genomics view lists the
     # full CSHL series while these still surface under their clinical field too.
-    ("CSHL-CANCER", "CSHL Mechanisms & Models of Cancer", ("oncology", "genomics"), ConferenceTier.MEDIUM),
-    ("CSHL-GLIA", "CSHL Glia in Health & Disease", ("neurology", "genomics"), ConferenceTier.MEDIUM),
-    ("CSHL-NEUROCONN", "CSHL Molecular Mechanisms of Neuronal Connectivity", ("neurology", "genomics"), ConferenceTier.MEDIUM),
-    ("CSHL-NEURODEGEN", "CSHL Neurodegenerative Diseases: Biology & Therapeutics", ("neurology", "genomics"), ConferenceTier.MEDIUM),
-    ("CSHL-BRAINDEV", "CSHL Development & 3D Modeling of the Human Brain", ("neurology", "genomics"), ConferenceTier.MEDIUM),
-    ("CSHL-BRAINBAR", "CSHL Brain Barriers", ("neurology", "genomics"), ConferenceTier.MEDIUM),
+    ("CSHL-CANCER", "CSHL Mechanisms & Models of Cancer", ("oncology", "genomics")),
+    ("CSHL-GLIA", "CSHL Glia in Health & Disease", ("neurology", "genomics")),
+    ("CSHL-NEUROCONN", "CSHL Molecular Mechanisms of Neuronal Connectivity", ("neurology", "genomics")),
+    ("CSHL-NEURODEGEN", "CSHL Neurodegenerative Diseases: Biology & Therapeutics", ("neurology", "genomics")),
+    ("CSHL-BRAINDEV", "CSHL Development & 3D Modeling of the Human Brain", ("neurology", "genomics")),
+    ("CSHL-BRAINBAR", "CSHL Brain Barriers", ("neurology", "genomics")),
 
     # --- Data science / machine learning -----------------------------------
-    ("NeurIPS", "Conference on Neural Information Processing Systems", "machine learning", ConferenceTier.BIG),
-    ("ICML", "International Conference on Machine Learning", "machine learning", ConferenceTier.BIG),
-    ("ICLR", "International Conference on Learning Representations", "machine learning", ConferenceTier.BIG),
-    ("CVPR", "IEEE/CVF Conference on Computer Vision and Pattern Recognition", "machine learning", ConferenceTier.BIG),
-    ("ICCV", "IEEE/CVF International Conference on Computer Vision", "machine learning", ConferenceTier.BIG),
-    ("ECCV", "European Conference on Computer Vision", "machine learning", ConferenceTier.BIG),
+    ("NeurIPS", "Conference on Neural Information Processing Systems", "machine learning"),
+    ("ICML", "International Conference on Machine Learning", "machine learning"),
+    ("ICLR", "International Conference on Learning Representations", "machine learning"),
+    ("CVPR", "IEEE/CVF Conference on Computer Vision and Pattern Recognition", "machine learning"),
+    ("ICCV", "IEEE/CVF International Conference on Computer Vision", "machine learning"),
+    ("ECCV", "European Conference on Computer Vision", "machine learning"),
+    ("AAAI", "AAAI Conference on Artificial Intelligence", "machine learning"),
+
+    # --- Chemistry ---------------------------------------------------------
+    ("ACS-CHEM", "American Chemical Society National Meeting & Exposition", "chemistry"),
+    ("GCE", "ACS Annual Green Chemistry & Engineering Conference", "chemistry"),
+    ("DDC", "Drug Discovery Chemistry", ("chemistry", "drug discovery")),
+    ("PITTCON", "Pittcon Conference & Expo", ("chemistry", "analytical chemistry")),
+
+    # --- Physics -----------------------------------------------------------
+    ("APS", "APS Global Physics Summit", "physics"),
+    ("DPG", "DPG Spring Meetings (Deutsche Physikalische Gesellschaft)", "physics"),
+    ("ICHEP", "International Conference on High Energy Physics", "physics"),
+    ("MORIOND", "Rencontres de Moriond", "physics"),
+    ("TSRA", "Texas Symposium on Relativistic Astrophysics", "astrophysics"),
+    ("CLEO", "Conference on Lasers and Electro-Optics", "optics"),
+
+    # --- Biology (biophysics / biochemistry / cell biology) ----------------
+    ("BPS", "Biophysical Society Annual Meeting", "biophysics"),
+    ("ASBMB", "American Society for Biochemistry and Molecular Biology Annual Meeting (Discover BMB)", "biochemistry"),
+    ("FEBS", "FEBS Congress (Federation of European Biochemical Societies)", "biochemistry"),
+    ("ASCB", "ASCB|EMBO Meeting (Cell Bio)", "cell biology"),
+
+    # --- Statistics --------------------------------------------------------
+    ("JSM", "Joint Statistical Meetings", "statistics"),
+    ("SDSS", "Symposium on Data Science and Statistics", ("statistics", "data science")),
+    ("ENAR", "ENAR Spring Meeting (International Biometric Society)", ("statistics", "biostatistics")),
+    ("ICORS", "International Conference on Robust Statistics", "statistics"),
+
+    # --- Computer science --------------------------------------------------
+    ("SIGGRAPH", "ACM SIGGRAPH Conference", "computer graphics"),
+    ("WSC", "Winter Simulation Conference", "simulation"),
+    ("ICSE", "International Conference on Software Engineering", "software engineering"),
+    ("POPL", "ACM SIGPLAN Symposium on Principles of Programming Languages", "programming languages"),
+    ("STOC", "ACM Symposium on Theory of Computing", "theoretical computer science"),
+    ("FOCS", "IEEE Symposium on Foundations of Computer Science", "theoretical computer science"),
+    ("SODA", "ACM-SIAM Symposium on Discrete Algorithms", "theoretical computer science"),
+
+    # --- Mathematics -------------------------------------------------------
+    ("ICM", "International Congress of Mathematicians", "mathematics"),
+    ("JMM", "Joint Mathematics Meetings", "mathematics"),
+    ("MATHFEST", "MAA MathFest", "mathematics"),
+    ("SIAM", "SIAM Annual Meeting", "applied mathematics"),
 ]
 
 
@@ -524,6 +542,42 @@ SEED_CONFERENCE_URLS: dict[str, "str | None"] = {
     "CVPR": "https://cvpr.thecvf.com",
     "ICCV": "https://iccv.thecvf.com",
     "ECCV": "https://eccv.ecva.net",
+    "AAAI": "https://aaai.org",
+    # --- Chemistry ---------------------------------------------------------
+    "ACS-CHEM": "https://www.acs.org/meetings/acs-meetings.html",
+    "GCE": "https://www.gcande.org",
+    "DDC": "https://www.drugdiscoverychemistry.com",
+    "PITTCON": "https://pittcon.org",
+    # --- Physics -----------------------------------------------------------
+    "APS": "https://summit.aps.org",
+    "DPG": "https://www.dpg-physik.de/aktivitaeten-und-programme/tagungen/fruehjahrstagungen",
+    "ICHEP": "https://ichep2026.org",
+    "MORIOND": "https://moriond.in2p3.fr",
+    "TSRA": "https://texassymposium.events.asu.edu",
+    "CLEO": "https://www.cleoconference.org",
+    # --- Biology -----------------------------------------------------------
+    "BPS": "https://www.biophysics.org",
+    "ASBMB": "https://www.asbmb.org",
+    "FEBS": "https://www.febs.org",
+    "ASCB": "https://www.ascb.org",
+    # --- Statistics --------------------------------------------------------
+    "JSM": "https://www.amstat.org",
+    "SDSS": "https://ww2.amstat.org/meetings/sdss/",
+    "ENAR": "https://www.enar.org",
+    "ICORS": "https://icors2026.ankara.edu.tr",
+    # --- Computer science --------------------------------------------------
+    "SIGGRAPH": "https://www.siggraph.org",
+    "WSC": "https://meetings.informs.org/wordpress/wsc2026/",
+    "ICSE": "https://conf.researchr.org/home/icse-2027",
+    "POPL": "https://popl27.sigplan.org",
+    "STOC": "https://acm-stoc.org",
+    "FOCS": "https://focs.computer.org",
+    "SODA": "https://www.siam.org/conferences-events/siam-conferences/soda27/",
+    # --- Mathematics -------------------------------------------------------
+    "ICM": "https://www.icm2026.org",
+    "JMM": "https://jointmathematicsmeetings.org",
+    "MATHFEST": "https://maa.org/event/mathfest/",
+    "SIAM": "https://www.siam.org",
 }
 # CSHL meetings share the official meetings portal (individual meetings have no
 # stable per-meeting permalink), so every CSHL-* seed maps to the same landing.
@@ -531,7 +585,7 @@ SEED_CONFERENCE_URLS.update(
     {acronym: _CSHL_MEETINGS_URL for acronym, *_ in SEED_CONFERENCES if acronym.startswith("CSHL-")}
 )
 
-# Deep meeting links for the flagship (big-tier) series, layered on top of the
+# Deep meeting links for the flagship series, layered on top of the
 # org homepages above. Each entry holds up to three tiers, most specific first:
 #   "event"   -- the current/next edition's own page (most specific; can rot when
 #                the edition rolls over, so it is re-verified alongside discovery)
@@ -540,7 +594,7 @@ SEED_CONFERENCE_URLS.update(
 # A tier is ``None`` when no such page exists (or none could be verified to
 # resolve). ``best_seed_url`` collapses an entry to its most specific non-None
 # tier; series absent from this map fall back to their SEED_CONFERENCE_URLS
-# homepage. Only big-tier series (see BIG_CONFERENCE_ACRONYMS) are listed, and
+# homepage. Only flagship series are listed, and
 # all populated links were verified to return HTTP 200 as of 2026-06-17.
 SEED_CONFERENCE_LINKS: dict[str, dict[str, "str | None"]] = {
     # --- Radiology ---------------------------------------------------------
@@ -591,6 +645,16 @@ SEED_CONFERENCE_LINKS: dict[str, dict[str, "str | None"]] = {
 # Tier preference used by the link resolvers below -- most specific first.
 _SEED_LINK_TIERS = ("event", "meeting", "org")
 
+# Hardcoded submission/presentation formats for specific conferences.
+# Maps acronym (case-insensitive) to a list of formats.
+# Used as a floor: discovery cannot overwrite these hard-set values.
+HARDCODED_FORMATS: dict[str, list[str]] = {
+    # CSHL meetings follow the abstract, poster, oral format model uniformly.
+    acronym.upper(): ["abstract", "poster", "oral"]
+    for acronym, *_ in SEED_CONFERENCES
+    if acronym.startswith("CSHL-")
+}
+
 # Upper-cased index of SEED_CONFERENCE_LINKS for case-insensitive lookup against
 # discovered acronyms, whose casing may differ from the canonical seed keys
 # (e.g. a discovery run may report "NEURIPS" rather than "NeurIPS").
@@ -621,7 +685,7 @@ def curated_seed_url(acronym: str) -> "str | None":
 def best_seed_url(acronym: str) -> "str | None":
     """Most specific known link for a seed, preferring a deep meeting link.
 
-    Big-tier series may carry a tiered link set in :data:`SEED_CONFERENCE_LINKS`
+    Flagship series may carry a tiered link set in :data:`SEED_CONFERENCE_LINKS`
     (an edition-specific ``event`` page, a stable ``meeting`` landing, and the
     ``org`` homepage); this returns the most specific tier that is populated.
     Every other series falls back to its :data:`SEED_CONFERENCE_URLS` homepage.
@@ -629,58 +693,58 @@ def best_seed_url(acronym: str) -> "str | None":
     return curated_seed_url(acronym) or SEED_CONFERENCE_URLS.get(acronym)
 
 
-# Curated category tags per seed acronym (case-insensitive), the authoritative
+# Curated subcategory tags per seed acronym (case-insensitive), the authoritative
 # classification for every seeded series. Discovery is responsible for dates,
 # links, and cost -- not for classifying a conference into fields -- so the model
 # sometimes returns a descriptive blurb ("general radiology / medical imaging")
-# where a clean tag belongs. ``seed_categories_for`` exposes the curated tags so
-# the write paths can apply them as a *floor* (see ``database.upsert_conferences``
+# where a clean tag belongs. ``seed_subcategories_for`` exposes the curated tags
+# so the write paths can apply them as a *floor* (see ``database.upsert_conferences``
 # / ``merge_records``): a refresh can never overwrite a seed's tags with model
-# free-text. Editing a seed's category element is the single lever for its
+# free-text. Editing a seed's subcategory element is the single lever for its
 # classification. Built from the seed table, so it stays in sync automatically.
-_SEED_CATEGORIES_BY_UPPER: dict[str, list[str]] = {
-    acronym.upper(): normalize_categories(category)
-    for acronym, _, category, _ in SEED_CONFERENCES
+_SEED_SUBCATEGORIES_BY_UPPER: dict[str, list[str]] = {
+    acronym.upper(): normalize_subcategories(subcategory)
+    for acronym, _, subcategory in SEED_CONFERENCES
 }
 
 
-def seed_categories_for(acronym: str) -> "list[str] | None":
-    """Curated category tags for a seed acronym, or ``None`` if not a seed.
+def seed_subcategories_for(acronym: str) -> "list[str] | None":
+    """Curated subcategory tags for a seed acronym, or ``None`` if not a seed.
 
     Matching is case-insensitive. Returns a fresh list so callers cannot mutate
     the shared table.
     """
     if not acronym:
         return None
-    cats = _SEED_CATEGORIES_BY_UPPER.get(acronym.upper())
-    return list(cats) if cats else None
+    subs = _SEED_SUBCATEGORIES_BY_UPPER.get(acronym.upper())
+    return list(subs) if subs else None
 
 
-def seed_categories() -> list[str]:
-    """Distinct categories present in :data:`SEED_CONFERENCES`, sorted.
+def seed_subcategories() -> list[str]:
+    """Distinct subcategories present in :data:`SEED_CONFERENCES`, sorted.
 
-    The standing category set is derived from the seed table so that adding a new
-    field's flagship seeds is enough to fold it into the daily refresh -- there is
-    no second list to keep in sync.
+    The standing subcategory set is derived from the seed table so that adding a
+    new field's flagship seeds is enough to fold it into the daily refresh -- there
+    is no second list to keep in sync.
     """
     seen: list[str] = []
-    for _, _, category, _ in SEED_CONFERENCES:
-        for cat in normalize_categories(category):
-            if cat not in seen:
-                seen.append(cat)
+    for _, _, subcategory in SEED_CONFERENCES:
+        for sub in normalize_subcategories(subcategory):
+            if sub not in seen:
+                seen.append(sub)
     return sorted(seen)
 
 
-# Categories the scheduled refresh iterates over (one discovery run each).
-STANDING_CATEGORIES = seed_categories()
+# Subcategories the scheduled refresh iterates over (one discovery run each).
+STANDING_SUBCATEGORIES = seed_subcategories()
 
 # --- Refresh cadence -------------------------------------------------------
 
-# Discovery runs per field (one web-search pass per category), so cadence is set
-# per field, not per conference. Fields that carry flagship, fast-moving meetings
-# are refreshed weekly; every other field refreshes monthly. Editing this set is
-# the single knob for a field's cadence. Names must match seed categories.
-WEEKLY_CATEGORIES = {
+# Discovery runs per field (one web-search pass per subcategory), so cadence is
+# set per field, not per conference. Fields that carry flagship, fast-moving
+# meetings are refreshed weekly; every other field refreshes monthly. Editing this
+# set is the single knob for a field's cadence. Names must match seed subcategories.
+WEEKLY_SUBCATEGORIES = {
     "radiology",
     "cardiology",
     "oncology",
@@ -689,14 +753,14 @@ WEEKLY_CATEGORIES = {
 }
 
 
-def weekly_categories() -> list[str]:
-    """Seed categories refreshed weekly (intersection with WEEKLY_CATEGORIES)."""
-    return sorted(c for c in seed_categories() if c in WEEKLY_CATEGORIES)
+def weekly_subcategories() -> list[str]:
+    """Seed subcategories refreshed weekly (intersection with WEEKLY_SUBCATEGORIES)."""
+    return sorted(s for s in seed_subcategories() if s in WEEKLY_SUBCATEGORIES)
 
 
-def monthly_categories() -> list[str]:
-    """Seed categories refreshed monthly (everything not refreshed weekly)."""
-    return sorted(c for c in seed_categories() if c not in WEEKLY_CATEGORIES)
+def monthly_subcategories() -> list[str]:
+    """Seed subcategories refreshed monthly (everything not refreshed weekly)."""
+    return sorted(s for s in seed_subcategories() if s not in WEEKLY_SUBCATEGORIES)
 
 
 # --- Per-conference auto-check policy --------------------------------------

@@ -16,7 +16,7 @@ from conference_agent.database import (
     query_conferences,
     upsert_conferences,
 )
-from conference_agent.models import Conference, ConferenceTier, RemoteOption
+from conference_agent.models import Conference, ConferenceSize, RemoteOption
 
 
 def _db_url(tmp_path):
@@ -24,7 +24,7 @@ def _db_url(tmp_path):
 
 
 def _conf(**overrides):
-    base = dict(acronym="rsna", name="RSNA Annual Meeting", category="radiology")
+    base = dict(acronym="rsna", name="RSNA Annual Meeting", subcategory="radiology")
     base.update(overrides)
     return Conference(**base)
 
@@ -32,7 +32,8 @@ def _conf(**overrides):
 def test_upsert_then_query_round_trips(tmp_path):
     url = _db_url(tmp_path)
     conf = _conf(
-        reputation=ConferenceTier.BIG,
+        attendance=45000,
+        attendance_year=2025,
         remote_option=RemoteOption.HYBRID,
         upcoming_start_date=date(2026, 11, 29),
         cost="$1,095 (member)",
@@ -44,10 +45,47 @@ def test_upsert_then_query_round_trips(tmp_path):
     assert len(rows) == 1
     got = rows[0]
     assert got.id == "RSNA"
-    assert got.reputation == ConferenceTier.BIG
+    assert got.attendance == 45000
+    assert got.attendance_year == 2025
+    assert got.size == ConferenceSize.LARGE  # derived from attendance
     assert got.remote_option == RemoteOption.HYBRID
     assert got.upcoming_start_date == date(2026, 11, 29)
     assert got.cost == "$1,095 (member)"
+
+
+def test_formats_round_trip_and_collapse_empty_to_none(tmp_path):
+    url = _db_url(tmp_path)
+    # A non-seed acronym so curated floors do not interfere; formats supplied out
+    # of order are stored in the canonical abstract/paper/poster/oral order.
+    upsert_conferences(
+        [_conf(acronym="ZZT", name="ZZT", formats=["oral", "abstract", "poster"])],
+        db_url=url,
+    )
+    got = query_conferences(db_url=url)[0]
+    assert got.formats == ["abstract", "poster", "oral"]
+    assert got.format == "abstract, poster, oral"
+
+    # A conference with no formats stores NULL (collapsed empty), not "".
+    upsert_conferences([_conf(acronym="NUL", name="No Formats")], db_url=url)
+    none_row = {c.id: c for c in query_conferences(db_url=url)}["NUL"]
+    assert none_row.formats == []
+
+
+def test_merge_records_fills_formats_without_clobbering(tmp_path):
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [_conf(acronym="ZZT", name="ZZT", formats=["abstract"])], db_url=url
+    )
+    # A partial record carrying only new formats updates them; the singular
+    # "format" key and a delimited string are both accepted and normalized.
+    merge_records([{"id": "ZZT", "format": "poster, oral, abstract"}], db_url=url)
+    got = query_conferences(db_url=url)[0]
+    assert got.formats == ["abstract", "poster", "oral"]
+    # A record that omits formats leaves the stored value untouched.
+    merge_records([{"id": "ZZT", "location": "Chicago, IL"}], db_url=url)
+    got = query_conferences(db_url=url)[0]
+    assert got.formats == ["abstract", "poster", "oral"]
+    assert got.location == "Chicago, IL"
 
 
 def test_upsert_applies_curated_link_floor_for_flagship(tmp_path):
@@ -78,64 +116,99 @@ def test_upsert_is_idempotent_on_id(tmp_path):
     assert rows[0].cost == "new"
 
 
-def test_query_filters_by_category_and_reputation(tmp_path):
+def test_query_filters_by_subcategory_category_and_size(tmp_path):
     url = _db_url(tmp_path)
     upsert_conferences(
         [
-            _conf(acronym="RSNA", reputation=ConferenceTier.BIG),
-            _conf(acronym="SIIM", name="SIIM", reputation=ConferenceTier.MEDIUM),
-            _conf(acronym="ASHG", name="ASHG", category="genomics", reputation=ConferenceTier.BIG),
+            _conf(acronym="RSNA", attendance=45000),  # large, radiology -> medicine
+            _conf(acronym="SIIM", name="SIIM", attendance=500),  # medium, radiology
+            _conf(acronym="ASHG", name="ASHG", subcategory="genomics", attendance=12000),  # biology
         ],
         db_url=url,
     )
 
-    assert {c.id for c in query_conferences(category="radiology", db_url=url)} == {"RSNA", "SIIM"}
-    assert {c.id for c in query_conferences(reputation="big", db_url=url)} == {"RSNA", "ASHG"}
+    assert {c.id for c in query_conferences(subcategory="radiology", db_url=url)} == {"RSNA", "SIIM"}
+    assert {c.id for c in query_conferences(size="large", db_url=url)} == {"RSNA", "ASHG"}
+    # The derived broad category groups the two radiology rows under medicine,
+    # while genomics sorts into biology.
+    assert {c.id for c in query_conferences(category="medicine", db_url=url)} == {"RSNA", "SIIM"}
+    assert {c.id for c in query_conferences(category="biology", db_url=url)} == {"ASHG"}
 
 
-def test_multi_category_round_trips_and_filters_by_each_tag(tmp_path):
+def test_multi_subcategory_round_trips_and_filters_by_each_tag(tmp_path):
     url = _db_url(tmp_path)
     upsert_conferences(
         [
             _conf(
-                acronym="SPR",
-                name="Society for Pediatric Radiology",
-                categories=["radiology", "pediatrics"],
+                acronym="MICCAI",
+                name="Medical Image Computing",
+                subcategories=["radiology", "machine learning"],
             )
         ],
         db_url=url,
     )
     got = query_conferences(db_url=url)[0]
-    assert got.categories == ["radiology", "pediatrics"]
-    assert got.category == "radiology, pediatrics"
-    # A substring category filter finds the row under either of its tags.
-    assert {c.id for c in query_conferences(category="radiology", db_url=url)} == {"SPR"}
-    assert {c.id for c in query_conferences(category="pediatrics", db_url=url)} == {"SPR"}
+    assert got.subcategories == ["radiology", "machine learning"]
+    assert got.subcategory == "radiology, machine learning"
+    # The derived category spans both domains (medicine + artificial intelligence).
+    assert got.categories == ["medicine", "artificial intelligence"]
+    assert got.category == "medicine, artificial intelligence"
+    # A substring subcategory filter finds the row under either of its tags.
+    assert {c.id for c in query_conferences(subcategory="radiology", db_url=url)} == {"MICCAI"}
+    assert {c.id for c in query_conferences(subcategory="machine learning", db_url=url)} == {"MICCAI"}
+    # And the broad category filter finds it under either derived bucket.
+    assert {c.id for c in query_conferences(category="medicine", db_url=url)} == {"MICCAI"}
+    assert {c.id for c in query_conferences(category="artificial intelligence", db_url=url)} == {"MICCAI"}
 
 
-def test_seed_category_floor_overrides_discovered_freetext(tmp_path):
+def test_seed_subcategory_floor_overrides_discovered_freetext(tmp_path):
     url = _db_url(tmp_path)
     # Discovery returns a descriptive blurb where a clean tag belongs...
     upsert_conferences(
-        [_conf(acronym="ESICM", name="ESICM", categories=["intensive care / critical care medicine (europe-based)"])],
+        [_conf(acronym="ESICM", name="ESICM", subcategories=["intensive care / critical care medicine (europe-based)"])],
         db_url=url,
     )
-    # ...but the curated seed tags win (ESICM's seed category is critical care medicine).
-    assert query_conferences(db_url=url)[0].categories == ["critical care medicine"]
+    # ...but the curated seed tags win (ESICM's seed subcategory is critical care
+    # medicine), and the derived category follows (-> medicine).
+    got = query_conferences(db_url=url)[0]
+    assert got.subcategories == ["critical care medicine"]
+    assert got.categories == ["medicine"]
 
     # The floor also applies on the offline merge path.
-    merge_records([{"id": "ESICM", "category": "garbage, more garbage"}], db_url=url)
-    assert query_conferences(db_url=url)[0].categories == ["critical care medicine"]
+    merge_records([{"id": "ESICM", "subcategory": "garbage, more garbage"}], db_url=url)
+    assert query_conferences(db_url=url)[0].subcategories == ["critical care medicine"]
 
 
-def test_non_seed_row_keeps_its_own_categories(tmp_path):
+def test_non_seed_row_keeps_its_own_subcategories(tmp_path):
     url = _db_url(tmp_path)
     # An acronym that is not in the seed table is not subject to the floor.
     upsert_conferences(
-        [_conf(acronym="NOVEL", name="Novel Workshop", categories=["robotics", "vision"])],
+        [_conf(acronym="NOVEL", name="Novel Workshop", subcategories=["robotics", "vision"])],
         db_url=url,
     )
-    assert query_conferences(db_url=url)[0].categories == ["robotics", "vision"]
+    got = query_conferences(db_url=url)[0]
+    assert got.subcategories == ["robotics", "vision"]
+    # Neither tag is in the map, so the derived category is empty.
+    assert got.categories == []
+
+
+def test_recompute_categories_rederives_from_subcategories(tmp_path):
+    from sqlalchemy.orm import Session
+
+    from conference_agent.database import ConferenceRow, get_engine, recompute_categories
+
+    url = _db_url(tmp_path)
+    upsert_conferences([_conf(acronym="NOVEL", name="Novel", subcategory="radiology")], db_url=url)
+    # Simulate a stale stored category (e.g. left over before the map changed).
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.get(ConferenceRow, "NOVEL").category = "physics"
+        s.commit()
+    changed = recompute_categories(url)
+    assert changed == 1
+    assert query_conferences(db_url=url)[0].categories == ["medicine"]
+    # Idempotent: a second pass changes nothing.
+    assert recompute_categories(url) == 0
 
 
 def test_month_columns_are_sql_computed_from_dates(tmp_path):
@@ -157,6 +230,33 @@ def test_month_columns_are_sql_computed_from_dates(tmp_path):
         }
     assert months["RSNA"] == (4, 11)
     assert months["ECR"] == (1, 3)
+
+
+def test_registration_text_round_trips(tmp_path):
+    # Registration is free text (windows, not a date): both editions' values
+    # persist as stored, and the model's ``registration`` property prefers the
+    # upcoming edition, falling back to the prior one.
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [
+            _conf(
+                upcoming_registration="Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference",
+                prior_registration="Registration opened June 2025",
+            ),
+            # Only the prior edition has registration info.
+            _conf(acronym="ECR", name="ECR", prior_registration="Opens Sept 2025"),
+            # Neither set: registration is blank.
+            _conf(acronym="MICCAI", name="MICCAI"),
+        ],
+        db_url=url,
+    )
+    by_id = {c.id: c for c in query_conferences(db_url=url)}
+    assert by_id["RSNA"].upcoming_registration.startswith("Early bird:")
+    assert by_id["RSNA"].prior_registration == "Registration opened June 2025"
+    # The displayed value prefers upcoming over prior.
+    assert by_id["RSNA"].registration.startswith("Early bird:")
+    assert by_id["ECR"].registration == "Opens Sept 2025"
+    assert by_id["MICCAI"].registration is None
 
 
 def test_abstract_and_paper_months_are_independent(tmp_path):
@@ -192,7 +292,7 @@ def test_merge_records_fills_dates_without_clobbering(tmp_path):
     url = _db_url(tmp_path)
     # A seeded row carrying identity + url but no dates (as after seed_conferences).
     upsert_conferences(
-        [_conf(reputation=ConferenceTier.BIG, url="https://www.rsna.org")],
+        [_conf(attendance=45000, url="https://www.rsna.org")],
         db_url=url,
     )
 
@@ -222,8 +322,58 @@ def test_merge_records_fills_dates_without_clobbering(tmp_path):
     # flagship series, so upsert_conferences applies the curated-link floor: its
     # url is the verified deep link regardless of the homepage passed at seed.
     assert got.url == "https://www.rsna.org/annual-meeting"
-    assert got.reputation == ConferenceTier.BIG
+    assert got.attendance == 45000
+    assert got.size == ConferenceSize.LARGE
     assert got.name == "RSNA Annual Meeting"
+
+
+def test_merge_records_recomputes_size_from_attendance(tmp_path):
+    url = _db_url(tmp_path)
+    # A row that starts with no attendance has no size.
+    upsert_conferences([_conf(url="https://www.rsna.org")], db_url=url)
+    assert query_conferences(db_url=url)[0].size is None
+
+    # Merging an attendance figure (as a string, as from research) derives a size.
+    merge_records([{"id": "RSNA", "attendance": "45000", "attendance_year": "2025"}], db_url=url)
+    got = query_conferences(db_url=url)[0]
+    assert got.attendance == 45000
+    assert got.attendance_year == 2025
+    assert got.size == ConferenceSize.LARGE
+
+
+def test_recompute_sizes_rederives_stored_bucket(tmp_path):
+    from sqlalchemy.orm import Session
+
+    from conference_agent.database import ConferenceRow, get_engine, recompute_sizes
+
+    url = _db_url(tmp_path)
+    upsert_conferences([_conf(attendance=9000)], db_url=url)  # large under 1000-cutoff
+    # Simulate a stale stored bucket (e.g. left over from an older threshold).
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.get(ConferenceRow, "RSNA").size = "medium"
+        s.commit()
+    changed = recompute_sizes(url)
+    assert changed == 1
+    assert query_conferences(db_url=url)[0].size == ConferenceSize.LARGE
+    # Idempotent: a second pass changes nothing.
+    assert recompute_sizes(url) == 0
+
+
+def test_known_attendance_sources_maps_source_and_year(tmp_path):
+    from conference_agent.database import known_attendance_sources
+
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [
+            _conf(acronym="RSNA", attendance=45000, attendance_year=2024,
+                  attendance_source="https://rsna.org/2024/by-the-numbers"),
+            _conf(acronym="SIIM", name="SIIM"),  # no source -> excluded
+        ],
+        db_url=url,
+    )
+    hints = known_attendance_sources(db_url=url)
+    assert hints == {"RSNA": {"source": "https://rsna.org/2024/by-the-numbers", "year": 2024}}
 
 
 def test_merge_records_skips_unknown_id_without_identity(tmp_path):

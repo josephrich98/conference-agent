@@ -13,16 +13,17 @@ Bare keywords match (case-insensitive substring) across all text fields::
 
 Scoped field match::
 
-    category:radiology
+    category:medicine
+    subcategory:radiology
     conference:"American Roentgen"
     remote:virtual
-    reputation:big
+    size:large
 
 Boolean operators (case-insensitive), with implicit AND between adjacent terms,
 and parentheses for grouping::
 
-    (virtual OR hybrid) AND reputation:big
-    category:radiology NOT cost:*
+    (virtual OR hybrid) AND size:large
+    subcategory:radiology NOT cost:*
 
 Date comparisons on date fields accept ``YYYY``, ``YYYY-MM``, or ``YYYY-MM-DD``
 and the operators ``> >= < <= =`` (``=>`` / ``=<`` are accepted as typos for
@@ -46,10 +47,12 @@ Presence test (field is set / not set)::
     NOT conference_dates:*  # no conference date shown
 
 The query fields mirror the table's column headers exactly: ``conference``,
-``category``, ``location``, ``reputation``, ``remote``, ``cost``,
-``abstract_due``, ``paper_due``, ``conference_dates``, ``conference_month``,
-``abstract_month``, and ``paper_month`` (the month fields are integers 1-12,
-derived from the displayed dates, e.g. ``conference_month:11``,
+``category`` (one of the ten top-level buckets), ``subcategory`` (the specific
+field), ``format`` (any of abstract / paper / poster / oral),
+``location``, ``size``, ``remote``, ``cost``, ``registration`` (free text — a
+substring match), ``abstract_due``, ``paper_due``, ``conference_dates``,
+``conference_month``, ``abstract_month``, and ``paper_month`` (the month fields
+are integers 1-12, derived from the displayed dates, e.g. ``conference_month:11``,
 ``abstract_month:<=April``, or ``abstract_month>=June``). Each date field
 matches the value the column actually shows — the upcoming edition's date,
 falling back to the prior edition's. A handful of legacy names (``name``,
@@ -67,7 +70,7 @@ from typing import List, Optional, Tuple, Union
 from sqlalchemy import and_, func, not_, or_
 
 from conference_agent.database import ConferenceRow
-from conference_agent.models import ConferenceTier, RemoteOption
+from conference_agent.models import CATEGORIES, CONFERENCE_FORMATS, ConferenceSize, RemoteOption
 
 
 class QueryError(Exception):
@@ -87,10 +90,16 @@ class QueryError(Exception):
 _TEXT_FIELDS = {
     "conference": ("acronym", "name"),
     "category": ("category",),
+    "subcategory": ("subcategory",),
+    "format": ("format",),
     "location": ("location",),
-    "reputation": ("reputation",),
+    "size": ("size",),
     "remote": ("remote_option",),
     "cost": ("cost",),
+    # Registration is free text (windows like "Early bird: ...; Regular: ..."), so
+    # it is a substring match across the upcoming and prior registration columns,
+    # not a date comparison.
+    "registration": ("upcoming_registration", "prior_registration"),
 }
 
 # Public date field → (upcoming column, prior column). Comparisons run against
@@ -117,11 +126,14 @@ _INT_FIELDS = {
 # stays in sync); everything else is free text or a date.
 _FIELD_TYPES = {
     "conference": "string",
-    "category": "string",
+    "category": "cat: " + ", ".join(CATEGORIES),
+    "subcategory": "string",
+    "format": "cat: " + ", ".join(CONFERENCE_FORMATS),
     "location": "string",
-    "reputation": "cat: " + ", ".join(t.value for t in ConferenceTier),
+    "size": "cat: " + ", ".join(t.value for t in ConferenceSize),
     "remote": "cat: " + ", ".join(o.value for o in RemoteOption if o is not RemoteOption.UNKNOWN),
     "cost": "string",
+    "registration": "string",
     "abstract_due": "date",
     "paper_due": "date",
     "conference_dates": "date",
@@ -136,10 +148,14 @@ _BARE_SEARCH_COLUMNS = (
     "acronym",
     "name",
     "category",
+    "subcategory",
+    "format",
     "location",
-    "reputation",
+    "size",
     "remote_option",
     "cost",
+    "upcoming_registration",
+    "prior_registration",
     "url",
     "notes",
 )
@@ -149,9 +165,8 @@ _BARE_SEARCH_COLUMNS = (
 _ALIASES = {
     "name": "conference",
     "acronym": "conference",
+    "formats": "format",
     "remote_option": "remote",
-    "tier": "reputation",
-    "rep": "reputation",
     "abstract": "abstract_due",
     "deadline": "abstract_due",
     "upcoming_abstract_deadline": "abstract_due",

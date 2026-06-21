@@ -7,16 +7,20 @@ example, an interactive agent's own web search -- into the database.
 
 Records are merged, not replaced: only the fields a record actually supplies
 overwrite the stored row, so a record carrying just newly found dates leaves the
-row's name, url, category, and reputation intact (see
+row's name, url, category, and attendance intact (see
 ``database.merge_records``).
 
 Input is one or more JSON files, each a list of record objects (or a single
 object). Each record is keyed by ``id`` (the acronym) and may carry any of:
 ``prior_abstract_deadline``, ``prior_paper_deadline``, ``prior_start_date``,
-``prior_end_date``, ``upcoming_abstract_deadline``, ``upcoming_paper_deadline``,
-``upcoming_start_date``, ``upcoming_end_date`` (ISO ``YYYY-MM-DD``), plus
-``location``, ``url``, ``cost``, ``notes``, ``remote_option``, ``reputation``.
-Unknown keys (e.g. ``source_url``) are ignored.
+``prior_end_date``, ``upcoming_abstract_deadline``,
+``upcoming_paper_deadline``, ``upcoming_start_date``, ``upcoming_end_date``
+(ISO ``YYYY-MM-DD``), the free-text ``prior_registration`` /
+``upcoming_registration`` (registration windows, e.g. "Early bird: Jan 5 - Mar 1;
+Regular: Mar 2 - conference"), plus
+``location``, ``url``, ``cost``, ``notes``, ``remote_option``, ``attendance``,
+``attendance_year``, ``attendance_source``. The ``size`` bucket is derived from
+``attendance`` on write, not read from the record. Unknown keys are ignored.
 
 Usage:
     python scripts/ingest_records.py data/research/*.json

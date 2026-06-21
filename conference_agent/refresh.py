@@ -25,7 +25,7 @@ Policy (tuned by the constants in :mod:`conference_agent.config`):
 
 Discovery covers a whole field per run, so the integration in ``daily_update``
 selects the *fields* containing due conferences, refreshes those, and then
-stamps ``last_checked`` across them via :func:`mark_categories_checked`.
+stamps ``last_checked`` across them via :func:`mark_subcategories_checked`.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from conference_agent.config import (
     RECHECK_INTERVAL_DAYS,
 )
 from conference_agent.database import ConferenceRow, get_engine
-from conference_agent.models import normalize_categories
+from conference_agent.models import normalize_subcategories
 
 
 def _add_months(anchor: date, months: int) -> date:
@@ -93,10 +93,10 @@ def is_due_for_check(row: ConferenceRow, today: Optional[date] = None) -> bool:
     return (today - row.last_checked).days >= RECHECK_INTERVAL_DAYS
 
 
-def due_categories(
+def due_subcategories(
     db_url: str = DEFAULT_DATABASE_URL, today: Optional[date] = None
 ) -> List[str]:
-    """Distinct categories containing at least one due conference, sorted.
+    """Distinct subcategories containing at least one due conference, sorted.
 
     Discovery runs per field, so this is the unit the scheduled refresh acts on.
     """
@@ -104,12 +104,12 @@ def due_categories(
     engine = get_engine(db_url)
     with Session(engine) as session:
         rows = session.scalars(select(ConferenceRow))
-        cats: set[str] = set()
+        subs: set[str] = set()
         for row in rows:
             if is_due_for_check(row, today):
                 # A row may carry several tags; each is a field worth refreshing.
-                cats.update(normalize_categories(row.category))
-    return sorted(cats)
+                subs.update(normalize_subcategories(row.subcategory))
+    return sorted(subs)
 
 
 def due_conference_ids(
@@ -123,28 +123,28 @@ def due_conference_ids(
         return sorted(row.id for row in rows if is_due_for_check(row, today))
 
 
-def mark_categories_checked(
-    categories: List[str],
+def mark_subcategories_checked(
+    subcategories: List[str],
     db_url: str = DEFAULT_DATABASE_URL,
     today: Optional[date] = None,
 ) -> int:
-    """Stamp ``last_checked = today`` on every row in ``categories``.
+    """Stamp ``last_checked = today`` on every row in ``subcategories``.
 
-    A discovery run covers a whole field, so after refreshing a category every
+    A discovery run covers a whole field, so after refreshing a subcategory every
     row in it has just been checked. Recording that on all of them (not only the
     ones that triggered the run) prevents redundant re-runs before the next
     interval elapses. Returns the number of rows stamped.
     """
     today = today or date.today()
-    cats = {c for c in categories}
-    if not cats:
+    subs = {s for s in subcategories}
+    if not subs:
         return 0
     engine = get_engine(db_url)
     with Session(engine) as session:
-        # Substring match per tag: a row whose category column lists several tags
-        # (e.g. "radiology, pediatrics") was covered if any refreshed field
+        # Substring match per tag: a row whose subcategory column lists several
+        # tags (e.g. "radiology, pediatrics") was covered if any refreshed field
         # appears in it, so an exact ``IN`` match would miss multi-tag rows.
-        conds = [ConferenceRow.category.ilike(f"%{c}%") for c in cats]
+        conds = [ConferenceRow.subcategory.ilike(f"%{s}%") for s in subs]
         rows = list(
             session.scalars(select(ConferenceRow).where(or_(*conds)))
         )
