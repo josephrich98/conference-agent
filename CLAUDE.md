@@ -76,10 +76,13 @@ for the design.
 - `web/` — FastAPI app + static single-page table (`search.py` boolean-query
   language, `nl_query.py` optional natural-language → boolean-query translation
   via a local Ollama model, `app.py` REST API, `static/index.html`, `handler.py`
-  Lambda entry point, `requirements.txt` for the Lambda build)
+  Lambda entry point, `requirements.txt` for the Lambda build). For the
+  credential-free static deployment, `static/search.js` and `static/calendar.js`
+  reimplement `search.py` and `calendar_sync.py` in the browser (see the
+  static-hosting design decision below)
 - `scripts/` — runnable entry points (`build_table.py`, `daily_update.py`,
   `push_db.py`, `deploy.sh` one-command reconcile + deploy, `scheduled_discovery.sh`
-  the biweekly cron job)
+  the biweekly cron job, `build_static.py` the static-site bundler)
 - `infra/` — AWS SAM deployment (`template.yaml`: CloudFront over an
   IAM-protected Lambda Function URL + RDS PostgreSQL in a VPC, with optional
   `DomainName`/`AcmCertificateArn` for a custom domain; `samconfig.toml`); built
@@ -187,6 +190,31 @@ dependencies there rather than installing ad hoc.
 - **Separation of concerns.** Discovery, persistence, the calendar feed, email
   notification, and the web layer are independent modules; each can run on its
   own schedule.
+- **Static, compute-free hosting path.** The deployed site is read-only
+  (discovery/ingestion run offline), so it can be served as static files with no
+  per-request compute — there is no Lambda to invoke and no database to keep
+  running, so query volume cannot incur cost. `scripts/build_static.py` snapshots
+  the database to `dist/data/conferences.json` and copies the single-page UI into
+  `dist/`; the browser does search, sort, CSV export, and per-row `.ics`
+  generation entirely client-side. `web/static/search.js` ports the boolean query
+  language from `web/search.py` (compiling to a row predicate instead of a SQL
+  filter), and `web/static/calendar.js` ports `conference_agent/calendar_sync.py`
+  (matching its base32hex UIDs so re-downloaded events stay idempotent). The risk
+  of the two search implementations drifting is guarded by
+  `tests/test_search_parity.py`, which asserts the JS and Python searches select
+  identical rows over a query corpus (skipped when `node` is absent, e.g. in CI).
+  The static bundle omits the whole-list subscribe feed (needs per-request
+  compute); per-row calendar downloads and manual boolean search are unaffected.
+  Natural-language ("AI") search *is* available on the static site:
+  `web/static/nl_query.js` ports the prompt and validate/repair loop from
+  `web/nl_query.py` but runs a small instruction model entirely in the browser
+  over WebGPU via WebLLM (no API key, no backend, no egress after a one-time
+  ~1 GB model download), so it stays within the compute-free, credential-free
+  design. It loads lazily on first use, reuses the snapshot's `fields` catalog
+  for the prompt and `search.js`'s parser for validation, and degrades to the
+  boolean box when WebGPU is unavailable. (The server `web/nl_query.py` +
+  `/api/translate` Ollama path remains for the dynamic backend.) See `DEPLOY.md`.
+  The AWS SAM stack remains as the alternative dynamic backend.
 
 ## CI/CD
 
@@ -197,21 +225,33 @@ dependencies there rather than installing ad hoc.
 
 ## Deployment
 
-- **When the user asks to deploy, just run `scripts/deploy.sh`.** It resolves the
-  Lambda function name from the CloudFormation stack, reads the RDS connection
-  string out of the Lambda's own environment (no password handling), and pushes
-  the local DB to RDS via the idempotent `push_db.py` upsert. All inputs are
-  environment variables with sensible defaults (see the script header);
-  `DEPLOY_CODE=1` also runs `sam build` + `aws lambda update-function-code` to
-  ship `web/` / `conference_agent/` changes, and `DRY_RUN=1` reports the row
-  count without writing. The Vercel proxy (`deploy/vercel/`) is a static rewrite
-  to CloudFront and is not part of this script — redeploy it only if the
-  CloudFront target changes.
-- **Automatic push on scheduled refresh.** `scripts/scheduled_discovery.sh` (the
-  biweekly cron job) hashes `data/conferences.db` before and after the
-  `daily_update.py --cadence due` run and invokes `scripts/deploy.sh` only when
-  the DB actually changed, so the live site tracks new discoveries without a
-  manual step.
+- **"Deploy" means the static bundle to Vercel (the live path), not AWS.** When
+  the user asks to deploy, build and ship the static site:
+
+  ```bash
+  python scripts/build_static.py                 # snapshot DB + UI into dist/
+  ( cd dist && npx vercel deploy --prod --yes )  # publish to the conferenceagent project
+  ```
+
+  The live site is `https://conferenceagent.vercel.app`, served as static files
+  directly from Vercel — no per-request compute and no AWS in the request path.
+  `dist/` is linked (via `dist/.vercel/project.json`) to the Vercel project
+  **conferenceagent**; deploy only from `dist/`. Cloudflare Pages
+  (`npx wrangler pages deploy dist`) is an equivalent static host if ever needed.
+  To refresh the live data, re-run `build_static.py` after a discovery run and
+  redeploy — there is no database to push.
+- **Legacy AWS path (no longer the deploy target).** `scripts/deploy.sh` (push
+  local DB → RDS; `DEPLOY_CODE=1` also `sam build` + `aws lambda
+  update-function-code`) and the `deploy/vercel/` proxy (a rewrite to CloudFront)
+  belong to the retired AWS stack documented in `DEPLOY.md`. Do **not** run them
+  for a normal deploy — `deploy/vercel/` is linked to the same Vercel project, so
+  deploying from it would revert the public URL to proxying AWS. Use them only
+  when explicitly working on the AWS stack.
+- **Automatic refresh.** `scripts/scheduled_discovery.sh` (the biweekly cron job)
+  hashes `data/conferences.db` before and after the `daily_update.py --cadence
+  due` run and redeploys only when the DB actually changed, so the live site
+  tracks new discoveries without a manual step. (Update its deploy step to the
+  Vercel static path above if it still calls `scripts/deploy.sh`.)
 
 ## Conventions
 

@@ -1,10 +1,70 @@
-# Deploying conference-agent (FastAPI + Lambda + PostgreSQL)
+# Deploying conference-agent
 
-The web table runs as a FastAPI app on AWS Lambda, fronted by a CloudFront
-distribution and backed by an RDS PostgreSQL database. The Lambda and the
-database share a VPC. Because the rest of the code is plain SQLAlchemy, the only
-thing that changes between local SQLite and production Postgres is the connection
-string.
+**The live deployment is a static site on Vercel — "deploy" means the static
+path below, not AWS.** The AWS FastAPI + Lambda + PostgreSQL stack is retained as
+a legacy alternative (see [Legacy: AWS](#legacy-aws-fastapi--lambda--postgresql)),
+but it is no longer the deploy target.
+
+## Deploy (static site) — the live path
+
+The site is `https://conferenceagent.vercel.app`, served as static files
+directly from Vercel: no per-request compute, no database to keep running, and no
+AWS in the request path, so query volume cannot incur cost.
+
+```bash
+# 1. Snapshot the local DB + UI into dist/ (gitignored; regenerate at deploy time)
+python scripts/build_static.py            # --db / --out override the defaults
+
+# 2. Preview locally
+( cd dist && python -m http.server 8000 ) # open http://localhost:8000
+
+# 3. Publish to Vercel (production)
+( cd dist && npx vercel deploy --prod --yes )
+```
+
+`dist/` is linked (via `dist/.vercel/project.json`) to the Vercel project
+**conferenceagent**, which serves the production alias. Deploy **only from
+`dist/`** — the `deploy/vercel/` directory holds the retired CloudFront proxy and
+is linked to the same project, so deploying from it would revert the public URL
+to proxying AWS. To refresh the live data, re-run `build_static.py` after a
+discovery run and redeploy; there is no database to push.
+
+Cloudflare Pages is an equivalent static host (static-asset bandwidth is free
+with no overage billing):
+
+```bash
+npx wrangler pages deploy dist --project-name conference-agent
+```
+
+The bundle is self-contained (`index.html`, `search.js`, `calendar.js`,
+`data/conferences.json`), so any static host works (Vercel, Cloudflare Pages,
+GitHub Pages, Netlify).
+
+How it works: the boolean query language (`web/search.py`) and the iCalendar
+builder (`conference_agent/calendar_sync.py`) are reimplemented in JavaScript
+(`web/static/search.js`, `web/static/calendar.js`), so search, sort, CSV export,
+and per-row `.ics` download all run in the browser over a single JSON snapshot of
+the catalog. `tests/test_search_parity.py` asserts the JS search selects exactly
+the same rows as the Python search, so the two cannot silently drift.
+
+> The whole-list "Subscribe (.ics)" feed (a live, server-computed feed that
+> mirrored the active search) is not available on the static site, since it
+> needs per-request compute. Per-conference `📅 cal` downloads are unaffected.
+> Natural-language ("✨ Ask") search is also omitted — it required a local Ollama
+> model and never functioned on the hosted deployment.
+
+---
+
+# Legacy: AWS (FastAPI + Lambda + PostgreSQL)
+
+> This stack is no longer the deploy target — it is kept for reference and as a
+> dynamic-backend alternative. A normal "deploy" uses the static path above.
+
+The web table can also run as a FastAPI app on AWS Lambda, fronted by a
+CloudFront distribution and backed by an RDS PostgreSQL database. The Lambda and
+the database share a VPC. Because the rest of the code is plain SQLAlchemy, the
+only thing that changes between local SQLite and production Postgres is the
+connection string.
 
 ```
 Browser ──HTTPS──> CloudFront ──(OAC, SigV4)──> Lambda Function URL ──> FastAPI (Mangum) ──VPC──> RDS PostgreSQL
@@ -17,6 +77,16 @@ Browser ──HTTPS──> CloudFront ──(OAC, SigV4)──> Lambda Function 
   distribution through — so all public traffic enters through CloudFront. This
   also gives you HTTPS, an IPv6 / HTTP3 edge, and a place to attach a custom
   domain (see [Custom domain](#custom-domain-optional)).
+
+## How the static path relates to this stack
+
+The static site exists because the deployed app is **read-only**: discovery and
+ingestion run offline (on a maintainer's machine or in CI), and the live site
+only renders the curated table, runs the boolean search, and serves
+per-conference `.ics` files — none of which needs per-request compute. That is
+why the live deployment is the [static path](#deploy-static-site--the-live-path)
+at the top of this file; this Lambda stack remains only as a dynamic-backend
+alternative.
 
 ## Architecture notes
 
@@ -61,20 +131,28 @@ sam deploy --guided        # first time; prompts for parameters and saves them
 Non-interactive, deploying with your IP allowed so you can load data afterward:
 
 ```bash
-sam deploy --stack-name conference-agent --region us-west-2 --resolve-s3 \
+sam deploy --stack-name conference-agent --region us-east-1 --resolve-s3 \
   --capabilities CAPABILITY_IAM --no-confirm-changeset \
   --parameter-overrides \
     VpcId=vpc-0a1b2c3d SubnetIds=subnet-1111,subnet-2222 \
     DBPassword=$(openssl rand -hex 16) \
-    DbAdminCidr=$(curl -s ifconfig.me)/32
+    DbAdminCidr=$(curl -s ifconfig.me)/32 \
+    AlertEmail=you@example.com MonthlyBudgetUsd=20
 ```
 
-| Parameter     | Example                         | Notes |
-|---------------|---------------------------------|-------|
-| `VpcId`       | `vpc-0a1b2c3d`                  | Default VPC is fine |
-| `SubnetIds`   | `subnet-1111,subnet-2222`       | Two+ subnets, different AZs |
-| `DBPassword`  | URL-safe, ≥ 8 chars             | Master password |
-| `DbAdminCidr` | `203.0.113.4/32` (your IP)      | Optional; enables direct data loading. Omit to keep the DB private |
+The stack must be deployed in **us-east-1**: the CloudFront-scoped WAF Web ACL
+(`AWS::WAFv2::WebACL` with `Scope: CLOUDFRONT`) can only be created there.
+
+| Parameter        | Example                         | Notes |
+|------------------|---------------------------------|-------|
+| `VpcId`          | `vpc-0a1b2c3d`                  | Default VPC is fine |
+| `SubnetIds`      | `subnet-1111,subnet-2222`       | Two+ subnets, different AZs |
+| `DBPassword`     | URL-safe, ≥ 8 chars             | Master password |
+| `DbAdminCidr`    | `203.0.113.4/32` (your IP)      | Optional; enables direct data loading. Omit to keep the DB private |
+| `AlertEmail`     | `you@example.com`               | Optional; enables the monthly budget alert (actual 80% + forecast 100%). Omit to skip. Confirm the SNS/Budgets subscription email AWS sends |
+| `MonthlyBudgetUsd` | `20`                          | Budget threshold in USD (default 20) |
+| `ReservedConcurrency` | `10`                       | Max concurrent Lambda executions (default 10) |
+| `WafRateLimitPer5Min` | `2000`                     | Per-IP requests per 5 min before WAF blocks the IP (default 2000) |
 
 Provisioning RDS takes ~5–10 minutes on the first deploy (and CloudFront takes a
 few more minutes to finish propagating to the edge). On success SAM prints:

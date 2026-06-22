@@ -146,7 +146,15 @@ def _row_to_dict(row: ConferenceRow) -> dict:
     return out
 
 
-def _run_search(query: str, sort: str, order: str) -> List[ConferenceRow]:
+# Hard ceiling on rows returned by a single search. Comfortably above the full
+# catalog, so it never truncates a normal result, but it bounds the work and
+# payload of any one request (defense-in-depth as the catalog grows).
+_MAX_RESULTS = 5000
+
+
+def _run_search(
+    query: str, sort: str, order: str, *, limit: int = _MAX_RESULTS, offset: int = 0
+) -> List[ConferenceRow]:
     _ensure_seeded()
     try:
         filt = build_filter(query)
@@ -178,6 +186,9 @@ def _run_search(query: str, sort: str, order: str) -> List[ConferenceRow]:
     if sort != "acronym":
         order_by.append(func.coalesce(ConferenceRow.acronym, ConferenceRow.name).asc())
     stmt = stmt.order_by(*order_by)
+    if offset:
+        stmt = stmt.offset(offset)
+    stmt = stmt.limit(limit)
 
     engine = get_engine(get_db_url())
     with Session(engine) as session:
@@ -196,8 +207,10 @@ def index() -> FileResponse:
 
 
 @app.get("/api/fields")
-def api_fields() -> dict:
-    return field_help()
+def api_fields() -> JSONResponse:
+    # The field/alias map only changes on redeploy, so let CloudFront and the
+    # browser cache it for an hour.
+    return JSONResponse(field_help(), headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/api/translate")
@@ -227,13 +240,21 @@ def api_search(
     sort: str = Query("upcoming_start_date"),
     order: str = Query("asc", pattern="^(asc|desc)$"),
     format: str = Query("json", pattern="^(json|csv)$"),
+    limit: int = Query(_MAX_RESULTS, ge=1, le=_MAX_RESULTS),
+    offset: int = Query(0, ge=0),
 ):
-    rows = _run_search(q, sort, order)
+    rows = _run_search(q, sort, order, limit=limit, offset=offset)
 
     if format == "csv":
         return _csv_response(rows)
 
-    return JSONResponse([_row_to_dict(r) for r in rows])
+    # Short edge/browser cache: a loop of identical queries is served from the
+    # CloudFront cache instead of re-invoking the Lambda. 300s is a small
+    # staleness window for a catalog that changes at most a few times a day.
+    return JSONResponse(
+        [_row_to_dict(r) for r in rows],
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 def _csv_response(rows: List[ConferenceRow]) -> StreamingResponse:

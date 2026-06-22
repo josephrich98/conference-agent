@@ -32,20 +32,6 @@
     }
     h1 { font-size: 20px; margin: 0 0 2px; }
     .subtitle { color: var(--muted); font-size: 13px; margin: 0; }
-    .ask-row {
-      padding: 16px 24px 0;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    #nl-query {
-      flex: 1 1 auto;
-      min-width: 260px;
-      padding: 9px 12px;
-      font-size: 14px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-    }
     .controls {
       padding: 8px 24px 16px;
       display: flex;
@@ -62,6 +48,18 @@
       border-radius: 6px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    .ai-controls { padding-bottom: 0; }
+    #nl-query {
+      flex: 1 1 420px;
+      min-width: 260px;
+      padding: 9px 12px;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    #nl-btn[disabled] { opacity: 0.6; cursor: default; }
+    .nl-status { color: var(--muted); font-size: 12px; flex: 1 1 100%; min-height: 14px; }
+    .nl-status.err { color: var(--date-recent); }
     button {
       padding: 9px 14px;
       font-size: 14px;
@@ -197,18 +195,6 @@
       cursor: pointer;
     }
     .cal-btn:hover { filter: brightness(0.98); }
-    #subscribe-panel {
-      margin: 0 0 14px;
-      padding: 12px 14px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--panel, #f8fafc);
-      font-size: 13px;
-    }
-    #subscribe-panel p { margin: 0 0 8px; }
-    .sub-row { display: flex; gap: 8px; margin-bottom: 8px; }
-    #subscribe-url { flex: 1; font-family: ui-monospace, monospace; font-size: 12px; }
-    .sub-links { color: var(--muted); }
     #toast {
       position: fixed;
       bottom: 20px;
@@ -232,12 +218,13 @@
 <body>
   <header>
     <h1>Conference Agent</h1>
-    <p class="subtitle">Curated conference deadlines and dates. Subscribe to a calendar feed, or add any row to your calendar.</p>
+    <p class="subtitle">Curated conference deadlines and dates. Search the table, or add any row to your calendar (.ics).</p>
   </header>
 
-  <div class="ask-row">
-    <input id="nl-query" type="text" placeholder='Ask in plain English — e.g.  big virtual radiology conferences with an abstract deadline after June' autocomplete="off" />
-    <button class="primary" id="ask-btn" title="Translate this to a boolean query with a local LLM">✨ Ask</button>
+  <div class="controls ai-controls">
+    <input id="nl-query" type="text" placeholder='Ask in plain English — e.g.  big virtual radiology conferences with an abstract deadline after June 2026' autocomplete="off" />
+    <button class="primary" id="nl-btn">✨ AI search</button>
+    <span id="nl-status" class="nl-status"></span>
   </div>
 
   <div class="controls">
@@ -254,25 +241,6 @@
       </div>
     </div>
     <button id="csv-btn">Export CSV</button>
-    <button id="subscribe-btn" title="Subscribe to these results as a calendar feed (no sign-in)">Subscribe (.ics)</button>
-  </div>
-
-  <div id="subscribe-panel" hidden>
-    <p>
-      Add these results to any calendar app — no sign-in. The feed tracks your current
-      search and refreshes automatically.
-    </p>
-    <div class="sub-row">
-      <input id="subscribe-url" type="text" readonly />
-      <button id="subscribe-copy">Copy</button>
-    </div>
-    <p class="sub-links">
-      <a id="subscribe-google" target="_blank" rel="noopener">Add to Google Calendar</a>
-      &nbsp;·&nbsp;
-      <a id="subscribe-webcal">Open in default calendar app</a>
-      &nbsp;·&nbsp;
-      <a id="subscribe-download" download="conferences.ics">Download .ics</a>
-    </p>
   </div>
 
   <div class="syntax">
@@ -300,6 +268,9 @@
 
   <div id="toast"></div>
 
+  <script src="search.js"></script>
+  <script src="calendar.js"></script>
+  <script src="nl_query.js"></script>
   <script>
     const COLUMNS = [
       { key: "conference", label: "Conference", sort: "acronym" },
@@ -322,6 +293,12 @@
     ];
 
     let state = { sort: "upcoming_start_date", order: "asc", rows: [] };
+
+    // The full catalog snapshot, loaded once from the static JSON. All search,
+    // sort, CSV export, and .ics generation run in the browser over this — there
+    // is no backend to query, so the site can be hosted as static files with no
+    // per-request cost.
+    let DATA = { conferences: [], columns: [], fields: [], byId: {} };
 
     const $ = (id) => document.getElementById(id);
 
@@ -551,100 +528,56 @@
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="cal" class="cal-cell">
-            <a class="cal-btn" href="/api/calendar.ics?ids=${encodeURIComponent(r.id)}" download="${r.id}.ics" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</a>
+            <button class="cal-btn" data-conf-id="${escapeHtml(r.id)}" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</button>
           </td>
         `;
         body.appendChild(tr);
       }
     }
 
-    async function search() {
+    // Run the active query over the in-memory catalog. Filtering and sorting both
+    // mirror the former server endpoints (see search.js / the old /api/search).
+    function search() {
       renderHeader();
       const q = $("query").value;
-      $("status").textContent = "Searching…";
-      const params = new URLSearchParams({ q, sort: state.sort, order: state.order });
+      let predicate;
       try {
-        const resp = await fetch(`/api/search?${params}`);
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-          $("status").textContent = `Query error: ${err.detail}`;
-          renderRows([]);
-          return;
-        }
-        const rows = await resp.json();
-        state.rows = rows;
-        $("status").textContent = `${rows.length} conference${rows.length === 1 ? "" : "s"}.`;
-        renderRows(rows);
+        predicate = ConferenceSearch.buildPredicate(q);
       } catch (e) {
-        $("status").textContent = `Request failed: ${e}`;
+        // QueryError — surface the message like the API's 400 detail.
+        $("status").textContent = `Query error: ${e.message}`;
+        renderRows([]);
+        return;
       }
+      const filtered = predicate ? DATA.conferences.filter(predicate) : DATA.conferences;
+      const rows = ConferenceSearch.sortRows(filtered, state.sort, state.order);
+      state.rows = rows;
+      $("status").textContent = `${rows.length} conference${rows.length === 1 ? "" : "s"}.`;
+      renderRows(rows);
     }
 
-    async function askNl() {
-      const text = $("nl-query").value.trim();
-      if (!text) return;
-      const btn = $("ask-btn");
-      btn.disabled = true;
-      $("status").textContent = "Translating…";
-      try {
-        const resp = await fetch(`/api/translate?${new URLSearchParams({ q: text })}`);
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-          // 503 = local LLM not running; 422 = couldn't form a valid query.
-          $("status").textContent =
-            resp.status === 503
-              ? `Plain-English search needs a local Ollama model running. ${err.detail}`
-              : `Couldn't translate that: ${err.detail}`;
-          return;
-        }
-        const data = await resp.json();
-        // Drop the translated query into the boolean box so it's transparent and
-        // editable; a toast confirms it (search() overwrites the status line).
-        $("query").value = data.query;
-        toast(data.query ? `Translated to:  ${data.query}` : "No filters detected — showing everything.", true);
-        search();
-      } catch (e) {
-        $("status").textContent = `Request failed: ${e}`;
-      } finally {
-        btn.disabled = false;
-      }
+    // Export the current result set as CSV, matching the columns and order the
+    // server CSV used (DATA.columns, taken from the snapshot).
+    function csvField(value) {
+      if (value === null || value === undefined) return "";
+      const s = String(value);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     }
 
     function exportCsv() {
-      const q = $("query").value;
-      const params = new URLSearchParams({ q, sort: state.sort, order: state.order, format: "csv" });
-      window.location = `/api/search?${params}`;
-    }
-
-    function icsUrl() {
-      const q = $("query").value;
-      const params = q ? `?${new URLSearchParams({ q })}` : "";
-      return `${location.origin}/api/calendar.ics${params}`;
-    }
-
-    function toggleSubscribe() {
-      const panel = $("subscribe-panel");
-      if (!panel.hidden) { panel.hidden = true; return; }
-      const url = icsUrl();
-      const webcal = url.replace(/^https?:/, "webcal:");
-      $("subscribe-url").value = url;
-      $("subscribe-webcal").href = webcal;
-      $("subscribe-download").href = url;
-      // Google Calendar's "add by URL" expects the webcal/https feed URL.
-      $("subscribe-google").href =
-        `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}`;
-      panel.hidden = false;
-    }
-
-    async function copySubscribeUrl() {
-      const url = $("subscribe-url").value;
-      try {
-        await navigator.clipboard.writeText(url);
-        toast("Feed URL copied.", true);
-      } catch (e) {
-        $("subscribe-url").select();
-        toast("Press Ctrl/Cmd-C to copy.", false);
+      const cols = DATA.columns;
+      const lines = [cols.join(",")];
+      for (const r of state.rows) {
+        lines.push(cols.map((c) => csvField(r[c])).join(","));
       }
+      const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "conferences.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
     }
 
     function toast(msg, ok) {
@@ -654,11 +587,29 @@
       setTimeout(() => { t.className = ""; }, 4000);
     }
 
-    async function loadFields() {
+    // Load the catalog snapshot once, then run the initial search. All later
+    // searches filter this in memory.
+    async function loadData() {
+      $("status").textContent = "Loading…";
       try {
-        const resp = await fetch("/api/fields");
-        const data = await resp.json();
-        const rows = data.fields
+        const resp = await fetch("data/conferences.json");
+        if (!resp.ok) throw new Error(resp.statusText);
+        const payload = await resp.json();
+        DATA.conferences = payload.conferences || [];
+        DATA.columns = payload.columns || [];
+        DATA.fields = payload.fields || [];
+        DATA.byId = {};
+        for (const r of DATA.conferences) DATA.byId[r.id] = r;
+        renderFields(DATA.fields);
+        search();
+      } catch (e) {
+        $("status").textContent = `Failed to load catalog: ${e.message || e}`;
+      }
+    }
+
+    function renderFields(fields) {
+      try {
+        const rows = fields
           .map(({ field, type }) =>
             `<tr><td class="fname">${field}</td><td class="muted">(${type})</td></tr>`)
           .join("");
@@ -681,9 +632,67 @@
       } catch (e) { /* non-fatal */ }
     }
 
+    // Natural-language ("AI") search. Translates the plain-English request into
+    // a boolean query with a small model that runs entirely in the browser over
+    // WebGPU (web/static/nl_query.js), then fills the boolean box and searches.
+    // The model (~1 GB) loads lazily on first use and is cached afterward, so
+    // there is no backend and no per-request cost — matching the static site.
+    function setNlStatus(msg, isErr) {
+      const el = $("nl-status");
+      el.textContent = msg || "";
+      el.className = `nl-status${isErr ? " err" : ""}`;
+    }
+
+    let nlBusy = false;
+    async function nlSearch() {
+      if (nlBusy) return;
+      const text = $("nl-query").value.trim();
+      if (!text) return;
+      if (!window.ConferenceNL || !ConferenceNL.isSupported()) {
+        setNlStatus(
+          "AI search needs WebGPU (try a recent Chrome or Edge). Use the boolean box below instead.",
+          true
+        );
+        return;
+      }
+      nlBusy = true;
+      const btn = $("nl-btn");
+      btn.disabled = true;
+      setNlStatus("Preparing the AI model… (first use downloads ~1 GB, then it is cached)");
+      try {
+        const { query, repaired } = await ConferenceNL.translate(text, DATA.fields, {
+          onProgress: (textMsg, progress) => {
+            const pct = typeof progress === "number" ? ` (${Math.round(progress * 100)}%)` : "";
+            setNlStatus(`Loading AI model…${pct}`);
+          },
+        });
+        $("query").value = query;
+        search();
+        setNlStatus(
+          query
+            ? `Translated to: ${query}${repaired ? "  (auto-corrected)" : ""}`
+            : "No specific filters detected — showing all conferences."
+        );
+      } catch (e) {
+        setNlStatus(`AI search failed: ${e.message || e}`, true);
+      } finally {
+        nlBusy = false;
+        btn.disabled = false;
+      }
+    }
+
+    $("nl-btn").addEventListener("click", nlSearch);
+    $("nl-query").addEventListener("keydown", (e) => { if (e.key === "Enter") nlSearch(); });
+
     $("search-btn").addEventListener("click", search);
     $("csv-btn").addEventListener("click", exportCsv);
-    $("subscribe-btn").addEventListener("click", toggleSubscribe);
+    // Per-row calendar download (delegated, since rows re-render on each search).
+    $("results-body").addEventListener("click", (e) => {
+      const btn = e.target.closest(".cal-btn");
+      if (!btn) return;
+      const row = DATA.byId[btn.dataset.confId];
+      if (row) ConferenceCalendar.downloadIcs(row);
+    });
     $("columns-btn").addEventListener("click", (e) => {
       e.stopPropagation();
       $("columns-panel").hidden = !$("columns-panel").hidden;
@@ -694,10 +703,7 @@
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".columns-menu")) $("columns-panel").hidden = true;
     });
-    $("subscribe-copy").addEventListener("click", copySubscribeUrl);
     $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
-    $("ask-btn").addEventListener("click", askNl);
-    $("nl-query").addEventListener("keydown", (e) => { if (e.key === "Enter") askNl(); });
     $("help-toggle").addEventListener("click", () => {
       const h = $("fields-help");
       const showing = h.style.display === "block";
@@ -707,8 +713,7 @@
 
     renderColumnsMenu();
     applyColumnVisibility();
-    loadFields();
-    search();
+    loadData();
   </script>
 </body>
 </html>

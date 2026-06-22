@@ -61,10 +61,42 @@ Parameters:
     Description: >
       Optional. ARN of an ACM certificate (must be in us-east-1, CloudFront's
       region) covering DomainName. Required only when DomainName is set.
+  ReservedConcurrency:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >
+      Maximum number of Lambda invocations that can run at once, capping the
+      blast radius (and worst-case spend) of a request flood. 0 leaves it unset:
+      reserving concurrency requires the account's total Lambda concurrency limit
+      to be well above this value (a new account starts at 10, which already caps
+      the function and leaves no room to reserve). Set a positive value only
+      after raising the account quota via Service Quotas.
+  WafRateLimitPer5Min:
+    Type: Number
+    Default: 2000
+    MinValue: 10
+    Description: >
+      WAF rate-based rule threshold: requests allowed per rolling 5-minute window
+      per client IP before that IP is temporarily blocked. 2000 ≈ 6.6 req/s
+      sustained per IP — generous for a browser, hostile to a tight loop.
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: Monthly cost threshold (USD) for the budget alert.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. Email address to notify when actual or forecast spend crosses
+      MonthlyBudgetUsd. Leave empty to skip creating the budget alarm.
 
 Conditions:
   ExposeDb: !Not [!Equals [!Ref DbAdminCidr, ""]]
   HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
 
 Globals:
   Function:
@@ -147,6 +179,11 @@ Resources:
       Description: conference-agent FastAPI app (table UI + boolean search API)
       Architectures:
         - x86_64
+      # Hard ceiling on concurrent executions: a request flood is throttled
+      # (429) at this limit instead of fanning out into unbounded invocations.
+      # Omitted when ReservedConcurrency is 0 (the default) — see the parameter.
+      ReservedConcurrentExecutions:
+        !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref "AWS::NoValue"]
       Environment:
         Variables:
           CONFERENCE_DATABASE_URL: !Sub "postgresql+pg8000://${DBUsername}:${DBPassword}@${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}"
@@ -200,10 +237,64 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
+  # Rate-based WAF in front of CloudFront. The default action is Allow; any single
+  # client IP that exceeds WafRateLimitPer5Min requests in a rolling 5-minute
+  # window is blocked until its rate falls back under the threshold. Scope must be
+  # CLOUDFRONT, which requires this stack to be deployed in us-east-1.
+  WebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${AWS::StackName}-rate-limit"
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${AWS::StackName}-webacl"
+      Rules:
+        - Name: RateLimitPerIp
+          Priority: 0
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref WafRateLimitPer5Min
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${AWS::StackName}-rate-limit"
+
+  # Custom cache policy: cache responses by full query string (so each distinct
+  # search is its own cache entry) while honoring the origin's Cache-Control.
+  # MinTTL 0 means the no-cache responses (the table shell and the .ics feed)
+  # are never cached, but /api/search and /api/fields — which now send a short
+  # max-age — are served from the edge, so a loop of identical queries hits the
+  # cache instead of waking the Lambda.
+  SearchCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-cache"
+        MinTTL: 0
+        DefaultTTL: 300
+        MaxTTL: 3600
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
+        WebACLId: !GetAtt WebAcl.Arn
         Enabled: true
         Comment: !Sub "${AWS::StackName} web (FastAPI via Lambda Function URL)"
         # PriceClass_100 = North America + Europe edges only (cheapest). Bump to
@@ -229,12 +320,12 @@ Resources:
           Compress: true
           AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
           CachedMethods: [GET, HEAD]
-          # CachingDisabled: the app is dynamic and sets its own Cache-Control
-          # (the table shell and .ics feed are no-cache, search results vary by
-          # query), so CloudFront should not introduce stale data. Switch to the
-          # managed CachingOptimized policy if you later cache hashed static
-          # assets aggressively.
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          # Custom cache policy (SearchCachePolicy): caches by full query string
+          # and honors the origin's Cache-Control. The dynamic responses (table
+          # shell, .ics feed) send no-cache and so are never cached; /api/search
+          # and /api/fields send a short max-age and so are served from the edge,
+          # shielding the Lambda from a loop of identical queries.
+          CachePolicyId: !Ref SearchCachePolicy
           # AllViewerExceptHostHeader: forward everything the viewer sent EXCEPT
           # Host. The Function URL rejects a mismatched Host, and OAC re-signs
           # with the origin host, so the viewer Host must be dropped here.
@@ -245,6 +336,40 @@ Resources:
             SslSupportMethod: sni-only
             MinimumProtocolVersion: TLSv1.2_2021
           - CloudFrontDefaultCertificate: true
+
+  # Monthly cost guardrail. Created only when AlertEmail is set. It emails on two
+  # triggers: ACTUAL spend reaching 80% of MonthlyBudgetUsd (early warning) and
+  # FORECASTED spend reaching 100% (AWS projects the month will blow the budget,
+  # often days before it actually does). Budgets are a global/account resource;
+  # the threshold covers the whole account, not just this stack.
+  CostBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasAlertEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub "${AWS::StackName}-monthly"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
 
 Outputs:
   WebsiteUrl:

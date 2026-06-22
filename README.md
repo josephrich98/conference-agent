@@ -1,10 +1,10 @@
 # conference_agent
 
-<!-- Live site. Served on AWS through CloudFront (an IAM-locked Lambda Function
-URL behind Origin Access Control). A custom domain drops in via the
-DomainName/AcmCertificateArn parameters — see DEPLOY.md. An optional Vercel proxy
-(deploy/vercel) can front this with a free conferenceagent.vercel.app name. -->
-https://dvkzefjrppdt8.cloudfront.net
+<!-- Live site. Served as a static bundle directly on Vercel (no AWS in the
+request path): `python scripts/build_static.py` then `cd dist && npx vercel
+deploy --prod`. See DEPLOY.md. The legacy AWS CloudFront/Lambda stack is a
+dynamic-backend alternative, not the deploy target. -->
+https://conferenceagent.vercel.app
 
 An AI agent that automatically compiles a table of major conferences. Includes
 website links, color-coded prior and upcoming submission deadlines and dates, and 
@@ -148,6 +148,36 @@ For a one-off discovery of a single field without the refresh wrapper:
 conference-agent discover --subcategory genomics --email
 ```
 
+## REST API (for agents and scripts)
+
+The web layer is a read-only, credential-free REST API, so any AI agent or
+script that can make an HTTP GET can pull the data directly — no MCP server or
+custom integration required. Interactive docs are at
+[`/docs`](https://conferenceagent.vercel.app/docs).
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/search?q=<query>&format=json` | Boolean search; returns the conference rows as JSON (`format=csv` for a CSV export). |
+| `GET /api/fields` | Self-describing list of queryable fields, aliases, and controlled vocabularies — call this first to learn the query grammar at runtime. |
+| `GET /api/calendar.ics?q=<query>` | The selected conferences as a subscribable iCalendar feed. |
+
+The `q` parameter uses the same boolean query language as the web table (see
+[Boolean search](#boolean-search) below); an empty `q` matches everything. An
+agent that needs to construct valid queries should read `/api/fields` first,
+since it returns the exact field names, aliases, and allowed values the parser
+accepts.
+
+### Do I need an MCP server?
+
+Generally **no**. The REST API above is public, self-documenting (via
+`/api/fields`), and already structured for programmatic use, so scripts, the
+Claude Agent SDK, web-fetch-capable models, and the discovery pipeline can all
+consume it as-is. An MCP server would mostly be a thin wrapper over these two
+endpoints; it is worth adding only to give MCP-client users (e.g. Claude
+Desktop / Claude Code) a one-click, typed `search_conferences` tool without
+each writing their own HTTP integration. For everything else, point the agent
+at `/api/fields` and `/api/search`.
+
 ## How it works
 
 1. **Discover** — `discover.py` runs an Anthropic web-search loop (research) then
@@ -225,20 +255,24 @@ CONFERENCE_NL_QUERY_MODEL=llama3.2:3b conference-agent serve   # or qwen2.5:7b
   (default `qwen2.5:1.5b`), and `CONFERENCE_NL_QUERY_TIMEOUT` — optional, configure
   the local model used for plain-English search.
 
-## Deploy to AWS (FastAPI + Lambda + PostgreSQL)
+## Deploy (static site on Vercel)
 
-The web table runs as a FastAPI app on AWS Lambda (public Function URL) backed by
-RDS PostgreSQL, provisioned by the SAM template in `infra/`. Because the code is
-plain SQLAlchemy, only the connection string changes from local SQLite. The
-Lambda uses the pure-Python `pg8000` driver, so `sam build` needs no Docker.
+The live site is a **static bundle served directly on Vercel** — no per-request
+compute and no AWS in the request path. Snapshot the catalog and publish:
 
 ```bash
-pip install -e ".[web,deploy]"   # mangum + pg8000
-cd infra && sam build && sam deploy --guided
+python scripts/build_static.py                 # snapshot DB + UI into dist/
+( cd dist && npx vercel deploy --prod --yes )  # publish to conferenceagent.vercel.app
 ```
 
-See [DEPLOY.md](DEPLOY.md) for the full walkthrough (VPC/subnets, loading data
-into RDS, and the scheduled-refresh wiring).
+Search, sort, CSV export, and per-row `.ics` download all run client-side over
+the JSON snapshot. Cloudflare Pages (`npx wrangler pages deploy dist`) is an
+equivalent static host. See [DEPLOY.md](DEPLOY.md).
+
+> **Legacy AWS path (no longer the deploy target).** The web table can also run
+> as a FastAPI app on AWS Lambda + RDS PostgreSQL via the SAM template in
+> `infra/` (`pip install -e ".[web,deploy]"; cd infra && sam build && sam deploy
+> --guided`). It is kept as a dynamic-backend alternative — see DEPLOY.md.
 
 To test locally:
 
