@@ -19,16 +19,14 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    cast,
     create_engine,
-    extract,
     func,
     select,
     text,
 )
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, column_property, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from conference_agent.config import (
     DEFAULT_DATABASE_URL,
@@ -119,17 +117,22 @@ class ConferenceRow(Base):
     # data -- so the conversion helpers below deliberately leave it untouched.
     last_checked: Mapped[Optional[Date]] = mapped_column(Date)
 
+    # Derived month-of-year fields (1-12), stored as real columns so they exist in
+    # the database file itself (browsable/queryable outside the ORM). Like ``size``
+    # and ``category`` they are denormalized but never accepted as input:
+    # ``_apply_model_to_row`` writes each from the ``Conference`` model's matching
+    # ``*_month`` property -- the month of the upcoming date, falling back to the
+    # prior one -- so they cannot drift from the dates. ``recompute_months``
+    # re-derives them all in place (e.g. to backfill rows stored before the columns
+    # existed). NULL when the underlying date is unset.
+    conference_month: Mapped[Optional[int]] = mapped_column(Integer)
+    abstract_month: Mapped[Optional[int]] = mapped_column(Integer)
+    paper_month: Mapped[Optional[int]] = mapped_column(Integer)
 
-# Derived, SQL-computed month fields (1-12). Defined as ``column_property`` rather
-# than stored columns so they are always recomputed from the dates -- there is
-# nothing to migrate or backfill, and they can never drift out of sync. Each
-# mirrors what the table shows: the upcoming edition's date, falling back to the
-# prior edition's. ``extract`` compiles to ``STRFTIME`` on SQLite and ``EXTRACT``
-# on PostgreSQL, so both backends return the month as an integer.
 
-# The dates the derived month columns are extracted from, each preferring the
-# upcoming edition over the prior. Exposed at module scope so sort code can reuse
-# them as tie-breakers without duplicating the logic.
+# The dates the stored month columns are derived from, each preferring the
+# upcoming edition over the prior. Exposed at module scope so the sort code can
+# reuse them as month-sort tie-breakers without duplicating the coalesce logic.
 conference_date_expr = func.coalesce(
     ConferenceRow.upcoming_start_date, ConferenceRow.prior_start_date
 )
@@ -142,16 +145,6 @@ paper_date_expr = func.coalesce(
 # Registration is free text (see ``ConferenceRow.prior_registration``), so unlike
 # the deadline/date fields it has no coalesced date expression and no derived
 # month column.
-
-ConferenceRow.conference_month = column_property(
-    cast(extract("month", conference_date_expr), Integer)
-)
-ConferenceRow.abstract_month = column_property(
-    cast(extract("month", abstract_date_expr), Integer)
-)
-ConferenceRow.paper_month = column_property(
-    cast(extract("month", paper_date_expr), Integer)
-)
 
 
 # --- Conversion helpers ----------------------------------------------------
@@ -239,6 +232,12 @@ def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     row.attendance_year = conf.attendance_year
     # Size is derived from attendance, never taken as input -- so it always matches.
     row.size = conf.size.value if conf.size else None
+    # Month-of-year fields are derived from the dates, never taken as input (like
+    # size/category) -- write them from the model's computed properties so the
+    # stored columns always match the dates.
+    row.conference_month = conf.conference_month
+    row.abstract_month = conf.abstract_month
+    row.paper_month = conf.paper_month
 
 
 # --- Engine / helpers ------------------------------------------------------
@@ -367,6 +366,14 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
         # Rename the legacy registration *date* columns to the new free-text
         # columns before the additive reconcile, so it sees them already present.
         _migrate_registration_date_to_text(engine)
+        # Detect a pre-existing table missing the stored month columns *before* the
+        # additive reconcile adds them, so we know to backfill them afterward (a
+        # fresh table is created by ``create_all`` already carrying them).
+        inspector = sa_inspect(engine)
+        months_missing = inspector.has_table(ConferenceRow.__tablename__) and (
+            "conference_month"
+            not in {c["name"] for c in inspector.get_columns(ConferenceRow.__tablename__)}
+        )
         _ensure_columns(engine)
         # Cache before any backfill helper, which calls get_engine reentrantly.
         _ENGINES[db_url] = engine
@@ -374,6 +381,10 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
             # The freshly added ``category`` column is empty after a rename; derive
             # it from the (renamed) subcategory tags so search/sort work at once.
             recompute_categories(db_url)
+        if months_missing:
+            # The freshly added month columns are empty; derive them from the
+            # existing dates so they match what the table shows immediately.
+            recompute_months(db_url)
     return engine
 
 
@@ -689,6 +700,30 @@ def recompute_categories(db_url: str = DEFAULT_DATABASE_URL) -> int:
             ) or None
             if category != row.category:
                 row.category = category
+                changed += 1
+        session.commit()
+    return changed
+
+
+def recompute_months(db_url: str = DEFAULT_DATABASE_URL) -> int:
+    """Re-derive every row's stored month fields from its dates.
+
+    ``conference_month`` / ``abstract_month`` / ``paper_month`` are denormalized
+    (stored so the search/sort can use them as columns) but only ever written from
+    the ``Conference`` model's ``*_month`` properties on insert/merge -- each is the
+    month of the upcoming date, falling back to the prior one. This re-derives them
+    all in place (e.g. to backfill rows stored before the columns existed, or after
+    an out-of-band date edit). Idempotent. Returns the number of rows whose stored
+    months changed.
+    """
+    engine = get_engine(db_url)
+    changed = 0
+    with Session(engine) as session:
+        for row in session.scalars(select(ConferenceRow)):
+            conf = _row_to_model(row)
+            new = (conf.conference_month, conf.abstract_month, conf.paper_month)
+            if new != (row.conference_month, row.abstract_month, row.paper_month):
+                row.conference_month, row.abstract_month, row.paper_month = new
                 changed += 1
         session.commit()
     return changed

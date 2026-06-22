@@ -35,7 +35,9 @@ deploy = ["mangum>=0.17", "pg8000>=1.30"]
 # `postgresql+psycopg://` URL with it, or `postgresql+pg8000://` with `deploy`.
 postgres = ["psycopg[binary]>=3.1"]
 notebooks = ["jupyter>=1.0", "ipykernel>=6.0"]
-dev = ["pytest>=7.0", "ruff>=0.4", "bandit>=1.7"]
+# The committed offline test suite imports the web layer (web.app / web.nl_query
+# / web.search), so the web extra is needed to run tests hermetically in CI.
+dev = ["pytest>=7.0", "ruff>=0.4", "bandit>=1.7", "conference_agent[web]"]
 
 [project.scripts]
 conference-agent = "conference_agent.cli:main"

@@ -360,6 +360,39 @@ def test_recompute_sizes_rederives_stored_bucket(tmp_path):
     assert recompute_sizes(url) == 0
 
 
+def test_month_fields_stored_and_recompute_rederives(tmp_path):
+    import datetime
+
+    from sqlalchemy.orm import Session
+
+    from conference_agent.database import ConferenceRow, get_engine, recompute_months
+
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [
+            _conf(
+                upcoming_start_date=datetime.date(2026, 11, 29),
+                upcoming_abstract_deadline=datetime.date(2026, 5, 6),
+            )
+        ],
+        db_url=url,
+    )
+    engine = get_engine(url)
+    # Stored as real columns on write, derived from the dates.
+    with Session(engine) as s:
+        row = s.get(ConferenceRow, "RSNA")
+        assert (row.conference_month, row.abstract_month, row.paper_month) == (11, 5, None)
+        # Simulate stale stored months (e.g. an out-of-band date edit).
+        row.conference_month = 1
+        s.commit()
+    changed = recompute_months(url)
+    assert changed == 1
+    with Session(engine) as s:
+        assert s.get(ConferenceRow, "RSNA").conference_month == 11
+    # Idempotent: a second pass changes nothing.
+    assert recompute_months(url) == 0
+
+
 def test_known_attendance_sources_maps_source_and_year(tmp_path):
     from conference_agent.database import known_attendance_sources
 

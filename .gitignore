@@ -82,3 +82,4 @@ token.json
 *.sql
 data/*
 !data/.gitkeep
+!data/conferences.db
