@@ -1,0 +1,8 @@
+# Runtime dependencies for the scheduled-refresh Lambda (RefreshFunction).
+# Builds on the base web runtime and adds the discovery stack: the Anthropic SDK
+# (api backend) plus the fetch/parse helpers used while extracting fields. Only
+# this function carries them — the web ConferenceFunction stays lean.
+-r requirements.txt
+anthropic>=0.40
+requests>=2.31
+beautifulsoup4>=4.12

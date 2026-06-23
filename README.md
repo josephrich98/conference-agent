@@ -95,30 +95,24 @@ MICCAI - Medical Image Computing & Computer Assisted Intervention,"radiology, ma
 
 ## Scheduled refresh
 
-Three workflows re-run discovery on a schedule (crons commented out by default;
-all are manually dispatchable). `weekly_update.yml` refreshes the flagship,
-fast-moving fields (`config.WEEKLY_SUBCATEGORIES`) via
-`daily_update.py --cadence weekly`; `monthly_update.yml` refreshes every other
-field via `--cadence monthly`. Both use the secrets above and upload the SQLite
-database as an artifact when no persistent `CONFERENCE_DATABASE_URL` is
-configured.
+Discovery re-runs on three cadences: **daily** the targeted auto-check
+(`--cadence due` — only series whose next edition is plausibly about to be
+announced, each re-checked at most every `RECHECK_INTERVAL_DAYS` (14) days),
+**weekly** the flagship fields (`--cadence weekly`), and **monthly** the rest
+(`--cadence monthly`). The "due" auto-check is gated by a `last_checked` column,
+so it needs a persistent `CONFERENCE_DATABASE_URL` to work across runs.
 
-`auto_check.yml` is the targeted "auto-check": its (commented-out) cron runs
-daily, but `--cadence due` only spends discovery calls on series whose next
-edition is plausibly about to be announced — each is re-checked at most every
-`RECHECK_INTERVAL_DAYS` (14) days, so the effective refresh per conference is
-roughly every two weeks. It runs the `claude-code` backend (the local `claude`
-CLI on a Claude Code subscription) rather than the metered API, so instead of
-`ANTHROPIC_API_KEY` it needs `CLAUDE_CODE_OAUTH_TOKEN` (generate it locally with
-`claude setup-token` and store it as a repo secret). Because the two-week
-interval is gated by a `last_checked` column, this job needs a persistent
-`CONFERENCE_DATABASE_URL` to work across runs.
+These cadences are scheduled in the AWS SAM stack via **EventBridge Scheduler**
+rules that invoke a refresh Lambda (`web/refresh_handler.py`); enable them by
+deploying with `EnableScheduledRefresh=true` (see `DEPLOY_AWS.md`). They replaced
+the former `.github/workflows/{weekly_update,monthly_update,auto_check}.yml` cron
+workflows. You can also run any cadence locally with `daily_update.py` (below).
 
 See `TAXONOMY.md` for the field map and cadence policy.
 
 ### Manual refresh (running outside the auto-check window)
 
-If you want to refresh on demand (outside of the biweekly GitHub Actions) 
+If you want to refresh on demand (outside of the scheduled refresh)
 — run `daily_update.py` yourself. By default these use the
 `claude-code` backend (the local `claude` CLI / your subscription), so no
 `ANTHROPIC_API_KEY` is required:

@@ -86,13 +86,17 @@ for the design.
 - `infra/` — AWS SAM deployment (`template.yaml`: CloudFront over an
   IAM-protected Lambda Function URL + RDS PostgreSQL in a VPC, with optional
   `DomainName`/`AcmCertificateArn` for a custom domain; `samconfig.toml`); built
-  via the root `Makefile`
+  via the root `Makefile`. The serving Lambda injects Google Analytics when
+  `GaMeasurementId` is set (AWS-only; the static site never carries it), and
+  setting `EnableScheduledRefresh=true` provisions an EventBridge Scheduler +
+  refresh Lambda (`web/refresh_handler.py`) + NAT gateway that replace the old
+  GitHub Actions refresh cron. This AWS path is a private, on-demand demo kept
+  torn down to $0 — see the gitignored `DEPLOY_AWS.md` run-book.
 - `tests/` — offline unit tests (network/LLM tests are marked and excluded from CI)
 - `data/` — generated tables / databases (gitignored, never committed)
-- `.github/workflows/` — `ci.yml` (lint + offline tests), `weekly_update.yml`
-  (flagship fields) and `monthly_update.yml` (remaining fields); both run
-  `daily_update.py --cadence ...` with crons disabled by default, manually
-  dispatchable
+- `.github/workflows/` — `ci.yml` only (lint + offline tests). The scheduled
+  refresh workflows (`weekly_update`/`monthly_update`/`auto_check`) were replaced
+  by EventBridge Scheduler in the AWS SAM stack (see `infra/template.yaml`)
 - `TAXONOMY.md` — the field taxonomy (domains → fields → flagship seeds) and the
   refresh-cadence policy
 - `DEPLOY.md` — AWS deployment walkthrough (FastAPI + Lambda + PostgreSQL)
@@ -117,8 +121,8 @@ dependencies there rather than installing ad hoc.
 ### Credentials (not committed)
 
 - `ANTHROPIC_API_KEY` — required only for the `api` discovery backend (and the
-  CI refresh workflows, which pass `--backend api`). The default `claude-code`
-  backend uses the local Claude Code subscription instead and needs no key.
+  AWS scheduled-refresh Lambda, which uses the `api` backend). The default
+  `claude-code` backend uses the local Claude Code subscription and needs no key.
 
 ## Architecture / Key Design Decisions
 

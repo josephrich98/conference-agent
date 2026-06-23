@@ -67,6 +67,10 @@ tmp.*
 output/
 outputs/
 
+# ---- Private ops docs ----
+# Personal AWS run-book (stack IDs, VPC/subnet IDs, bring-up/teardown steps).
+DEPLOY_AWS.md
+
 # ---- Secrets & credentials ----
 # Google Calendar OAuth client secrets and cached tokens must never be committed.
 credentials.json

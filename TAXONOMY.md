@@ -40,9 +40,15 @@ set per field, not per conference.
 
 - **Weekly** — flagship, fast-moving fields. Controlled by `WEEKLY_SUBCATEGORIES`:
   `radiology`, `cardiology`, `oncology`, `genomics`, `machine learning`.
-  Workflow: `.github/workflows/weekly_update.yml` → `daily_update.py --cadence weekly`.
-- **Monthly** — every other field. Workflow:
-  `.github/workflows/monthly_update.yml` → `daily_update.py --cadence monthly`.
+  Run locally via `daily_update.py --cadence weekly`.
+- **Monthly** — every other field. Run locally via
+  `daily_update.py --cadence monthly`.
+
+The scheduling of these cadences lives in the AWS SAM stack as EventBridge
+Scheduler rules (daily `due` / weekly / monthly) targeting a refresh Lambda
+(`web/refresh_handler.py`) — see `infra/template.yaml` and `DEPLOY_AWS.md`. They
+replaced the former `.github/workflows/{weekly_update,monthly_update,auto_check}.yml`
+cron workflows.
 
 Weekly and monthly are disjoint and together cover every seeded field. To change
 a field's cadence, move it in/out of `WEEKLY_SUBCATEGORIES` (one edit).
@@ -61,9 +67,10 @@ re-checked every `RECHECK_INTERVAL_DAYS` (14) days (tracked per row via
 checking stops. A never-checked, date-less row is checked once so freshly seeded
 rows get an initial pass.
 
-Workflow: `.github/workflows/auto_check.yml` → `daily_update.py --cadence due`.
-Because the 14-day interval is enforced per series, the cron can run as often as
-daily and still check each conference at most biweekly; it refreshes only the
+Run via `daily_update.py --cadence due` (locally) or the daily EventBridge
+Scheduler rule in the AWS stack (`infra/template.yaml`, `{"cadence":"due"}`).
+Because the 14-day interval is enforced per series, the schedule can run as often
+as daily and still check each conference at most biweekly; it refreshes only the
 fields that contain a due series. The three numbers above are the policy's only
 knob (in `config.py`). This job needs a persistent `CONFERENCE_DATABASE_URL` so
 `last_checked` survives between runs.

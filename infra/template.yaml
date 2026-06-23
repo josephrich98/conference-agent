@@ -91,9 +91,55 @@ Parameters:
     Description: >
       Optional. Email address to notify when actual or forecast spend crosses
       MonthlyBudgetUsd. Leave empty to skip creating the budget alarm.
+  GaMeasurementId:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^G-[A-Za-z0-9]+$'
+    Description: >
+      Optional. Google Analytics 4 measurement id (e.g. G-XXXXXXXXXX) injected
+      into the served pages by the Lambda. Leave empty to serve without analytics.
+      Only this AWS deployment carries analytics; the public Vercel static site
+      never does (it copies index.html verbatim).
+  EnableScheduledRefresh:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      When "true", provision the EventBridge Scheduler + refresh Lambda (and the
+      NAT gateway the in-VPC function needs for outbound Anthropic API calls) that
+      replace the retired GitHub Actions cron. While deployed, cost is dominated
+      by the NAT gateway (~$0.045/hr) — negligible for a short demo that is then
+      torn down. The default "false" keeps a normal deploy to just the web stack.
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >
+      Anthropic API key for the scheduled-refresh Lambda's discovery (api
+      backend). Required only when EnableScheduledRefresh is "true".
+  RefreshWeeklyScheduleExpression:
+    Type: String
+    Default: "cron(0 7 ? * MON *)"
+    Description: >
+      EventBridge Scheduler expression (UTC) for the weekly flagship-field
+      refresh. Default: 07:00 every Monday — mirrors the old weekly_update.yml.
+  RefreshMonthlyScheduleExpression:
+    Type: String
+    Default: "cron(0 7 1 * ? *)"
+    Description: >
+      EventBridge Scheduler expression (UTC) for the monthly refresh of the
+      remaining fields. Default: 07:00 on the 1st — mirrors monthly_update.yml.
+  RefreshDailyScheduleExpression:
+    Type: String
+    Default: "cron(0 6 * * ? *)"
+    Description: >
+      EventBridge Scheduler expression (UTC) for the daily targeted auto-check
+      ("due" cadence) — re-discovers only series whose next edition is plausibly
+      about to be announced. Default: 06:00 daily — mirrors auto_check.yml.
 
 Conditions:
   ExposeDb: !Not [!Equals [!Ref DbAdminCidr, ""]]
+  ScheduledRefresh: !Equals [!Ref EnableScheduledRefresh, "true"]
   HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
   HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
@@ -187,6 +233,9 @@ Resources:
       Environment:
         Variables:
           CONFERENCE_DATABASE_URL: !Sub "postgresql+pg8000://${DBUsername}:${DBPassword}@${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}"
+          # Empty unless GaMeasurementId is set; web.app injects the GA snippet
+          # only when this is a valid G-XXXX id, so analytics is AWS-only.
+          CONFERENCE_GA_ID: !Ref GaMeasurementId
       VpcConfig:
         SecurityGroupIds:
           - !GetAtt LambdaSecurityGroup.GroupId
@@ -371,6 +420,181 @@ Resources:
             - SubscriptionType: EMAIL
               Address: !Ref AlertEmail
 
+  # ---------------------------------------------------------------------------
+  # Scheduled refresh (EventBridge Scheduler -> Lambda), replacing the retired
+  # GitHub Actions cron. Everything below is created only when
+  # EnableScheduledRefresh is "true". The refresh Lambda must reach BOTH the RDS
+  # database (in-VPC) AND the Anthropic API (internet); a VPC Lambda has no
+  # internet route without a NAT gateway, so we add one. All of it is torn down
+  # with the stack, so it costs nothing at rest.
+  # ---------------------------------------------------------------------------
+
+  # Elastic IP for the NAT gateway.
+  NatEip:
+    Type: AWS::EC2::EIP
+    Condition: ScheduledRefresh
+    Properties:
+      Domain: vpc
+
+  # NAT gateway placed in the FIRST provided subnet, which in a default VPC has a
+  # route to the internet gateway (a NAT gateway must sit in an internet-facing
+  # subnet to function).
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: ScheduledRefresh
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Select [0, !Ref SubnetIds]
+
+  # A route table whose default route points at the NAT, associated with the
+  # SECOND provided subnet — where the refresh Lambda runs. Reaching RDS uses the
+  # VPC's implicit local route (works from any subnet); only outbound internet
+  # needs the NAT. The Lambda's subnet must differ from the NAT's subnet so its
+  # 0.0.0.0/0 resolves to the NAT rather than looping. Deleting this association
+  # on teardown reverts the subnet to the VPC's main route table.
+  RefreshRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: ScheduledRefresh
+    Properties:
+      VpcId: !Ref VpcId
+
+  RefreshDefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: ScheduledRefresh
+    Properties:
+      RouteTableId: !Ref RefreshRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  RefreshSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ScheduledRefresh
+    Properties:
+      RouteTableId: !Ref RefreshRouteTable
+      SubnetId: !Select [1, !Ref SubnetIds]
+
+  RefreshSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ScheduledRefresh
+    Properties:
+      GroupDescription: conference-agent scheduled-refresh Lambda egress
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all egress (RDS in-VPC + Anthropic API via the NAT)
+
+  # Let the refresh Lambda reach PostgreSQL, scoped to its security group.
+  DBIngressFromRefresh:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: ScheduledRefresh
+    Properties:
+      GroupId: !GetAtt DBSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !GetAtt RefreshSecurityGroup.GroupId
+      Description: PostgreSQL from the scheduled-refresh Lambda
+
+  RefreshFunction:
+    Type: AWS::Serverless::Function
+    Condition: ScheduledRefresh
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ../
+      Handler: web.refresh_handler.handler
+      Description: Scheduled conference discovery refresh (replaces the GitHub Actions cron).
+      Architectures:
+        - x86_64
+      # Discovery (web search + LLM extraction) is slow; give it the Lambda max
+      # and extra memory. A very large field set may still exceed 15 min — keep
+      # each schedule's cadence scoped (weekly flagship / monthly rest).
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          CONFERENCE_DATABASE_URL: !Sub "postgresql+pg8000://${DBUsername}:${DBPassword}@${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}"
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt RefreshSecurityGroup.GroupId
+        SubnetIds:
+          - !Select [1, !Ref SubnetIds]
+
+  # Role EventBridge Scheduler assumes to invoke the refresh Lambda. Scoped to
+  # the scheduler service and this account; grants only InvokeFunction on the
+  # refresh function.
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Condition: ScheduledRefresh
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: InvokeRefreshFunction
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt RefreshFunction.Arn
+                  - !Sub "${RefreshFunction.Arn}:*"
+
+  WeeklyRefreshSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: ScheduledRefresh
+    Properties:
+      Name: !Sub "${AWS::StackName}-weekly-refresh"
+      Description: Weekly flagship-field conference refresh.
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: !Ref RefreshWeeklyScheduleExpression
+      ScheduleExpressionTimezone: UTC
+      Target:
+        Arn: !GetAtt RefreshFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"cadence": "weekly"}'
+
+  MonthlyRefreshSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: ScheduledRefresh
+    Properties:
+      Name: !Sub "${AWS::StackName}-monthly-refresh"
+      Description: Monthly refresh of the remaining fields.
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: !Ref RefreshMonthlyScheduleExpression
+      ScheduleExpressionTimezone: UTC
+      Target:
+        Arn: !GetAtt RefreshFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"cadence": "monthly"}'
+
+  DailyDueRefreshSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: ScheduledRefresh
+    Properties:
+      Name: !Sub "${AWS::StackName}-daily-due-refresh"
+      Description: Daily targeted auto-check of series due for re-discovery.
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: !Ref RefreshDailyScheduleExpression
+      ScheduleExpressionTimezone: UTC
+      Target:
+        Arn: !GetAtt RefreshFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"cadence": "due"}'
+
 Outputs:
   WebsiteUrl:
     Description: Public URL of the conference-agent website and REST API.
@@ -390,3 +614,9 @@ Outputs:
   DatabaseUrlHint:
     Description: SQLAlchemy URL to use for loading data (fill in the password).
     Value: !Sub "postgresql+psycopg://${DBUsername}:<password>@${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}"
+  RefreshFunctionName:
+    Condition: ScheduledRefresh
+    Description: >
+      Name of the scheduled-refresh Lambda. Invoke it on demand with, e.g.,
+      `aws lambda invoke --function-name <this> --payload '{"cadence":"weekly"}' out.json`.
+    Value: !Ref RefreshFunction

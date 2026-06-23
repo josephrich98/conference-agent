@@ -16,11 +16,12 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 from pathlib import Path
 from typing import List
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -195,13 +196,51 @@ def _run_search(
         return list(session.scalars(stmt))
 
 
+# Google Analytics is opt-in and scoped to this server-rendered deployment only.
+# The id is read from CONFERENCE_GA_ID, which the AWS Lambda deployment sets via
+# the SAM template; the static Vercel bundle copies index.html verbatim
+# (scripts/build_static.py), so the public static site never carries analytics.
+# A GA4 measurement id looks like "G-XXXXXXXXXX"; anything else is ignored, so a
+# stray value can't inject markup.
+_GA_ID_RE = re.compile(r"^G-[A-Z0-9]+$", re.IGNORECASE)
+
+# Rendered index HTML cached per measurement id ("" = analytics disabled), so the
+# file is read and the snippet spliced at most once per id per cold container.
+_index_html_cache: dict[str, str] = {}
+
+
+def _ga_snippet(measurement_id: str) -> str:
+    """The Google Analytics (GA4) gtag.js snippet for ``measurement_id``."""
+    return (
+        f'<script async src="https://www.googletagmanager.com/gtag/js?id={measurement_id}"></script>\n'
+        "<script>\n"
+        "  window.dataLayer = window.dataLayer || [];\n"
+        "  function gtag(){dataLayer.push(arguments);}\n"
+        "  gtag('js', new Date());\n"
+        f"  gtag('config', '{measurement_id}');\n"
+        "</script>\n"
+    )
+
+
+def _render_index() -> str:
+    measurement_id = os.environ.get("CONFERENCE_GA_ID", "").strip()
+    if not _GA_ID_RE.match(measurement_id):
+        measurement_id = ""
+    if measurement_id not in _index_html_cache:
+        markup = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        if measurement_id:
+            markup = markup.replace("</head>", _ga_snippet(measurement_id) + "</head>", 1)
+        _index_html_cache[measurement_id] = markup
+    return _index_html_cache[measurement_id]
+
+
 @app.get("/")
-def index() -> FileResponse:
+def index() -> HTMLResponse:
     # no-cache: the browser must revalidate the single-page shell on every load,
     # so a redeploy is never masked by a stale cached copy. The (hashed-by-path)
     # /static assets and /api responses are unaffected.
-    return FileResponse(
-        str(_STATIC_DIR / "index.html"),
+    return HTMLResponse(
+        _render_index(),
         headers={"Cache-Control": "no-cache"},
     )
 
