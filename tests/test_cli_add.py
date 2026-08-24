@@ -76,6 +76,125 @@ def test_add_new_conference_via_flags(tmp_path):
     assert conf.conference_month == 11
 
 
+def test_add_late_abstract_and_prior_fields_via_flags(tmp_path):
+    url = _db_url(tmp_path)
+    # The CSHL Biological Data Science shape: a talk-only abstract deadline with
+    # a later poster-only one, plus the prior edition's dates.
+    code = main(
+        [
+            "--db", url, "add", "-y",
+            "--conference", "ZZB - Biological Data Science",
+            "--subcategory", "genomics",
+            "--abstract-due", "2026-08-28",
+            "--late-abstract-due", "2026-10-01",
+            "--conference-dates", "2026-11-11", "2026-11-14",
+            "--prior-abstract-due", "2025-08-29",
+            "--prior-late-abstract-due", "2025-10-02",
+            "--prior-conference-dates", "2025-11-12", "2025-11-15",
+            "--notes", "Two abstract deadlines: talks, then posters.",
+        ]
+    )
+    assert code == 0
+    conf = _by_id(url)["ZZB"]
+    assert conf.upcoming_abstract_deadline == date(2026, 8, 28)
+    assert conf.upcoming_late_abstract_deadline == date(2026, 10, 1)
+    assert conf.prior_abstract_deadline == date(2025, 8, 29)
+    assert conf.prior_late_abstract_deadline == date(2025, 10, 2)
+    assert conf.prior_start_date == date(2025, 11, 12)
+    assert conf.prior_end_date == date(2025, 11, 15)
+    assert conf.notes == "Two abstract deadlines: talks, then posters."
+    # The month columns follow from the dates, with no separate input.
+    assert (conf.abstract_month, conf.late_abstract_month) == (8, 10)
+
+
+def test_add_from_json_file(tmp_path):
+    url = _db_url(tmp_path)
+    path = tmp_path / "records.json"
+    path.write_text(
+        '[{"conference": "ZZJ - JSON Conference", "subcategory": "genomics",'
+        ' "abstract_due": "2026-04-09", "late_abstract_due": "2026-05-07",'
+        ' "location": "Boston, MA"}]',
+        encoding="utf-8",
+    )
+    assert main(["--db", url, "add", "-y", "--json", str(path)]) == 0
+    conf = _by_id(url)["ZZJ"]
+    assert conf.name == "JSON Conference"
+    assert conf.upcoming_abstract_deadline == date(2026, 4, 9)
+    assert conf.upcoming_late_abstract_deadline == date(2026, 5, 7)
+    assert conf.location == "Boston, MA"
+
+
+def test_add_json_accepts_a_single_object(tmp_path):
+    url = _db_url(tmp_path)
+    path = tmp_path / "one.json"
+    path.write_text(
+        '{"conference": "ZZO - One Object", "subcategory": "genomics"}',
+        encoding="utf-8",
+    )
+    assert main(["--db", url, "add", "-y", "--json", str(path)]) == 0
+    assert "ZZO" in _by_id(url)
+
+
+def test_add_rejects_csv_and_json_together(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    code = main(["--db", url, "add", "--csv", "a.csv", "--json", "b.json"])
+    assert code == 1
+    assert "either --csv or --json" in capsys.readouterr().err
+
+
+def test_add_late_abstract_from_csv_column(tmp_path):
+    url = _db_url(tmp_path)
+    path = tmp_path / "confs.csv"
+    path.write_text(
+        "conference,subcategory,abstract_due,late_abstract_due\n"
+        "ZZC - CSV Conference,genomics,2026-04-09,2026-05-07\n",
+        encoding="utf-8",
+    )
+    assert main(["--db", url, "add", "-y", "--csv", str(path)]) == 0
+    conf = _by_id(url)["ZZC"]
+    assert conf.upcoming_abstract_deadline == date(2026, 4, 9)
+    assert conf.upcoming_late_abstract_deadline == date(2026, 5, 7)
+
+
+def test_fields_command_lists_every_add_flag(tmp_path):
+    """`fields` is the input contract agents read — it must cover every flag."""
+
+    from conference_agent.cli import _COMPOSITE_FIELDS, _SCALAR_FIELDS, build_parser
+
+    parser = build_parser()
+    add_parser = parser._subparsers._group_actions[0].choices["add"]
+    flags = {
+        opt
+        for action in add_parser._actions
+        for opt in action.option_strings
+        if opt.startswith("--")
+    }
+    documented = {
+        f"--{f.column.replace('_', '-')}"
+        for f in list(_SCALAR_FIELDS) + list(_COMPOSITE_FIELDS)
+    }
+    # Every documented field is a real flag...
+    assert documented <= flags
+    # ...and every value-carrying flag is documented (bar the input/mode switches).
+    modes = {"--csv", "--json", "--overwrite", "--yes", "--help", "--db"}
+    assert flags - modes == documented
+
+
+def test_fields_json_is_machine_readable(capsys):
+    import json as _json
+
+    assert main(["fields", "--json"]) == 0
+    payload = _json.loads(capsys.readouterr().out)
+    names = {f["name"] for f in payload["fields"]}
+    assert {"conference", "abstract_due", "late_abstract_due"} <= names
+    late = next(f for f in payload["fields"] if f["name"] == "late_abstract_due")
+    assert late["stored_as"] == "upcoming_late_abstract_deadline"
+    assert late["flag"] == "--late-abstract-due"
+    # The derived columns are listed as outputs, never as inputs.
+    assert {d["name"] for d in payload["derived"]} & {"size", "category"}
+    assert "size" not in names
+
+
 def test_add_formats_via_flag(tmp_path):
     url = _db_url(tmp_path)
     code = main(

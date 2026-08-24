@@ -1,8 +1,10 @@
 """Calendar export — an iCalendar (``.ics``) feed of a conference's deadlines.
 
-Each conference can yield up to three all-day events for its upcoming edition:
+Each conference can yield up to four all-day events for its upcoming edition:
 
 - the upcoming abstract submission deadline
+- the upcoming late abstract deadline (the second, later abstract deadline some
+  series publish — a poster-only deadline or a late-breaking round)
 - the upcoming full paper / manuscript deadline
 - the upcoming conference dates (start through end)
 
@@ -62,10 +64,10 @@ def _event_id(conference_id: str, kind: str) -> str:
 def _edition_events(conf: Conference) -> List[CalEvent]:
     """The upcoming-edition events a conference yields.
 
-    Up to three: the abstract deadline, the paper deadline, and the conference
-    dates. Only populated upcoming fields produce an event. ``start``/``end`` are
-    inclusive (a single-day deadline has ``start == end``). Registration is free
-    text, so it produces no event.
+    Up to four: the abstract deadline, the late abstract deadline, the paper
+    deadline, and the conference dates. Only populated upcoming fields produce an
+    event. ``start``/``end`` are inclusive (a single-day deadline has
+    ``start == end``). Registration is free text, so it produces no event.
     """
     events: List[CalEvent] = []
     label = f"{conf.acronym} {conf.name}"
@@ -79,6 +81,17 @@ def _edition_events(conf: Conference) -> List[CalEvent]:
                 conf.upcoming_abstract_deadline,
                 conf.upcoming_abstract_deadline,
                 f"Abstract submission deadline for {label}.{url}",
+            )
+        )
+    if conf.upcoming_late_abstract_deadline:
+        events.append(
+            CalEvent(
+                "late-abstract",
+                f"{conf.acronym} — late abstract deadline",
+                conf.upcoming_late_abstract_deadline,
+                conf.upcoming_late_abstract_deadline,
+                f"Late abstract deadline (poster-only or late-breaking round) "
+                f"for {label}.{url}",
             )
         )
     if conf.upcoming_paper_deadline:
@@ -205,8 +218,9 @@ def conferences_to_ics(
 ) -> str:
     """Render conferences as an iCalendar (``.ics``) document.
 
-    Produces up to three all-day events per conference (abstract deadline, paper
-    deadline, conference dates) for the upcoming edition, each with reminders at
+    Produces up to four all-day events per conference (abstract deadline, late
+    abstract deadline, paper deadline, conference dates) for the upcoming
+    edition, each with reminders at
     the configured lead times (default 28 days, 7 days, and 1 day ahead).
     ``dtstamp`` defaults to the current UTC time; pass a fixed value for
     deterministic output. Lines use CRLF and are folded per RFC 5545, so the

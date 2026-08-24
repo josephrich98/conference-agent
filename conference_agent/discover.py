@@ -76,10 +76,11 @@ For each notable conference in the requested field, gather:
 - the specific subcategory field(s) it belongs to -- a conference may span more
   than one (e.g. SPR is both radiology and pediatrics; MICCAI is both radiology
   and machine learning), so list every field that applies, comma-separated
-- the most recent (prior) edition: abstract submission deadline, full paper /
-  manuscript deadline, and the conference start and end dates
-- the upcoming edition: abstract submission deadline, full paper / manuscript
-  deadline, and the conference start and end dates
+- the most recent (prior) edition: abstract submission deadline, late abstract
+  deadline (see below), full paper / manuscript deadline, and the conference
+  start and end dates
+- the upcoming edition: abstract submission deadline, late abstract deadline,
+  full paper / manuscript deadline, and the conference start and end dates
 - the host city / venue (location) of each edition
 - the official website URL
 - the submission / presentation formats the conference accepts -- any of:
@@ -107,6 +108,19 @@ the abstract submission deadline and the full paper / manuscript deadline for \
 both the prior and the upcoming edition. Many series publish these on a separate \
 page from the meeting dates, so search for them explicitly. State each deadline \
 date you find; only say a deadline is unannounced after looking for it.
+
+Many series publish TWO abstract deadlines for the same edition. When they do, \
+report both: the earlier, primary one as the abstract deadline, and the later one \
+as the LATE abstract deadline. Two shapes are common:
+- a poster-only deadline after a talk-only main deadline (e.g. CSHL Biological \
+  Data Science: "abstract deadline (consideration for a talk)" Aug 28, then \
+  "abstracts for poster presentations accepted until" Oct 1)
+- a late-breaking or late-poster round that opens after the main call closes \
+  (e.g. ASHG late-breaking abstracts, ISMB and RECOMB late posters)
+Never put the later date in the main abstract field: the main abstract deadline \
+is always the earliest one the edition publishes, so a reader who meets it can \
+submit through any route. Leave the late abstract deadline unstated when the \
+edition publishes only one abstract deadline -- most do.
 
 The attendance figure is almost never on the conference home page, so search the \
 web for it explicitly -- run queries like "<conference name> annual meeting \
@@ -148,9 +162,14 @@ Convert the research notes into structured conference records. Use ISO dates \
 not state; do not invent values. The subcategory field may list more than one \
 field when a conference spans several (e.g. "radiology, machine learning"); \
 separate the tags with commas. Capture every date the notes give: populate the \
-abstract submission deadline and the full paper / manuscript deadline for both \
-the prior and upcoming editions whenever the notes mention them, keeping each \
-deadline with the correct edition. A submission deadline that has already passed \
+abstract submission deadline, the late abstract deadline, and the full paper / \
+manuscript deadline for both the prior and upcoming editions whenever the notes \
+mention them, keeping each deadline with the correct edition. When the notes give \
+two abstract deadlines for one edition (a poster-only deadline after a talk-only \
+one, or a late-breaking / late-poster round), the EARLIER date is the abstract \
+deadline and the later one is the late abstract deadline -- never the other way \
+round. Leave the late abstract deadline "" when the notes give only one abstract \
+deadline. A submission deadline that has already passed \
 still belongs to the edition it opened; if the meeting itself is upcoming, keep \
 its abstract deadline in the upcoming column. Set the paper deadline only when \
 the notes give a distinct full-paper / manuscript deadline; leave it "" for \
@@ -184,10 +203,20 @@ class _ExtractedConference(BaseModel):
         'multiple, e.g. "radiology, machine learning"'
     )
     prior_abstract_deadline: str
+    prior_late_abstract_deadline: str = Field(
+        default="",
+        description="Second, later abstract deadline of the prior edition "
+        "(poster-only or late-breaking), or '' if it published only one",
+    )
     prior_paper_deadline: str
     prior_start_date: str
     prior_end_date: str
     upcoming_abstract_deadline: str
+    upcoming_late_abstract_deadline: str = Field(
+        default="",
+        description="Second, later abstract deadline of the upcoming edition "
+        "(poster-only or late-breaking), or '' if it publishes only one",
+    )
     upcoming_paper_deadline: str
     upcoming_start_date: str
     upcoming_end_date: str
@@ -255,10 +284,14 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         name=item.name.strip(),
         subcategories=normalize_subcategories(item.subcategory),
         prior_abstract_deadline=_parse_date(item.prior_abstract_deadline),
+        prior_late_abstract_deadline=_parse_date(item.prior_late_abstract_deadline),
         prior_paper_deadline=_parse_date(item.prior_paper_deadline),
         prior_start_date=_parse_date(item.prior_start_date),
         prior_end_date=_parse_date(item.prior_end_date),
         upcoming_abstract_deadline=_parse_date(item.upcoming_abstract_deadline),
+        upcoming_late_abstract_deadline=_parse_date(
+            item.upcoming_late_abstract_deadline
+        ),
         upcoming_paper_deadline=_parse_date(item.upcoming_paper_deadline),
         upcoming_start_date=_parse_date(item.upcoming_start_date),
         upcoming_end_date=_parse_date(item.upcoming_end_date),

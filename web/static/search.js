@@ -34,6 +34,10 @@ const TEXT_FIELDS = {
 // the displayed value: upcoming, falling back to prior.
 const DATE_FIELDS = {
   abstract_due: ["upcoming_abstract_deadline", "prior_abstract_deadline"],
+  late_abstract_due: [
+    "upcoming_late_abstract_deadline",
+    "prior_late_abstract_deadline",
+  ],
   paper_due: ["upcoming_paper_deadline", "prior_paper_deadline"],
   conference_dates: ["upcoming_start_date", "prior_start_date"],
 };
@@ -42,6 +46,7 @@ const DATE_FIELDS = {
 const INT_FIELDS = {
   conference_month: "conference_month",
   abstract_month: "abstract_month",
+  late_abstract_month: "late_abstract_month",
   paper_month: "paper_month",
 };
 
@@ -72,6 +77,11 @@ const ALIASES = {
   deadline: "abstract_due",
   upcoming_abstract_deadline: "abstract_due",
   prior_abstract: "abstract_due",
+  late_abstract: "late_abstract_due",
+  late_breaking: "late_abstract_due",
+  poster_due: "late_abstract_due",
+  upcoming_late_abstract_deadline: "late_abstract_due",
+  prior_late_abstract: "late_abstract_due",
   paper: "paper_due",
   upcoming_paper_deadline: "paper_due",
   prior_paper: "paper_due",
@@ -411,13 +421,15 @@ function buildPredicate(query) {
 const SORTABLE = new Set([
   "acronym", "name", "category", "subcategory", "format", "location", "size",
   "attendance", "remote_option", "upcoming_start_date", "upcoming_abstract_deadline",
-  "upcoming_paper_deadline", "conference_month", "abstract_month", "paper_month",
+  "upcoming_late_abstract_deadline", "upcoming_paper_deadline", "conference_month",
+  "abstract_month", "late_abstract_month", "paper_month",
 ]);
 
 // Date sort columns fall back to the prior edition's value, matching the table.
 const DATE_SORT_FALLBACK = {
   upcoming_start_date: "prior_start_date",
   upcoming_abstract_deadline: "prior_abstract_deadline",
+  upcoming_late_abstract_deadline: "prior_late_abstract_deadline",
   upcoming_paper_deadline: "prior_paper_deadline",
 };
 
@@ -425,12 +437,17 @@ const DATE_SORT_FALLBACK = {
 // falling back to prior) — mirroring the SQL column_property tie-breakers.
 const MONTH_SORT_TIEBREAKER = {
   abstract_month: ["upcoming_abstract_deadline", "prior_abstract_deadline"],
+  late_abstract_month: [
+    "upcoming_late_abstract_deadline",
+    "prior_late_abstract_deadline",
+  ],
   paper_month: ["upcoming_paper_deadline", "prior_paper_deadline"],
   conference_month: ["upcoming_start_date", "prior_start_date"],
 };
 
 const NUMERIC_SORT = new Set([
-  "attendance", "conference_month", "abstract_month", "paper_month",
+  "attendance", "conference_month", "abstract_month", "late_abstract_month",
+  "paper_month",
 ]);
 
 function coalesce(row, col, fallbackCol) {

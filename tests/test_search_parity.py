@@ -93,6 +93,31 @@ _ROWS = [
         upcoming_abstract_deadline=date(2027, 2, 10), upcoming_start_date=date(2027, 6, 4),
         upcoming_end_date=date(2027, 6, 8), format="abstract",
         upcoming_registration="Member: opens Jan; Non-member: opens Feb",
+        # A late-breaking abstract window after the main deadline.
+        upcoming_late_abstract_deadline=date(2027, 4, 20), late_abstract_month=4,
+    ),
+    # Two abstract deadlines split by presentation type: talks first, posters
+    # later (the CSHL Biological Data Science shape).
+    dict(
+        id="CSHL-BIODATA", acronym="CSHL-BIODATA", name="CSHL Biological Data Science",
+        subcategory="genomics, machine learning",
+        category="biology, artificial intelligence", size="medium", attendance=300,
+        remote_option="in-person", cost="$1,200",
+        upcoming_abstract_deadline=date(2026, 8, 28), abstract_month=8,
+        upcoming_late_abstract_deadline=date(2026, 10, 1), late_abstract_month=10,
+        upcoming_start_date=date(2026, 11, 11), upcoming_end_date=date(2026, 11, 14),
+        format="abstract, poster, oral",
+    ),
+    # Late abstract known only for the prior edition — date queries must fall
+    # back to it exactly as they do for the other date fields.
+    dict(
+        id="ISMBX", acronym="ISMBX", name="Intelligent Systems for Molecular Biology",
+        subcategory="genomics", category="biology", size="large", attendance=2000,
+        remote_option="hybrid", cost="$800",
+        prior_abstract_deadline=date(2025, 4, 9),
+        prior_late_abstract_deadline=date(2025, 5, 7), late_abstract_month=5,
+        prior_start_date=date(2025, 7, 13), prior_end_date=date(2025, 7, 17),
+        format="abstract, paper, poster",
     ),
 ]
 
@@ -119,6 +144,18 @@ _QUERIES = [
     "conference_dates:*",
     "NOT conference_dates:*",
     "abstract_due:*",
+    "late_abstract_due:*",
+    "NOT late_abstract_due:*",
+    "late_abstract_due:>=2026-09-01",
+    "late_abstract_due:<2026",
+    "late_abstract_due:2026-10",
+    "late_abstract_month:10",
+    "late_abstract_month:>=5",
+    "late_abstract_month:oct",
+    "abstract_due:*  NOT late_abstract_due:*",
+    "late_abstract_due:* AND format:poster",
+    "late_abstract:>=2026",  # alias
+    "poster_due:*",  # alias
     "(virtual OR hybrid) AND size:large",
     "subcategory:radiology NOT remote:virtual",
     "category:medicine AND category:artificial intelligence",

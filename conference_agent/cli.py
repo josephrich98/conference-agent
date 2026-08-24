@@ -3,7 +3,8 @@
 Subcommands:
   discover  — run the discovery agent and store results (optionally email a summary)
   seed      — populate the table from the static seed catalog (no API needed)
-  add       — manually add/update conferences from flags or a CSV (no API needed)
+  add       — manually add/update conferences from flags, a CSV, or JSON (no API)
+  fields    — print the field vocabulary `add` accepts (human table or --json)
   list      — print the stored conference table
   serve     — launch the web table interface (boolean search + calendar export)
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from conference_agent.config import (
@@ -22,39 +24,145 @@ from conference_agent.config import (
 from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS
 from conference_agent.models import CONFERENCE_FORMATS, RemoteOption
 
-# The `add` flags and the --csv header share one vocabulary: the web table's
-# column names (the only extra is url, the link behind the conference name). Each
-# entry maps a table-facing column to the stored record field. The month columns
-# are derived from the dates by the database, so they are not inputs; conference
-# (acronym + name), subcategory (multi-valued), and conference_dates (start/end
-# pair) are handled separately in _build_record. Raw stored field names appear on
-# the right as their own keys too, so a table "Export CSV" re-imports unchanged.
-_COLUMN_TO_FIELD = {
-    "location": "location",
-    "size": "size",  # accepted from a CSV export but ignored on write (derived)
-    "attendance": "attendance",
-    "attendance_year": "attendance_year",
-    "attendance_source": "attendance_source",
-    "remote": "remote_option",
-    "remote_option": "remote_option",
-    "cost": "cost",
-    "url": "url",
-    "notes": "notes",
-    "name": "name",
-    "abstract_due": "upcoming_abstract_deadline",
-    "paper_due": "upcoming_paper_deadline",
-    "registration": "upcoming_registration",
-    "upcoming_abstract_deadline": "upcoming_abstract_deadline",
-    "upcoming_paper_deadline": "upcoming_paper_deadline",
-    "upcoming_start_date": "upcoming_start_date",
-    "upcoming_end_date": "upcoming_end_date",
-    "upcoming_registration": "upcoming_registration",
-    "prior_abstract_deadline": "prior_abstract_deadline",
-    "prior_paper_deadline": "prior_paper_deadline",
-    "prior_start_date": "prior_start_date",
-    "prior_end_date": "prior_end_date",
-    "prior_registration": "prior_registration",
-}
+# --- Field registry --------------------------------------------------------
+#
+# One table of the fields `add` accepts, and the single source of truth for all
+# three input paths: the flags, the --csv header, and the --json record keys.
+# The argparse flags below are generated from it, `_build_record` maps it to
+# stored field names, and `conference-agent fields` prints it -- so a new field
+# is added here once and every path picks it up together.
+#
+# `column` is the table-facing name (a `--flag` with dashes, a CSV header, or a
+# JSON key); `field` is the stored record field. The derived columns (month,
+# size, category) are outputs, never inputs, so they are not listed here.
+
+
+@dataclass(frozen=True)
+class _Field:
+    column: str  # table-facing name: --flag / CSV header / JSON key
+    field: str  # stored record field
+    kind: str  # "text" | "date" | "int" | "enum" | "tags" | "dates" | "identity"
+    help: str
+
+
+# Scalar fields: one value, mapped straight through to a stored field. Generated
+# into `--flag` arguments in the order listed here.
+_SCALAR_FIELDS = (
+    _Field("location", "location", "text", "Host city / venue, e.g. 'Chicago, IL'"),
+    _Field(
+        "attendance", "attendance", "int",
+        "Typical annual attendee count, e.g. 45000 (the Size column is derived "
+        "from this automatically)",
+    ),
+    _Field(
+        "attendance_year", "attendance_year", "int",
+        "Year the attendance figure describes, e.g. 2025",
+    ),
+    _Field(
+        "attendance_source", "attendance_source", "text",
+        "Source URL the attendance figure was taken from (stored for provenance)",
+    ),
+    _Field(
+        "remote_option", "remote_option", "enum",
+        "Remote attendance option: " + " / ".join(o.value for o in RemoteOption),
+    ),
+    _Field("cost", "cost", "text", "Registration cost summary"),
+    _Field("url", "url", "text", "Official conference website (the conference-name link)"),
+    _Field("notes", "notes", "text", "Free-form notes"),
+    _Field(
+        "abstract_due", "upcoming_abstract_deadline", "date",
+        "Upcoming abstract submission deadline. When an edition publishes two "
+        "abstract deadlines, this is always the EARLIER, primary one",
+    ),
+    _Field(
+        "late_abstract_due", "upcoming_late_abstract_deadline", "date",
+        "Upcoming late abstract deadline: the second, later abstract deadline "
+        "some series publish -- a poster-only deadline after a talk-only main "
+        "one (CSHL Biological Data Science), or a late-breaking / late-poster "
+        "round (ASHG, ISMB, RECOMB). Leave unset for the majority of series, "
+        "which publish a single abstract deadline",
+    ),
+    _Field(
+        "paper_due", "upcoming_paper_deadline", "date",
+        "Upcoming full-paper / manuscript deadline (proceedings venues only -- "
+        "leave unset for abstract-only meetings)",
+    ),
+    _Field(
+        "registration", "upcoming_registration", "text",
+        "Upcoming registration window(s), free text, e.g. 'Early bird: Jan 5 - "
+        "Mar 1; Regular: Mar 2 - conference'",
+    ),
+    _Field(
+        "prior_abstract_due", "prior_abstract_deadline", "date",
+        "Prior edition's abstract submission deadline",
+    ),
+    _Field(
+        "prior_late_abstract_due", "prior_late_abstract_deadline", "date",
+        "Prior edition's late abstract deadline (see --late-abstract-due)",
+    ),
+    _Field(
+        "prior_paper_due", "prior_paper_deadline", "date",
+        "Prior edition's full-paper / manuscript deadline",
+    ),
+    _Field(
+        "prior_registration", "prior_registration", "text",
+        "Prior edition's registration window(s), free text",
+    ),
+)
+
+# Fields whose value is not a plain scalar, handled explicitly in
+# `_build_record`. Listed here so `conference-agent fields` documents the whole
+# input vocabulary in one place.
+_COMPOSITE_FIELDS = (
+    _Field(
+        "conference", "acronym + name", "identity",
+        "The conference as the table's first column shows it: 'ACRONYM - Full "
+        "Name'. A bare acronym updates an existing row. Required (per row)",
+    ),
+    _Field(
+        "subcategory", "subcategory", "tags",
+        "One or more specific-field tags, e.g. radiology 'machine learning' "
+        "(comma-separated in a CSV cell). The broad Category column is derived "
+        "from these automatically",
+    ),
+    _Field(
+        "format", "format", "tags",
+        "Submission/presentation format(s) offered, any of: "
+        + " / ".join(CONFERENCE_FORMATS),
+    ),
+    _Field(
+        "conference_dates", "upcoming_start_date + upcoming_end_date", "dates",
+        "Upcoming conference date(s): START [END] (space-separated in a CSV cell)",
+    ),
+    _Field(
+        "prior_conference_dates", "prior_start_date + prior_end_date", "dates",
+        "Prior edition's conference date(s): START [END]",
+    ),
+)
+
+# Table-facing column -> stored field, for the scalar fields. The raw stored
+# field names are accepted as aliases too (each field maps to itself), so the web
+# table's "Export CSV" re-imports unchanged. `size` and `category` are derived, so
+# they are accepted from an export and ignored on write.
+_COLUMN_TO_FIELD = {f.column: f.field for f in _SCALAR_FIELDS}
+_COLUMN_TO_FIELD.update({f.field: f.field for f in _SCALAR_FIELDS})
+_COLUMN_TO_FIELD.update(
+    {
+        "name": "name",
+        "remote": "remote_option",
+        "size": "size",  # accepted from a CSV export but ignored on write (derived)
+        "prior_start_date": "prior_start_date",
+        "prior_end_date": "prior_end_date",
+        "upcoming_start_date": "upcoming_start_date",
+        "upcoming_end_date": "upcoming_end_date",
+    }
+)
+
+
+def _flag_for(column: str) -> str:
+    """The `--flag` spelling of a table-facing column name."""
+    return "--" + column.replace("_", "-")
+
 
 # The table's "Conference" column reads "ACRONYM — Name"; --conference (and the
 # csv "conference" column) accept the same form. Split on the first spaced
@@ -74,15 +182,14 @@ def _parse_conference(value: str) -> tuple[str, "str | None"]:
 def _build_record(fields: dict) -> dict:
     """Build a storage record from table-facing column/flag values.
 
-    ``fields`` maps the table's column names -- the vocabulary shared by the flags
-    and the ``--csv`` header (conference, subcategory, location, attendance,
-    attendance_year, attendance_source, remote/remote_option, cost, abstract_due,
-    paper_due, conference_dates, registration, url, notes) -- to their (string or
-    list) values.
+    ``fields`` maps the table's column names -- the vocabulary defined by
+    :data:`_SCALAR_FIELDS` + :data:`_COMPOSITE_FIELDS`, shared by the flags, the
+    ``--csv`` header, and the ``--json`` record keys -- to their (string or list)
+    values. Run ``conference-agent fields`` to print the full vocabulary.
     The raw stored field names are accepted as aliases too, so a table CSV export
-    round-trips (the derived ``size`` and ``category`` columns are accepted but
-    ignored on write). Returns a dict keyed by stored field names, suitable for
-    ``merge_records`` / ``Conference``.
+    round-trips (the derived ``size``, ``category`` and ``*_month`` columns are
+    accepted but ignored on write). Returns a dict keyed by stored field names,
+    suitable for ``merge_records`` / ``Conference``.
     """
     record: dict = {}
     # Identity: the "conference" column is "ACRONYM - Name"; explicit acronym / id
@@ -123,17 +230,23 @@ def _build_record(fields: dict) -> dict:
     if formats not in (None, "", []):
         record["format"] = formats
 
-    # conference_dates is the upcoming START [END] pair: a list (flags) or a
+    # conference_dates is a START [END] pair: a list (flags) or a
     # whitespace-separated cell (csv), mirroring the table's single dates column.
-    dates = fields.get("conference_dates")
-    if dates not in (None, "", []):
+    # The prior edition's pair works the same way under prior_conference_dates.
+    for column, start_field, end_field in (
+        ("conference_dates", "upcoming_start_date", "upcoming_end_date"),
+        ("prior_conference_dates", "prior_start_date", "prior_end_date"),
+    ):
+        dates = fields.get(column)
+        if dates in (None, "", []):
+            continue
         parts = dates if isinstance(dates, list) else str(dates).split()
         if len(parts) > 2:
-            raise ValueError("conference_dates takes at most two dates: START [END].")
+            raise ValueError(f"{column} takes at most two dates: START [END].")
         if parts:
-            record["upcoming_start_date"] = parts[0]
+            record[start_field] = parts[0]
         if len(parts) == 2:
-            record["upcoming_end_date"] = parts[1]
+            record[end_field] = parts[1]
     return record
 
 
@@ -177,21 +290,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_add = sub.add_parser(
         "add",
-        help="Manually add or update conferences (no API): one via flags, or many via --csv",
-        description="Add or update conferences without the discovery agent. The "
-        "flags mirror the web table's columns (plus --url, the link behind the "
-        "conference name); the submission/conference month columns are derived "
-        "from the dates automatically. By default only the fields you supply are "
-        "written, so an existing series keeps the rest of its data; pass "
-        "--overwrite to replace the whole row (unsupplied fields are cleared).",
+        help="Manually add or update conferences (no API): one via flags, or many "
+        "via --csv / --json",
+        description="Add or update conferences without the discovery agent. "
+        "Three interchangeable inputs -- flags for one conference, --csv or "
+        "--json for many -- all share one field vocabulary; run "
+        "`conference-agent fields` to print it (or `fields --json` for a "
+        "machine-readable schema). The flags mirror the web table's columns; the "
+        "Category, Size and month columns are derived on write and cannot be set "
+        "by hand. By default only the fields you supply are written, so an "
+        "existing series keeps the rest of its data; pass --overwrite to replace "
+        "the whole row (unsupplied fields are cleared).",
     )
     p_add.add_argument(
         "--csv",
-        help="CSV file whose header columns are field names (acronym or id, name, "
-        "subcategory, location, attendance, attendance_year, attendance_source, "
-        "remote_option, cost, url, the upcoming_*/prior_* date columns, notes). The "
-        "web table's 'Export CSV' is a valid input (the derived 'size' and "
-        "'category' columns are ignored on write). Each row is one conference.",
+        help="CSV file whose header columns are the field names printed by "
+        "`conference-agent fields` (the flag names without the leading dashes). "
+        "The web table's 'Export CSV' is a valid input -- the raw stored field "
+        "names are accepted as aliases and the derived 'size' / 'category' / "
+        "'*_month' columns are ignored on write. Each row is one conference.",
+    )
+    p_add.add_argument(
+        "--json",
+        dest="json_path",
+        help="JSON file holding one record object, or a list of them, keyed by "
+        "the same field names as --csv. The most convenient path for an agent: "
+        "run `conference-agent fields --json` for the machine-readable schema.",
     )
     p_add.add_argument(
         "--conference",
@@ -218,36 +342,6 @@ def build_parser() -> argparse.ArgumentParser:
         "space-separated: any of abstract, paper, poster, oral "
         "(e.g. --format abstract poster oral)",
     )
-    p_add.add_argument("--location", help="Host city / venue")
-    p_add.add_argument(
-        "--attendance",
-        type=int,
-        metavar="N",
-        help="Typical annual attendee count, e.g. 45000 (the Size column is derived "
-        "from this automatically).",
-    )
-    p_add.add_argument(
-        "--attendance-year",
-        type=int,
-        metavar="YYYY",
-        help="Year the attendance figure describes, e.g. 2025",
-    )
-    p_add.add_argument(
-        "--attendance-source",
-        help="Source URL the attendance figure was taken from (stored for provenance)",
-    )
-    p_add.add_argument(
-        "--remote-option",
-        choices=[o.value for o in RemoteOption],
-        help="Remote attendance option: in-person / virtual / hybrid / unknown",
-    )
-    p_add.add_argument("--cost", help="Registration cost summary")
-    p_add.add_argument(
-        "--abstract-due", metavar="YYYY-MM-DD", help="Upcoming abstract submission deadline"
-    )
-    p_add.add_argument(
-        "--paper-due", metavar="YYYY-MM-DD", help="Upcoming full-paper / manuscript deadline"
-    )
     p_add.add_argument(
         "--conference-dates",
         nargs="+",
@@ -255,11 +349,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Upcoming conference date(s): START [END]",
     )
     p_add.add_argument(
-        "--registration",
-        metavar="TEXT",
-        help="Upcoming registration info, free text (e.g. 'Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference')",
+        "--prior-conference-dates",
+        nargs="+",
+        metavar="YYYY-MM-DD",
+        help="Prior edition's conference date(s): START [END]",
     )
-    p_add.add_argument("--url", help="Official conference website (the conference-name link)")
+    # Every scalar field gets a flag, generated from the registry so the flag
+    # surface can never fall behind the CSV/JSON vocabulary.
+    for spec in _SCALAR_FIELDS:
+        kwargs: dict = {"help": spec.help}
+        if spec.kind == "int":
+            kwargs["type"] = int
+            kwargs["metavar"] = "YYYY" if spec.column.endswith("_year") else "N"
+        elif spec.kind == "date":
+            kwargs["metavar"] = "YYYY-MM-DD"
+        elif spec.kind == "enum":
+            kwargs["choices"] = [o.value for o in RemoteOption]
+        else:
+            kwargs["metavar"] = "TEXT"
+        p_add.add_argument(_flag_for(spec.column), dest=spec.column, **kwargs)
     p_add.add_argument(
         "--overwrite",
         action="store_true",
@@ -272,6 +380,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the confirmation prompt shown when a conference matches an "
         "existing table entry (assume yes and update it).",
+    )
+
+    p_fields = sub.add_parser(
+        "fields",
+        help="Print the fields `add` accepts (the flag / CSV / JSON vocabulary)",
+        description="Print every field `conference-agent add` accepts, with the "
+        "flag spelling, the value it takes, and what it means. This is the "
+        "authoritative input contract -- it is generated from the same registry "
+        "that defines the flags, so it can never fall out of date. Pass --json "
+        "for a machine-readable version (for an agent building a --json record).",
+    )
+    p_fields.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Emit the field list as JSON instead of a table.",
     )
 
     p_list = sub.add_parser("list", help="Print the stored conference table")
@@ -325,44 +449,64 @@ def _cmd_seed(args) -> int:
     return 0
 
 
-def _load_add_records(args) -> list[dict]:
-    """Collect the conference record(s) for `add` from --csv or the flags.
+def _rows_to_records(rows: list, source: str) -> list[dict]:
+    """Convert raw CSV/JSON row dicts into storage records, one per conference."""
+    records = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"{source} entry {index} is not an object.")
+        present = {k: v for k, v in row.items() if v not in (None, "", [])}
+        record = _build_record(present)
+        if not record.get("acronym"):
+            raise ValueError(
+                f"{source} entry {index} has no 'conference' (or 'acronym') value."
+            )
+        records.append(record)
+    return records
 
-    Both paths use the table's column vocabulary and route through
-    :func:`_build_record`, so a CSV column behaves exactly like its flag.
+
+def _load_add_records(args) -> list[dict]:
+    """Collect the conference record(s) for `add` from --csv, --json, or the flags.
+
+    All three paths share the table's column vocabulary (see :data:`_SCALAR_FIELDS`)
+    and route through :func:`_build_record`, so a CSV header, a JSON key, and a
+    flag with the same name behave identically.
     """
+    if args.csv and args.json_path:
+        raise ValueError("Pass either --csv or --json, not both.")
+
     if args.csv:
         import csv
 
         with open(args.csv, newline="", encoding="utf-8") as fh:
             rows = list(csv.DictReader(fh))
-        records = []
-        for index, row in enumerate(rows, start=1):
-            present = {k: v for k, v in row.items() if v not in (None, "")}
-            record = _build_record(present)
-            if not record.get("acronym"):
-                raise ValueError(f"CSV row {index} has no 'conference' (or 'acronym') value.")
-            records.append(record)
-        return records
+        return _rows_to_records(rows, "CSV row")
+
+    if args.json_path:
+        import json
+
+        with open(args.json_path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if isinstance(payload, dict):
+            payload = [payload]
+        if not isinstance(payload, list):
+            raise ValueError("--json must hold a record object or a list of them.")
+        return _rows_to_records(payload, "JSON record")
 
     if not args.conference:
-        raise ValueError("--conference is required when not using --csv.")
+        raise ValueError("--conference is required when not using --csv or --json.")
+    # Flag values, keyed by their table-facing column name. The scalar flags are
+    # generated from the registry, so reading them back from the registry keeps
+    # the two ends in step automatically.
     fields = {
         "conference": args.conference,
         "subcategory": args.subcategory,
         "format": args.format,
-        "location": args.location,
-        "attendance": args.attendance,
-        "attendance_year": args.attendance_year,
-        "attendance_source": args.attendance_source,
-        "remote_option": args.remote_option,
-        "cost": args.cost,
-        "abstract_due": args.abstract_due,
-        "paper_due": args.paper_due,
         "conference_dates": args.conference_dates,
-        "registration": args.registration,
-        "url": args.url,
+        "prior_conference_dates": args.prior_conference_dates,
     }
+    for spec in _SCALAR_FIELDS:
+        fields[spec.column] = getattr(args, spec.column)
     record = _build_record({k: v for k, v in fields.items() if v not in (None, "")})
     if not record.get("acronym"):
         raise ValueError("--conference must include an acronym.")
@@ -489,6 +633,72 @@ def _cmd_add(args) -> int:
     return 0
 
 
+# Fields the table shows but `add` never accepts: they are derived on write from
+# the inputs above, so setting them by hand is impossible by design.
+_DERIVED_FIELDS = (
+    ("category", "Derived from subcategory (models.SUBCATEGORY_TO_CATEGORY)"),
+    ("size", "Derived from attendance (models.size_for_attendance)"),
+    ("abstract_month", "Derived from abstract_due (upcoming, else prior)"),
+    ("late_abstract_month", "Derived from late_abstract_due (upcoming, else prior)"),
+    ("paper_month", "Derived from paper_due (upcoming, else prior)"),
+    ("conference_month", "Derived from conference_dates (upcoming, else prior)"),
+)
+
+# How each field kind is written on the command line / in a file.
+_KIND_VALUE = {
+    "text": "text",
+    "date": "YYYY-MM-DD",
+    "int": "integer",
+    "enum": "one of: " + ", ".join(o.value for o in RemoteOption),
+    "tags": "one or more tags (space-separated as a flag, comma-separated in a cell)",
+    "dates": "START [END], both YYYY-MM-DD",
+    "identity": "'ACRONYM - Full Name', or a bare ACRONYM to update",
+}
+
+
+def _cmd_fields(args) -> int:
+    """Print the input vocabulary shared by --flag, --csv header, and --json key."""
+    specs = list(_COMPOSITE_FIELDS) + list(_SCALAR_FIELDS)
+
+    if args.as_json:
+        import json
+
+        payload = {
+            "fields": [
+                {
+                    "name": f.column,
+                    "flag": _flag_for(f.column),
+                    "value": _KIND_VALUE[f.kind],
+                    "stored_as": f.field,
+                    "required": f.column == "conference",
+                    "description": f.help,
+                }
+                for f in specs
+            ],
+            "derived": [{"name": n, "description": d} for n, d in _DERIVED_FIELDS],
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    from tabulate import tabulate
+
+    table = [[_flag_for(f.column), f.column, _KIND_VALUE[f.kind], f.help] for f in specs]
+    print(
+        "Fields accepted by `conference-agent add`. The same names work three "
+        "ways:\n  a --flag, a --csv header column, or a --json record key.\n"
+    )
+    print(tabulate(table, headers=["Flag", "Name", "Value", "Meaning"], tablefmt="github"))
+    print("\nDerived columns (never accepted as input -- computed on write):\n")
+    print(
+        tabulate(
+            [[n, d] for n, d in _DERIVED_FIELDS],
+            headers=["Column", "Derived from"],
+            tablefmt="github",
+        )
+    )
+    return 0
+
+
 def _cmd_list(args) -> int:
     from tabulate import tabulate
 
@@ -533,6 +743,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "discover": _cmd_discover,
         "seed": _cmd_seed,
         "add": _cmd_add,
+        "fields": _cmd_fields,
         "list": _cmd_list,
         "serve": _cmd_serve,
     }

@@ -305,6 +305,8 @@
       { key: "cost", label: "Cost", sort: null },
       { key: "abstract_month", label: "Abstract month", sort: "abstract_month" },
       { key: "upcoming_abstract_deadline", label: "Abstract due", sort: "upcoming_abstract_deadline" },
+      { key: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month" },
+      { key: "upcoming_late_abstract_deadline", label: "Late abstract due", sort: "upcoming_late_abstract_deadline" },
       { key: "paper_month", label: "Paper month", sort: "paper_month" },
       { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
       { key: "conference_month", label: "Conference month", sort: "conference_month" },
@@ -543,6 +545,8 @@
           <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
           <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month)}</td>
           <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
+          <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month)}</td>
+          <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline)}</td>
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month)}</td>
           <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month)}</td>

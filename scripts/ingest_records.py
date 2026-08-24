@@ -12,15 +12,25 @@ row's name, url, category, and attendance intact (see
 
 Input is one or more JSON files, each a list of record objects (or a single
 object). Each record is keyed by ``id`` (the acronym) and may carry any of:
-``prior_abstract_deadline``, ``prior_paper_deadline``, ``prior_start_date``,
-``prior_end_date``, ``upcoming_abstract_deadline``,
+``prior_abstract_deadline``, ``prior_late_abstract_deadline``,
+``prior_paper_deadline``, ``prior_start_date``, ``prior_end_date``,
+``upcoming_abstract_deadline``, ``upcoming_late_abstract_deadline``,
 ``upcoming_paper_deadline``, ``upcoming_start_date``, ``upcoming_end_date``
 (ISO ``YYYY-MM-DD``), the free-text ``prior_registration`` /
 ``upcoming_registration`` (registration windows, e.g. "Early bird: Jan 5 - Mar 1;
 Regular: Mar 2 - conference"), plus
 ``location``, ``url``, ``cost``, ``notes``, ``remote_option``, ``attendance``,
-``attendance_year``, ``attendance_source``. The ``size`` bucket is derived from
-``attendance`` on write, not read from the record. Unknown keys are ignored.
+``attendance_year``, ``attendance_source``. The ``*_late_abstract_deadline``
+fields hold the second, later abstract deadline some series publish (a
+poster-only deadline, or a late-breaking round); the main abstract deadline is
+always the earlier, primary one. The ``size`` bucket and the ``*_month`` columns
+are derived on write, not read from the record. Unknown keys are ignored.
+
+``conference-agent add --json`` accepts the same files (and additionally the
+table-facing column names, e.g. ``conference`` / ``abstract_due`` /
+``late_abstract_due``), with a confirmation prompt before it updates an existing
+row. Run ``conference-agent fields`` to print the full vocabulary. This script
+remains the unattended, glob-friendly path.
 
 Usage:
     python scripts/ingest_records.py data/research/*.json

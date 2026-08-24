@@ -180,6 +180,37 @@ def test_abstract_month_derived_from_abstract_deadline():
     assert _conf(upcoming_abstract_deadline=date(2026, 4, 8)).abstract_month_name == "April"
 
 
+def test_late_abstract_month_derived_from_late_deadline():
+    # The late abstract deadline is the second, later one an edition publishes
+    # (a poster-only deadline, or a late-breaking round). Its month is derived
+    # exactly like abstract_month: upcoming wins, falls back to prior.
+    assert _conf(upcoming_late_abstract_deadline=date(2026, 10, 1)).late_abstract_month == 10
+    assert _conf(prior_late_abstract_deadline=date(2025, 9, 12)).late_abstract_month == 9
+    assert _conf(
+        prior_late_abstract_deadline=date(2025, 9, 12),
+        upcoming_late_abstract_deadline=date(2026, 10, 1),
+    ).late_abstract_month == 10
+    assert _conf().late_abstract_month is None
+    assert (
+        _conf(upcoming_late_abstract_deadline=date(2026, 10, 1)).late_abstract_month_name
+        == "October"
+    )
+
+
+def test_late_abstract_deadline_is_independent_of_the_main_one():
+    # CSHL Biological Data Science: talks Aug 28, posters Oct 1. The main
+    # abstract field holds the earlier, primary deadline; neither month leaks.
+    conf = _conf(
+        upcoming_abstract_deadline=date(2026, 8, 28),
+        upcoming_late_abstract_deadline=date(2026, 10, 1),
+    )
+    assert (conf.abstract_month, conf.late_abstract_month) == (8, 10)
+    # A series with only one abstract deadline leaves the late one blank.
+    single = _conf(upcoming_abstract_deadline=date(2026, 8, 28))
+    assert single.upcoming_late_abstract_deadline is None
+    assert single.late_abstract_month is None
+
+
 def test_paper_month_derived_from_paper_deadline():
     # Each month is derived independently from its own deadline.
     assert _conf(upcoming_paper_deadline=date(2026, 5, 13)).paper_month == 5

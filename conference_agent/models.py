@@ -261,6 +261,15 @@ class Conference(BaseModel):
     prior_abstract_deadline: Optional[date] = Field(
         None, description="Abstract submission deadline of the most recent edition"
     )
+    prior_late_abstract_deadline: Optional[date] = Field(
+        None,
+        description=(
+            "Second, later abstract deadline of the most recent edition -- a "
+            "poster-only or late-breaking window (see "
+            ":attr:`upcoming_late_abstract_deadline`). Blank when the edition "
+            "published only one abstract deadline."
+        ),
+    )
     prior_paper_deadline: Optional[date] = Field(
         None, description="Full paper / manuscript deadline of the most recent edition"
     )
@@ -283,6 +292,19 @@ class Conference(BaseModel):
     # --- Upcoming edition --------------------------------------------------
     upcoming_abstract_deadline: Optional[date] = Field(
         None, description="Abstract submission deadline of the upcoming edition"
+    )
+    upcoming_late_abstract_deadline: Optional[date] = Field(
+        None,
+        description=(
+            "Second, later abstract deadline of the upcoming edition. Many series "
+            "publish two: a main deadline and a later window that is narrower in "
+            "scope. Two shapes recur -- a poster-only deadline when the main one "
+            "is talk-only (CSHL Biological Data Science: talks Aug 28, posters "
+            "Oct 1), and a late-breaking / late-poster round after the main call "
+            "closes (ASHG, ISMB, RECOMB). Both go here; "
+            "``upcoming_abstract_deadline`` always holds the earlier, primary "
+            "deadline. Blank when the edition publishes only one."
+        ),
     )
     upcoming_paper_deadline: Optional[date] = Field(
         None, description="Full paper / manuscript deadline of the upcoming edition"
@@ -439,6 +461,25 @@ class Conference(BaseModel):
     def abstract_month_name(self) -> Optional[str]:
         """Full month name abstracts are due in (e.g. ``"April"``)."""
         month = self.abstract_month
+        return calendar.month_name[month] if month else None
+
+    @property
+    def late_abstract_month(self) -> Optional[int]:
+        """Month (1-12) the late abstract is due, derived from that deadline.
+
+        Mirrors :attr:`abstract_month`: the upcoming edition's late abstract
+        deadline, falling back to the prior edition's. ``None`` when the series
+        has no second abstract deadline recorded.
+        """
+        deadline = (
+            self.upcoming_late_abstract_deadline or self.prior_late_abstract_deadline
+        )
+        return deadline.month if deadline else None
+
+    @property
+    def late_abstract_month_name(self) -> Optional[str]:
+        """Full month name late abstracts are due in (e.g. ``"October"``)."""
+        month = self.late_abstract_month
         return calendar.month_name[month] if month else None
 
     @property

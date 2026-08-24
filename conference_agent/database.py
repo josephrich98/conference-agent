@@ -74,6 +74,11 @@ class ConferenceRow(Base):
     category: Mapped[Optional[str]] = mapped_column(String, index=True)
 
     prior_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
+    # Second, later abstract deadline of the edition -- a poster-only deadline
+    # when the main one is talk-only, or a late-breaking / late-poster round.
+    # See ``Conference.upcoming_late_abstract_deadline``. NULL for the majority
+    # of series, which publish a single abstract deadline.
+    prior_late_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     prior_paper_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     prior_start_date: Mapped[Optional[Date]] = mapped_column(Date)
     prior_end_date: Mapped[Optional[Date]] = mapped_column(Date)
@@ -84,6 +89,7 @@ class ConferenceRow(Base):
     prior_registration: Mapped[Optional[str]] = mapped_column(Text)
 
     upcoming_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
+    upcoming_late_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_paper_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_start_date: Mapped[Optional[Date]] = mapped_column(Date, index=True)
     upcoming_end_date: Mapped[Optional[Date]] = mapped_column(Date)
@@ -127,6 +133,7 @@ class ConferenceRow(Base):
     # existed). NULL when the underlying date is unset.
     conference_month: Mapped[Optional[int]] = mapped_column(Integer)
     abstract_month: Mapped[Optional[int]] = mapped_column(Integer)
+    late_abstract_month: Mapped[Optional[int]] = mapped_column(Integer)
     paper_month: Mapped[Optional[int]] = mapped_column(Integer)
 
 
@@ -139,6 +146,10 @@ conference_date_expr = func.coalesce(
 abstract_date_expr = func.coalesce(
     ConferenceRow.upcoming_abstract_deadline, ConferenceRow.prior_abstract_deadline
 )
+late_abstract_date_expr = func.coalesce(
+    ConferenceRow.upcoming_late_abstract_deadline,
+    ConferenceRow.prior_late_abstract_deadline,
+)
 paper_date_expr = func.coalesce(
     ConferenceRow.upcoming_paper_deadline, ConferenceRow.prior_paper_deadline
 )
@@ -146,15 +157,23 @@ paper_date_expr = func.coalesce(
 # the deadline/date fields it has no coalesced date expression and no derived
 # month column.
 
+# The stored derived-month columns. ``get_engine`` backfills them when a
+# pre-existing database is missing any one of them (see ``recompute_months``).
+_MONTH_COLUMNS = frozenset(
+    {"conference_month", "abstract_month", "late_abstract_month", "paper_month"}
+)
+
 
 # --- Conversion helpers ----------------------------------------------------
 
 _DATE_FIELDS = (
     "prior_abstract_deadline",
+    "prior_late_abstract_deadline",
     "prior_paper_deadline",
     "prior_start_date",
     "prior_end_date",
     "upcoming_abstract_deadline",
+    "upcoming_late_abstract_deadline",
     "upcoming_paper_deadline",
     "upcoming_start_date",
     "upcoming_end_date",
@@ -199,6 +218,23 @@ def _row_to_model(row: ConferenceRow) -> Conference:
     return Conference(**data)
 
 
+def _derived_months(row: ConferenceRow) -> tuple:
+    """The row's four derived month values, in column order.
+
+    Derives them through the :class:`Conference` model's ``*_month`` properties
+    so the rule lives in exactly one place (each is the month of the upcoming
+    date, falling back to the prior). Returns
+    ``(conference, abstract, late_abstract, paper)``.
+    """
+    conf = _row_to_model(row)
+    return (
+        conf.conference_month,
+        conf.abstract_month,
+        conf.late_abstract_month,
+        conf.paper_month,
+    )
+
+
 def _normalize_url(url: "str | None") -> "str | None":
     """Ensure a stored URL carries a scheme.
 
@@ -237,6 +273,7 @@ def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     # stored columns always match the dates.
     row.conference_month = conf.conference_month
     row.abstract_month = conf.abstract_month
+    row.late_abstract_month = conf.late_abstract_month
     row.paper_month = conf.paper_month
 
 
@@ -370,9 +407,12 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
         # additive reconcile adds them, so we know to backfill them afterward (a
         # fresh table is created by ``create_all`` already carrying them).
         inspector = sa_inspect(engine)
-        months_missing = inspector.has_table(ConferenceRow.__tablename__) and (
-            "conference_month"
-            not in {c["name"] for c in inspector.get_columns(ConferenceRow.__tablename__)}
+        # Any missing month column means the backfill is needed: a database
+        # created before ``late_abstract_month`` was added has the other three but
+        # not it, and ``_ensure_columns`` adds columns empty.
+        months_missing = inspector.has_table(ConferenceRow.__tablename__) and not (
+            _MONTH_COLUMNS
+            <= {c["name"] for c in inspector.get_columns(ConferenceRow.__tablename__)}
         )
         _ensure_columns(engine)
         # Cache before any backfill helper, which calls get_engine reentrantly.
@@ -603,6 +643,24 @@ def merge_records(
                 if row.format != hardcoded_format_str:
                     row.format = hardcoded_format_str
                     changed = True
+            # The month columns are derived from the (possibly just-merged) dates,
+            # never taken from the record -- so, like size and category above, they
+            # are re-derived here rather than left carrying the month of a date the
+            # merge has since replaced.
+            months = _derived_months(row)
+            if months != (
+                row.conference_month,
+                row.abstract_month,
+                row.late_abstract_month,
+                row.paper_month,
+            ):
+                (
+                    row.conference_month,
+                    row.abstract_month,
+                    row.late_abstract_month,
+                    row.paper_month,
+                ) = months
+                changed = True
             if changed:
                 written += 1
         session.commit()
@@ -720,10 +778,20 @@ def recompute_months(db_url: str = DEFAULT_DATABASE_URL) -> int:
     changed = 0
     with Session(engine) as session:
         for row in session.scalars(select(ConferenceRow)):
-            conf = _row_to_model(row)
-            new = (conf.conference_month, conf.abstract_month, conf.paper_month)
-            if new != (row.conference_month, row.abstract_month, row.paper_month):
-                row.conference_month, row.abstract_month, row.paper_month = new
+            new = _derived_months(row)
+            current = (
+                row.conference_month,
+                row.abstract_month,
+                row.late_abstract_month,
+                row.paper_month,
+            )
+            if new != current:
+                (
+                    row.conference_month,
+                    row.abstract_month,
+                    row.late_abstract_month,
+                    row.paper_month,
+                ) = new
                 changed += 1
         session.commit()
     return changed

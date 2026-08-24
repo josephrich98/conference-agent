@@ -53,6 +53,85 @@ def test_upsert_then_query_round_trips(tmp_path):
     assert got.cost == "$1,095 (member)"
 
 
+def test_late_abstract_deadlines_round_trip_with_derived_month(tmp_path):
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [
+            _conf(
+                acronym="CSHL-BIODATA",
+                name="CSHL Biological Data Science",
+                subcategory="genomics",
+                upcoming_abstract_deadline=date(2026, 8, 28),
+                upcoming_late_abstract_deadline=date(2026, 10, 1),
+                prior_late_abstract_deadline=date(2024, 9, 26),
+            )
+        ],
+        db_url=url,
+    )
+    got = query_conferences(db_url=url)[0]
+    assert got.upcoming_abstract_deadline == date(2026, 8, 28)
+    assert got.upcoming_late_abstract_deadline == date(2026, 10, 1)
+    assert got.prior_late_abstract_deadline == date(2024, 9, 26)
+
+    # The month column is derived on write from the upcoming date, like the
+    # other month columns — never accepted as input.
+    engine = get_engine(url)
+    with Session(engine) as session:
+        row = session.get(ConferenceRow, "CSHL-BIODATA")
+        assert row.abstract_month == 8
+        assert row.late_abstract_month == 10
+
+
+def test_merge_records_fills_late_abstract_deadline(tmp_path):
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [_conf(acronym="ASHG2", name="Human Genetics", subcategory="genomics")],
+        db_url=url,
+    )
+    # A partial record carrying only the newly announced late-breaking window.
+    merge_records(
+        [{"id": "ASHG2", "upcoming_late_abstract_deadline": "2026-08-26"}], db_url=url
+    )
+    got = query_conferences(db_url=url)[0]
+    assert got.upcoming_late_abstract_deadline == date(2026, 8, 26)
+    assert got.name == "Human Genetics"  # untouched by the partial merge
+
+
+def test_merge_records_re_derives_stale_month_columns(tmp_path):
+    """A merged date must not leave the derived month column on the old value."""
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [
+            _conf(
+                acronym="ZZM",
+                name="Month Derivation",
+                subcategory="genomics",
+                upcoming_abstract_deadline=date(2026, 10, 1),
+            )
+        ],
+        db_url=url,
+    )
+    engine = get_engine(url)
+    with Session(engine) as session:
+        assert session.get(ConferenceRow, "ZZM").abstract_month == 10
+
+    # Correct the deadline to the earlier, primary one and add the late deadline.
+    merge_records(
+        [
+            {
+                "id": "ZZM",
+                "upcoming_abstract_deadline": "2026-08-28",
+                "upcoming_late_abstract_deadline": "2026-10-01",
+            }
+        ],
+        db_url=url,
+    )
+    with Session(engine) as session:
+        row = session.get(ConferenceRow, "ZZM")
+        assert row.abstract_month == 8  # follows the new date, not the old one
+        assert row.late_abstract_month == 10
+
+
 def test_formats_round_trip_and_collapse_empty_to_none(tmp_path):
     url = _db_url(tmp_path)
     # A non-seed acronym so curated floors do not interfere; formats supplied out

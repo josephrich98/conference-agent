@@ -57,6 +57,24 @@ def test_full_edition_yields_three_events():
     assert "SUMMARY:RSNA 2026" in ics
 
 
+def test_late_abstract_deadline_yields_a_fourth_event():
+    # CSHL Biological Data Science shape: a talk-only main deadline followed by a
+    # poster-only one. Both belong on the calendar, as distinct events.
+    ics = _ics([_conf(upcoming_late_abstract_deadline=date(2026, 10, 1))])
+    assert ics.count("BEGIN:VEVENT") == 4
+    assert "SUMMARY:RSNA — abstract deadline" in ics
+    assert "SUMMARY:RSNA — late abstract deadline" in ics
+    assert "DTSTART;VALUE=DATE:20261001" in ics
+    # Its UID is distinct from the main abstract event's, so a re-fetch updates
+    # each in place rather than collapsing them.
+    assert cs._event_id("RSNA", "late-abstract") != cs._event_id("RSNA", "abstract")
+
+
+def test_no_late_abstract_deadline_yields_no_extra_event():
+    # The majority of series publish a single abstract deadline.
+    assert _ics([_conf()]).count("BEGIN:VEVENT") == 3
+
+
 def test_registration_text_yields_no_event():
     # Registration is free text (windows, not a date), so it produces no event:
     # the feed still has only the three deadline/date events.

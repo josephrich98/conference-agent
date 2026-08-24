@@ -34,9 +34,20 @@ conference-agent serve                                   # launch the web table 
 ## Add conferences manually
 
 To enter or correct dates by hand — no API, no discovery agent — use
-`conference-agent add`. The flags mirror the table columns (the only extra is
-`--url`, the link behind the conference name); dates are ISO `YYYY-MM-DD`, and the
-submission/conference month columns are derived from the dates automatically. By
+`conference-agent add`. Three interchangeable inputs share one field vocabulary:
+flags for a single conference, `--csv` or `--json` for many.
+
+Start with the field reference, which is generated from the same registry that
+defines the flags, so it can never fall out of date:
+
+```bash
+conference-agent fields          # human-readable table
+conference-agent fields --json   # machine-readable schema (for an agent)
+```
+
+Every name it lists works three ways — as a `--flag`, as a `--csv` header
+column, and as a `--json` record key. Dates are ISO `YYYY-MM-DD`. The `Category`,
+`Size` and month columns are *derived* on write and cannot be set by hand. By
 default only the fields you supply are written, so an existing series keeps the
 rest of its data:
 
@@ -55,6 +66,51 @@ conference-agent add \
   --url https://www.rsna.org/annual-meeting
 ```
 
+### Two abstract deadlines for one edition
+
+Some series publish a second, later abstract deadline alongside the main one.
+Two shapes recur: a **poster-only** deadline after a talk-only main deadline
+(CSHL Biological Data Science takes abstracts for talks until Aug 28 and posters
+until Oct 1), and a **late-breaking / late-poster** round that opens after the
+main call closes (ASHG, ISMB, RECOMB). Both go in `--late-abstract-due`:
+
+```bash
+conference-agent add -y \
+  --conference "CSHL-BIODATA - CSHL Biological Data Science" \
+  --abstract-due 2026-08-28 \
+  --late-abstract-due 2026-10-01
+```
+
+`--abstract-due` always holds the **earlier, primary** deadline — a reader who
+meets it can still submit through any route — so the column stays sortable and
+never overstates how much time is left. The `Late abstract month` and `Late
+abstract due` columns show the second date, `late_abstract_due` /
+`late_abstract_month` are searchable, and the row's `.ics` gains a fourth event
+for it. Most series publish only one abstract deadline, and their late columns
+stay blank.
+
+### Many at once (`--json` / `--csv`)
+
+`--json` is usually the easiest path for an agent: one object per conference,
+keyed by the names `conference-agent fields --json` reports.
+
+```bash
+conference-agent add -y --json new_conferences.json
+```
+
+```json
+[
+  {
+    "conference": "CSHL-BIODATA - CSHL Biological Data Science",
+    "subcategory": "genomics, machine learning",
+    "abstract_due": "2026-08-28",
+    "late_abstract_due": "2026-10-01",
+    "conference_dates": "2026-11-11 2026-11-14",
+    "url": "https://meetings.cshl.edu/meetings.aspx?meet=DATA"
+  }
+]
+```
+
 The `Size` column (large / medium / small) is derived automatically from
 `--attendance` — there is no size flag to set. A figure of 1,000+ is large,
 100–999 medium, under 100 small; with no attendance, size is left blank. (The
@@ -68,12 +124,9 @@ before updating it, so a typo can't silently overwrite an existing series. Pass
 already exists, the command updates only the fields you pass — add `--overwrite`
 to replace the whole row instead, clearing anything you omit.
 
-To load several at once, point `--csv` at a file whose header columns are the same
-column names as the flags — `conference`, `subcategory`, `format`, `location`,
-`attendance`,
-`attendance_year`, `attendance_source`, `remote_option`, `cost`, `abstract_due`,
-`paper_due`, `conference_dates`, `url` — with one conference per row (the derived
-`size` and `category` columns, as in a table export, are accepted but ignored).
+`--csv` takes a file whose header columns are the same names, one conference per
+row (the derived `size`, `category` and `*_month` columns, as in a table export,
+are accepted but ignored).
 `conference_dates` is a single cell holding the start
 and (optional) end date separated by a space, and a multi-value `subcategory` or
 `format` (any of abstract / paper / poster / oral) is quoted

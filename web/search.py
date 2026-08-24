@@ -50,8 +50,11 @@ The query fields mirror the table's column headers exactly: ``conference``,
 ``category`` (one of the ten top-level buckets), ``subcategory`` (the specific
 field), ``format`` (any of abstract / paper / poster / oral),
 ``location``, ``size``, ``remote``, ``cost``, ``registration`` (free text — a
-substring match), ``abstract_due``, ``paper_due``, ``conference_dates``,
-``conference_month``, ``abstract_month``, and ``paper_month`` (the month fields
+substring match), ``abstract_due``, ``late_abstract_due`` (the second, later
+abstract deadline some series publish — a poster-only deadline or a
+late-breaking round), ``paper_due``, ``conference_dates``,
+``conference_month``, ``abstract_month``, ``late_abstract_month``, and
+``paper_month`` (the month fields
 are integers 1-12, derived from the displayed dates, e.g. ``conference_month:11``,
 ``abstract_month:<=April``, or ``abstract_month>=June``). Each date field
 matches the value the column actually shows — the upcoming edition's date,
@@ -107,6 +110,13 @@ _TEXT_FIELDS = {
 # to the prior edition's (coalesce), matching the table's "upcoming ?? prior ?? —".
 _DATE_FIELDS = {
     "abstract_due": ("upcoming_abstract_deadline", "prior_abstract_deadline"),
+    # The second, later abstract deadline some series publish (a poster-only
+    # deadline, or a late-breaking / late-poster round). Its own field rather
+    # than a second value on ``abstract_due`` so both stay sortable dates.
+    "late_abstract_due": (
+        "upcoming_late_abstract_deadline",
+        "prior_late_abstract_deadline",
+    ),
     "paper_due": ("upcoming_paper_deadline", "prior_paper_deadline"),
     "conference_dates": ("upcoming_start_date", "prior_start_date"),
 }
@@ -118,6 +128,7 @@ _DATE_FIELDS = {
 _INT_FIELDS = {
     "conference_month": "conference_month",
     "abstract_month": "abstract_month",
+    "late_abstract_month": "late_abstract_month",
     "paper_month": "paper_month",
 }
 
@@ -135,10 +146,12 @@ _FIELD_TYPES = {
     "cost": "string",
     "registration": "string",
     "abstract_due": "date",
+    "late_abstract_due": "date",
     "paper_due": "date",
     "conference_dates": "date",
     "conference_month": "int: 1-12 or month name",
     "abstract_month": "int: 1-12 or month name",
+    "late_abstract_month": "int: 1-12 or month name",
     "paper_month": "int: 1-12 or month name",
 }
 
@@ -171,6 +184,11 @@ _ALIASES = {
     "deadline": "abstract_due",
     "upcoming_abstract_deadline": "abstract_due",
     "prior_abstract": "abstract_due",
+    "late_abstract": "late_abstract_due",
+    "late_breaking": "late_abstract_due",
+    "poster_due": "late_abstract_due",
+    "upcoming_late_abstract_deadline": "late_abstract_due",
+    "prior_late_abstract": "late_abstract_due",
     "paper": "paper_due",
     "upcoming_paper_deadline": "paper_due",
     "prior_paper": "paper_due",

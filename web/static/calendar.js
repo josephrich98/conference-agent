@@ -3,9 +3,10 @@
  * `conference_agent/calendar_sync.py`.
  *
  * The static site has no server, so a row's "📅 cal" button builds the .ics text
- * here and downloads it as a Blob. The output mirrors the Python feed: up to three
- * all-day events for the upcoming edition (abstract deadline, paper deadline,
- * conference dates), each with reminders at the configured lead times, RFC 5545
+ * here and downloads it as a Blob. The output mirrors the Python feed: up to four
+ * all-day events for the upcoming edition (abstract deadline, late abstract
+ * deadline, paper deadline, conference dates), each with reminders at the
+ * configured lead times, RFC 5545
  * line folding, and a stable base32hex-derived UID per event so re-downloading
  * updates the event in place rather than duplicating it.
  *
@@ -117,6 +118,17 @@ function editionEvents(row) {
       start: row.upcoming_abstract_deadline,
       end: row.upcoming_abstract_deadline,
       description: `Abstract submission deadline for ${label}.${url}`,
+    });
+  }
+  if (row.upcoming_late_abstract_deadline) {
+    events.push({
+      kind: "late-abstract",
+      summary: `${acronym} — late abstract deadline`,
+      start: row.upcoming_late_abstract_deadline,
+      end: row.upcoming_late_abstract_deadline,
+      description:
+        `Late abstract deadline (poster-only or late-breaking round) ` +
+        `for ${label}.${url}`,
     });
   }
   if (row.upcoming_paper_deadline) {

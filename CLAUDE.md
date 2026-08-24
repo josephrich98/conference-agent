@@ -13,11 +13,12 @@ and a derived **category** (one of ten fixed top-level buckets: humanities,
 social science, medicine, biology, chemistry, physics, math, stats, computer
 science, artificial intelligence — computed from the subcategories via
 `models.SUBCATEGORY_TO_CATEGORY`, never hand-set), its **prior** and
-**upcoming** editions (abstract deadline, paper deadline, conference dates for
+**upcoming** editions (abstract deadline, late abstract deadline, paper
+deadline, conference dates for
 each, plus a free-text registration field per edition capturing the registration
 window(s) — e.g. "Early bird: Jan 5 – Mar 1; Regular: Mar 2 – conference" — since
 registration is published as periods, not a single date), a derived conference
-month, abstract month, and paper
+month, abstract month, late abstract month, and paper
 month (each
 taken from the matching date so rows sort by season even when their years are
 offset; registration, being free text, has no derived month), the official
@@ -49,8 +50,8 @@ for the design.
     list of submission/presentation `formats` (any of abstract / paper / poster /
     oral), an `attendance`
     figure, and derived `categories` / `category` (the broad bucket), `conference_month`
-    / `abstract_month` / `paper_month` (registration is free text — `registration`
-    property, no derived month) and
+    / `abstract_month` / `late_abstract_month` / `paper_month` (registration is
+    free text — `registration` property, no derived month) and
     `size` / `attendance_display` / `format` / `subcategory` properties);
     `ConferenceSize` and `RemoteOption` enums; `CATEGORIES` and
     `SUBCATEGORY_TO_CATEGORY` (the top-level vocabulary + derivation map);
@@ -72,7 +73,11 @@ for the design.
     "due" for re-discovery (6–12-month staleness window, biweekly re-check via a
     `last_checked` column) so `daily_update.py --cadence due` targets only them
   - `notify.py` — email summary after a discovery / daily refresh
-  - `cli.py` — command-line entry point (`discover` / `seed` / `list` / `serve`)
+  - `cli.py` — command-line entry point (`discover` / `seed` / `add` / `fields` /
+    `list` / `serve`). `_SCALAR_FIELDS` + `_COMPOSITE_FIELDS` is the single
+    registry defining what `add` accepts; it generates the argparse flags, the
+    `--csv`/`--json` column vocabulary, and the `fields` reference output, so a
+    new field is added in one place and every input path picks it up
 - `web/` — FastAPI app + static single-page table (`search.py` boolean-query
   language, `nl_query.py` optional natural-language → boolean-query translation
   via a local Ollama model, `app.py` REST API, `static/index.html`, `handler.py`
@@ -140,6 +145,24 @@ dependencies there rather than installing ad hoc.
   `claude-code` backend uses the CLI's `--json-schema` structured output. The
   `api` model id lives in `config.py` (default: the latest Claude model); the
   `claude-code` backend defaults to Claude Code's configured model.
+- **One canonical, sortable abstract deadline plus an explicit late one.** Some
+  series publish two abstract deadlines for the same edition: a poster-only
+  deadline after a talk-only main one (CSHL Biological Data Science — talks Aug
+  28, posters Oct 1), or a late-breaking / late-poster round after the main call
+  closes (ASHG, ISMB, RECOMB). A survey of 12 genomics/ML series found 1 of the
+  former and 6 of the latter, so this is common enough to model but far from
+  universal. Rather than overload one column with two dates (which would break
+  sorting, the `abstract_month` derivation, date comparisons in the search, and
+  the `.ics` event) or add a column per presentation type (which would serve only
+  the oral/poster case and not late-breaking), there is one extra date field per
+  edition: `*_late_abstract_deadline`, with `late_abstract_month` derived from it
+  exactly as `abstract_month` is from the main deadline. `*_abstract_deadline`
+  always holds the **earliest, primary** deadline — in every case surveyed the
+  earliest is also the main submission route, so sorting on it never overstates
+  the time remaining. The pair is threaded through the search
+  (`late_abstract_due` / `late_abstract_month`), the table (two columns), the
+  calendar (a fourth event, kind `late-abstract`), the discovery prompts, and
+  the manual `add` paths.
 - **Controlled vocabularies.** `ConferenceSize` (`large`/`medium`/`small`) and
   `RemoteOption` (`in-person`/`virtual`/`hybrid`/`unknown`) are enums, not free
   text, so the table and queries can filter/color consistently.

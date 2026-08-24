@@ -96,10 +96,14 @@ it (medicine, computer science, artificial intelligence, ...).
 small→small.
 - Map attendance/format/remote words to their controlled vocabularies.
 - "deadline" alone means abstract_due. "no/without X" means NOT X:*.
+- A "late", "late-breaking", or "poster-only" deadline means late_abstract_due \
+(or late_abstract_month) -- the second, later abstract deadline some series \
+publish. A plain deadline request means abstract_due.
 - Time of year WITHOUT a specific year — "in November", "in the fall", "any \
 year", a month range like "September through January" — uses a MONTH field \
-(conference_month / abstract_month / paper_month), never a date field. Use a \
-date field (conference_dates / abstract_due / paper_due) ONLY when a specific \
+(conference_month / abstract_month / late_abstract_month / paper_month), never \
+a date field. Use a date field (conference_dates / abstract_due / \
+late_abstract_due / paper_due) ONLY when a specific \
 year is named ("in 2027", "after June 2026"). Never invent a year that the \
 request did not state.
 - A range is two bounds. A range that stays within the year — "March to June" — \

@@ -33,6 +33,7 @@ from conference_agent.database import (
     abstract_date_expr,
     conference_date_expr,
     get_engine,
+    late_abstract_date_expr,
     paper_date_expr,
     seed_conferences,
 )
@@ -61,6 +62,8 @@ _RESULT_COLUMNS = [
     "url",
     "abstract_month",
     "upcoming_abstract_deadline",
+    "late_abstract_month",
+    "upcoming_late_abstract_deadline",
     "paper_month",
     "upcoming_paper_deadline",
     "conference_month",
@@ -68,6 +71,7 @@ _RESULT_COLUMNS = [
     "upcoming_end_date",
     "upcoming_registration",
     "prior_abstract_deadline",
+    "prior_late_abstract_deadline",
     "prior_paper_deadline",
     "prior_start_date",
     "prior_end_date",
@@ -88,9 +92,11 @@ _SORTABLE = {
     "remote_option",
     "upcoming_start_date",
     "upcoming_abstract_deadline",
+    "upcoming_late_abstract_deadline",
     "upcoming_paper_deadline",
     "conference_month",
     "abstract_month",
+    "late_abstract_month",
     "paper_month",
 }
 
@@ -102,6 +108,7 @@ _SORTABLE = {
 _DATE_SORT_FALLBACK = {
     "upcoming_start_date": "prior_start_date",
     "upcoming_abstract_deadline": "prior_abstract_deadline",
+    "upcoming_late_abstract_deadline": "prior_late_abstract_deadline",
     "upcoming_paper_deadline": "prior_paper_deadline",
 }
 
@@ -111,6 +118,7 @@ _DATE_SORT_FALLBACK = {
 # mirrors its column_property in ``database.py``.
 _MONTH_SORT_TIEBREAKER = {
     "abstract_month": abstract_date_expr,
+    "late_abstract_month": late_abstract_date_expr,
     "paper_month": paper_date_expr,
     "conference_month": conference_date_expr,
 }
