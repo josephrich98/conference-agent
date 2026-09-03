@@ -2,7 +2,7 @@
 # Scheduled discovery: runs every 2 weeks (Saturday 2 AM)
 # Discovers conferences due for auto-check (6-12 month staleness window)
 # Uses claude-code backend (local Claude Code subscription, no API key)
-# If the discovery run changes the local DB, it pushes to AWS (scripts/deploy.sh)
+# If the discovery run changes the local DB, it redeploys the static site (scripts/deploy_static.sh)
 #
 # Cron fires this weekly; the parity guard below skips odd ISO weeks so the
 # job effectively runs every other Saturday. (Cron can't express "every 2
@@ -47,8 +47,8 @@ LOG_FILE="$LOG_DIR/discovery_${TIMESTAMP}.log"
   DB_HASH_AFTER="$(db_hash "$DB_FILE")"
   echo ""
   if [ "$DB_HASH_BEFORE" != "$DB_HASH_AFTER" ]; then
-    echo "Database changed — pushing to AWS via scripts/deploy.sh"
-    bash scripts/deploy.sh || echo "WARNING: scripts/deploy.sh failed (exit $?)"
+    echo "Database changed — redeploying static site via scripts/deploy_static.sh"
+    bash scripts/deploy_static.sh || echo "WARNING: scripts/deploy_static.sh failed (exit $?)"
   else
     echo "Database unchanged — skipping AWS push"
   fi
