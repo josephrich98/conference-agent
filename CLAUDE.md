@@ -260,6 +260,10 @@ dependencies there rather than installing ad hoc.
   ( cd dist && npx vercel deploy --prod --yes )  # publish to the conferenceagent project
   ```
 
+  `scripts/deploy_static.sh` wraps exactly these two steps (activating the
+  conda env if needed), so `bash scripts/deploy_static.sh` is the one-command
+  deploy. The Vercel CLI must already be logged in, or `VERCEL_TOKEN` set.
+
   The live site is `https://conferenceagent.vercel.app`, served as static files
   directly from Vercel — no per-request compute and no AWS in the request path.
   `dist/` is linked (via `dist/.vercel/project.json`) to the Vercel project
@@ -276,9 +280,9 @@ dependencies there rather than installing ad hoc.
   when explicitly working on the AWS stack.
 - **Automatic refresh.** `scripts/scheduled_discovery.sh` (the biweekly cron job)
   hashes `data/conferences.db` before and after the `daily_update.py --cadence
-  due` run and redeploys only when the DB actually changed, so the live site
-  tracks new discoveries without a manual step. (Update its deploy step to the
-  Vercel static path above if it still calls `scripts/deploy.sh`.)
+  due` run and redeploys (via `scripts/deploy_static.sh`) only when the DB
+  actually changed, so the live site tracks new discoveries without a manual
+  step.
 
 ## Conventions
 
