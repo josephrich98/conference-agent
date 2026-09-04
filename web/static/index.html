@@ -383,8 +383,13 @@
     // Full month names indexed 1-12 (index 0 unused), for the derived month columns.
     const MONTHS = ["", "January", "February", "March", "April", "May", "June",
       "July", "August", "September", "October", "November", "December"];
-    function monthCell(n) {
-      return (n >= 1 && n <= 12) ? MONTHS[n] : '<span class="muted">—</span>';
+    // A derived month cell, colored like the date it was derived from (the same
+    // coalesced upcoming-else-prior date its neighboring column shows), so the
+    // urgency signal survives when the full date columns are hidden. The color is
+    // judged by the source date, never by the month number alone.
+    function monthCell(n, refDate) {
+      if (!(n >= 1 && n <= 12)) return '<span class="muted">—</span>';
+      return dateSpan(MONTHS[n], refDate);
     }
 
     const NOW = new Date();
@@ -546,14 +551,14 @@
           <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
           <td data-col="remote_option">${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
-          <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month)}</td>
+          <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline)}</td>
           <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
-          <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month)}</td>
+          <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month, r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline)}</td>
           <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline)}</td>
-          <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month)}</td>
+          <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline)}</td>
           <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
           <td data-col="deadline_time" class="prelines">${textOrPrior(r.deadline_time, null)}</td>
-          <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month)}</td>
+          <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month, r.upcoming_start_date || r.prior_start_date)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="cal" class="cal-cell">
@@ -651,7 +656,7 @@
             `<tr><td><span class="size medium">medium</span></td><td class="muted">100–999 attendees</td></tr>` +
             `<tr><td><span class="size small">small</span></td><td class="muted">under 100 attendees</td></tr>` +
           `</table>` +
-          `<p class="muted" style="margin:10px 0 4px">Date color coding (relative to today):</p>` +
+          `<p class="muted" style="margin:10px 0 4px">Date color coding (relative to today; month columns follow the date they derive from):</p>` +
           `<table>` +
             `<tr><td><span class="date-soon">green</span></td><td class="muted">upcoming within 3 months</td></tr>` +
             `<tr><td><span>(plain)</span></td><td class="muted">upcoming more than 3 months out</td></tr>` +
