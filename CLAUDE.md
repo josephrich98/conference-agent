@@ -57,7 +57,9 @@ for the design.
     `SUBCATEGORY_TO_CATEGORY` (the top-level vocabulary + derivation map);
     `CONFERENCE_FORMATS` vocabulary; `size_for_attendance` (the size-bucketing rule),
     `categories_for_subcategories` (the category derivation), `normalize_subcategories`
-    (the shared tag parser), and `normalize_formats` (the format-vocabulary parser)
+    (the shared tag parser), and `normalize_formats` (the format-vocabulary parser).
+    `deadline_time` is a free-text, per-series field for the time of day (with
+    time zone) submissions close (see the design decision below)
   - `config.py` — constants, controlled vocabularies, seed list, Anthropic model
     id, and SMTP / notification settings
   - `discover.py` — the AI discovery agent: web search (research) + structured
@@ -163,6 +165,20 @@ dependencies there rather than installing ad hoc.
   (`late_abstract_due` / `late_abstract_month`), the table (two columns), the
   calendar (a fourth event, kind `late-abstract`), the discovery prompts, and
   the manual `add` paths.
+- **Deadline time of day is one free-text field per series, not part of the
+  dates.** What matters is the time zone ("23:59 AoE" vs "11:59 PM ET" is nearly
+  a day apart), and a series almost always uses one convention for every deadline
+  and keeps it year to year, so `deadline_time` is a single free-text value per
+  series rather than a time per deadline. When deadlines genuinely differ it
+  holds one `kind: time` entry per line (`abstract: …`, `late abstract: …`,
+  `paper: …`; semicolons also separate entries). The deadline columns stay pure
+  dates so sorting, the derived months, the search's date comparisons, and the
+  all-day calendar events are untouched. The table shows it as its own
+  "Deadline time" column (substring-searchable as `deadline_time:`), and the
+  calendar feed puts the applicable time in each deadline event's note
+  (`calendar_sync.deadline_time_for` picks the shared value or the entry for
+  that event kind; mirrored in `calendar.js`) while the event itself remains
+  all-day.
 - **Controlled vocabularies.** `ConferenceSize` (`large`/`medium`/`small`) and
   `RemoteOption` (`in-person`/`virtual`/`hybrid`/`unknown`) are enums, not free
   text, so the table and queries can filter/color consistently.

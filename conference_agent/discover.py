@@ -97,6 +97,11 @@ For each notable conference in the requested field, gather:
   meeting publishes, e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"
   or, if only an opening is given, "Registration opens June 2026". Leave blank when
   no registration timing is published -- do not guess
+- the time of day (with time zone) at which submissions close (deadline_time),
+  e.g. "11:59 PM ET" or "23:59 AoE" -- the zone is the part that matters. Give one
+  value when every deadline shares it; if the deadlines differ, give one per
+  deadline ("abstract: ...", "late abstract: ...", "paper: ..."). Leave blank when
+  the call for abstracts does not state a time -- do not guess
 - the typical annual attendance (total number of attendees) of the most recent
   edition, as a plain integer; plus the year that figure describes and the source
   URL you took it from. Prefer an official figure; state the number only when you
@@ -173,7 +178,11 @@ deadline. A submission deadline that has already passed \
 still belongs to the edition it opened; if the meeting itself is upcoming, keep \
 its abstract deadline in the upcoming column. Set the paper deadline only when \
 the notes give a distinct full-paper / manuscript deadline; leave it "" for \
-abstract-only meetings rather than repeating the abstract deadline. The location \
+abstract-only meetings rather than repeating the abstract deadline. The \
+deadline_time field is the time of day (with time zone) submissions close, as the \
+notes state it (e.g. "11:59 PM ET"), one value when shared by every deadline or \
+one "kind: time" line per deadline (abstract / late abstract / paper) when they \
+differ; "" when the notes give no time. The location \
 field is the host city / venue \
 (e.g. "Chicago, IL" or "Vienna, Austria"). The cost field should carry the \
 actual price figure(s) when the notes give one (e.g. "$1,095 member, \

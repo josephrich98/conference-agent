@@ -104,6 +104,37 @@ function nowStamp() {
   );
 }
 
+// Labels a multi-line deadline_time may prefix each entry with, by event kind.
+const DEADLINE_TIME_LABELS = {
+  abstract: ["abstract"],
+  "late-abstract": ["late abstract", "late-abstract", "late_abstract"],
+  paper: ["paper"],
+};
+
+// The deadline-time text that applies to one event kind (mirrors
+// calendar_sync.deadline_time_for): one shared value, or the matching
+// "kind: time" entry (newline- or semicolon-separated), or null.
+function deadlineTimeFor(deadlineTime, kind) {
+  if (!deadlineTime || !deadlineTime.trim()) return null;
+  const entries = deadlineTime.split(/[\n;]/).map((e) => e.trim()).filter(Boolean);
+  const labeled = {};
+  for (const entry of entries) {
+    const m = entry.match(/^\s*([A-Za-z][A-Za-z _-]*?)\s*:\s*(.+)$/);
+    if (m) labeled[m[1].trim().toLowerCase()] = m[2].trim();
+  }
+  if (Object.keys(labeled).length === 0) return deadlineTime.trim();
+  for (const label of DEADLINE_TIME_LABELS[kind] || []) {
+    if (label in labeled) return labeled[label];
+  }
+  return null;
+}
+
+// Description line carrying the deadline time; the event itself stays all-day.
+function deadlineNote(row, kind) {
+  const t = deadlineTimeFor(row.deadline_time, kind);
+  return t ? `\nDeadline time: ${t}` : "";
+}
+
 // The upcoming-edition events a row yields (mirrors _edition_events).
 function editionEvents(row) {
   const events = [];
@@ -117,7 +148,7 @@ function editionEvents(row) {
       summary: `${acronym} — abstract deadline`,
       start: row.upcoming_abstract_deadline,
       end: row.upcoming_abstract_deadline,
-      description: `Abstract submission deadline for ${label}.${url}`,
+      description: `Abstract submission deadline for ${label}.${deadlineNote(row, "abstract")}${url}`,
     });
   }
   if (row.upcoming_late_abstract_deadline) {
@@ -128,7 +159,7 @@ function editionEvents(row) {
       end: row.upcoming_late_abstract_deadline,
       description:
         `Late abstract deadline (poster-only or late-breaking round) ` +
-        `for ${label}.${url}`,
+        `for ${label}.${deadlineNote(row, "late-abstract")}${url}`,
     });
   }
   if (row.upcoming_paper_deadline) {
@@ -137,7 +168,7 @@ function editionEvents(row) {
       summary: `${acronym} — paper deadline`,
       start: row.upcoming_paper_deadline,
       end: row.upcoming_paper_deadline,
-      description: `Full paper / manuscript deadline for ${label}.${url}`,
+      description: `Full paper / manuscript deadline for ${label}.${deadlineNote(row, "paper")}${url}`,
     });
   }
   if (row.upcoming_start_date) {

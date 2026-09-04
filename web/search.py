@@ -50,7 +50,8 @@ The query fields mirror the table's column headers exactly: ``conference``,
 ``category`` (one of the ten top-level buckets), ``subcategory`` (the specific
 field), ``format`` (any of abstract / paper / poster / oral),
 ``location``, ``size``, ``remote``, ``cost``, ``registration`` (free text — a
-substring match), ``abstract_due``, ``late_abstract_due`` (the second, later
+substring match), ``deadline_time`` (free text — the time of day and zone
+submissions close, e.g. ``deadline_time:AoE``), ``abstract_due``, ``late_abstract_due`` (the second, later
 abstract deadline some series publish — a poster-only deadline or a
 late-breaking round), ``paper_due``, ``conference_dates``,
 ``conference_month``, ``abstract_month``, ``late_abstract_month``, and
@@ -103,6 +104,9 @@ _TEXT_FIELDS = {
     # it is a substring match across the upcoming and prior registration columns,
     # not a date comparison.
     "registration": ("upcoming_registration", "prior_registration"),
+    # Time of day (+ zone) submissions close -- free text, substring match
+    # (e.g. ``deadline_time:AoE``).
+    "deadline_time": ("deadline_time",),
 }
 
 # Public date field → (upcoming column, prior column). Comparisons run against
@@ -145,6 +149,7 @@ _FIELD_TYPES = {
     "remote": "cat: " + ", ".join(o.value for o in RemoteOption if o is not RemoteOption.UNKNOWN),
     "cost": "string",
     "registration": "string",
+    "deadline_time": "string",
     "abstract_due": "date",
     "late_abstract_due": "date",
     "paper_due": "date",
@@ -169,6 +174,7 @@ _BARE_SEARCH_COLUMNS = (
     "cost",
     "upcoming_registration",
     "prior_registration",
+    "deadline_time",
     "url",
     "notes",
 )

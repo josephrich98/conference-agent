@@ -22,9 +22,10 @@ existing event instead of creating a duplicate (idempotent).
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from conference_agent.config import (
     CALENDAR_REMINDER_HOUR,
@@ -61,6 +62,55 @@ def _event_id(conference_id: str, kind: str) -> str:
     return f"conf{encoded}"
 
 
+# Labels a multi-line ``deadline_time`` may prefix each entry with, keyed by the
+# event kind that entry applies to.
+_DEADLINE_TIME_LABELS = {
+    "abstract": ("abstract",),
+    "late-abstract": ("late abstract", "late-abstract", "late_abstract"),
+    "paper": ("paper",),
+}
+
+
+def deadline_time_for(deadline_time: Optional[str], kind: str) -> Optional[str]:
+    """The deadline-time text that applies to one event ``kind``.
+
+    ``deadline_time`` is free text: usually one value shared by every deadline
+    ("11:59 PM ET"), otherwise one ``kind: time`` entry per deadline, separated by
+    newlines or semicolons ("abstract: 11:59 PM ET; paper: 23:59 AoE"). When the
+    text has a labeled entry for ``kind`` that entry's time is returned; when it
+    has labeled entries but none for ``kind``, nothing (the time is unknown for
+    that deadline, not shared); otherwise the whole text. Mirrored in
+    ``web/static/calendar.js``.
+    """
+    if not deadline_time or not deadline_time.strip():
+        return None
+    entries = [
+        e.strip() for e in re.split(r"[\n;]", deadline_time) if e.strip()
+    ]
+    labeled: Dict[str, str] = {}
+    for entry in entries:
+        match = re.match(r"^\s*([A-Za-z][A-Za-z _-]*?)\s*:\s*(.+)$", entry)
+        if match:
+            labeled[match.group(1).strip().lower()] = match.group(2).strip()
+    if not labeled:
+        return deadline_time.strip()
+    for label in _DEADLINE_TIME_LABELS.get(kind, ()):
+        if label in labeled:
+            return labeled[label]
+    return None
+
+
+def _deadline_note(conf: Conference, kind: str) -> str:
+    """Description line carrying the deadline time, or "" when none applies.
+
+    The event stays all-day (see ``conferences_to_ics``); the time of day lives in
+    the note because a timed event would need per-zone handling and would break
+    the all-day reminder anchoring.
+    """
+    time_text = deadline_time_for(conf.deadline_time, kind)
+    return f"\nDeadline time: {time_text}" if time_text else ""
+
+
 def _edition_events(conf: Conference) -> List[CalEvent]:
     """The upcoming-edition events a conference yields.
 
@@ -80,7 +130,8 @@ def _edition_events(conf: Conference) -> List[CalEvent]:
                 f"{conf.acronym} — abstract deadline",
                 conf.upcoming_abstract_deadline,
                 conf.upcoming_abstract_deadline,
-                f"Abstract submission deadline for {label}.{url}",
+                f"Abstract submission deadline for {label}."
+                f"{_deadline_note(conf, 'abstract')}{url}",
             )
         )
     if conf.upcoming_late_abstract_deadline:
@@ -91,7 +142,7 @@ def _edition_events(conf: Conference) -> List[CalEvent]:
                 conf.upcoming_late_abstract_deadline,
                 conf.upcoming_late_abstract_deadline,
                 f"Late abstract deadline (poster-only or late-breaking round) "
-                f"for {label}.{url}",
+                f"for {label}.{_deadline_note(conf, 'late-abstract')}{url}",
             )
         )
     if conf.upcoming_paper_deadline:
@@ -101,7 +152,8 @@ def _edition_events(conf: Conference) -> List[CalEvent]:
                 f"{conf.acronym} — paper deadline",
                 conf.upcoming_paper_deadline,
                 conf.upcoming_paper_deadline,
-                f"Full paper / manuscript deadline for {label}.{url}",
+                f"Full paper / manuscript deadline for {label}."
+                f"{_deadline_note(conf, 'paper')}{url}",
             )
         )
     if conf.upcoming_start_date:

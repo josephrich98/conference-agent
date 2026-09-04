@@ -41,6 +41,7 @@ _ROWS = [
         remote_option="in-person", cost="$$$ members; $$$$ non-members",
         upcoming_abstract_deadline=date(2026, 4, 1), upcoming_start_date=date(2026, 11, 29),
         upcoming_end_date=date(2026, 12, 4), upcoming_registration="Early bird: Jul 1 – Sep 1; Regular: Sep 2 –",
+        deadline_time="11:59 PM ET",
         url="https://rsna.org", format="abstract, poster",
     ),
     dict(
@@ -141,6 +142,9 @@ _QUERIES = [
     "NOT cost:*",
     "registration:*",
     "registration:bird",
+    "deadline_time:*",
+    "deadline_time:ET",
+    "NOT deadline_time:*",
     "conference_dates:*",
     "NOT conference_dates:*",
     "abstract_due:*",

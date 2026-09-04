@@ -75,6 +75,49 @@ def test_no_late_abstract_deadline_yields_no_extra_event():
     assert _ics([_conf()]).count("BEGIN:VEVENT") == 3
 
 
+def test_deadline_time_goes_in_the_note_and_events_stay_all_day():
+    # A shared deadline time is appended to every deadline event's description
+    # (not the conference-dates event); the events remain VALUE=DATE all-day.
+    ics = _ics([_conf(deadline_time="11:59 PM ET")])
+    assert ics.count("Deadline time: 11:59 PM ET") == 2  # abstract + paper
+    assert "DTSTART;VALUE=DATE:" in ics
+    assert "DTSTART:" not in ics.replace("DTSTART;", "")
+    events = ics.split("BEGIN:VEVENT")[1:]
+    conf_event = next(e for e in events if "RSNA 2026" in e)
+    assert "Deadline time" not in conf_event
+
+
+def test_deadline_time_labeled_entries_apply_per_kind():
+    ics = _ics(
+        [
+            _conf(
+                upcoming_late_abstract_deadline=date(2026, 5, 1),
+                deadline_time="abstract: 11:59 PM ET\nlate abstract: 5 PM ET",
+            )
+        ]
+    )
+    events = ics.split("BEGIN:VEVENT")[1:]
+    by_kind = {
+        "abstract": next(e for e in events if "abstract deadline" in e and "Late" not in e),
+        "late": next(e for e in events if "late abstract deadline" in e),
+        "paper": next(e for e in events if "paper deadline" in e),
+    }
+    assert "Deadline time: 11:59 PM ET" in by_kind["abstract"]
+    assert "Deadline time: 5 PM ET" in by_kind["late"]
+    # No labeled entry for paper -> no time claimed for it.
+    assert "Deadline time" not in by_kind["paper"]
+
+
+def test_deadline_time_for_parses_shared_and_labeled_text():
+    f = cs.deadline_time_for
+    assert f(None, "abstract") is None
+    assert f("  ", "abstract") is None
+    assert f("23:59 AoE", "paper") == "23:59 AoE"
+    assert f("abstract: 11:59 PM ET; paper: 23:59 AoE", "paper") == "23:59 AoE"
+    assert f("abstract: 11:59 PM ET; paper: 23:59 AoE", "late-abstract") is None
+    assert f("Late abstract: 5 PM ET", "late-abstract") == "5 PM ET"
+
+
 def test_registration_text_yields_no_event():
     # Registration is free text (windows, not a date), so it produces no event:
     # the feed still has only the three deadline/date events.

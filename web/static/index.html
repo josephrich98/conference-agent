@@ -195,6 +195,8 @@
       white-space: nowrap;
     }
     .nobreak { white-space: nowrap; }
+    /* Free text that may carry one "kind: time" entry per line. */
+    .prelines { white-space: pre-line; }
     .cal-cell { white-space: nowrap; }
     .cal-btn {
       display: inline-block;
@@ -309,6 +311,7 @@
       { key: "upcoming_late_abstract_deadline", label: "Late abstract due", sort: "upcoming_late_abstract_deadline" },
       { key: "paper_month", label: "Paper month", sort: "paper_month" },
       { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
+      { key: "deadline_time", label: "Deadline time", sort: null },
       { key: "conference_month", label: "Conference month", sort: "conference_month" },
       { key: "upcoming_dates", label: "Conference dates", sort: "upcoming_start_date" },
       { key: "registration", label: "Registration", sort: null },
@@ -549,6 +552,7 @@
           <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline)}</td>
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month)}</td>
           <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
+          <td data-col="deadline_time" class="prelines">${textOrPrior(r.deadline_time, null)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>

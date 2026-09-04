@@ -28,6 +28,7 @@ const TEXT_FIELDS = {
   remote: ["remote_option"],
   cost: ["cost"],
   registration: ["upcoming_registration", "prior_registration"],
+  deadline_time: ["deadline_time"],
 };
 
 // Public date field -> [upcoming column, prior column]. Comparisons run against
@@ -63,6 +64,7 @@ const BARE_SEARCH_COLUMNS = [
   "cost",
   "upcoming_registration",
   "prior_registration",
+  "deadline_time",
   "url",
   "notes",
 ];

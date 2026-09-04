@@ -93,6 +93,13 @@ _SCALAR_FIELDS = (
         "Mar 1; Regular: Mar 2 - conference'",
     ),
     _Field(
+        "deadline_time", "deadline_time", "text",
+        "Time of day (with time zone) submissions close, free text, e.g. "
+        "'11:59 PM ET' or '23:59 AoE'. One value when every deadline shares it; "
+        "otherwise one 'kind: time' line per deadline, e.g. 'abstract: 11:59 PM "
+        "ET' / 'late abstract: 5 PM ET' / 'paper: 23:59 AoE'",
+    ),
+    _Field(
         "prior_abstract_due", "prior_abstract_deadline", "date",
         "Prior edition's abstract submission deadline",
     ),

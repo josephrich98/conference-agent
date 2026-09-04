@@ -104,6 +104,10 @@ class ConferenceRow(Base):
     # model splits it back into a list. Indexed for that filtering; NULL when unknown.
     format: Mapped[Optional[str]] = mapped_column(String, index=True)
     cost: Mapped[Optional[str]] = mapped_column(Text)
+    # Time of day (+ zone) submissions close, free text (see
+    # ``Conference.deadline_time``). Per series, not per deadline; the deadline
+    # columns themselves stay pure dates.
+    deadline_time: Mapped[Optional[str]] = mapped_column(Text)
     # Attendance is the objective input; ``size`` is the bucket derived from it
     # (see ``models.size_for_attendance``). ``size`` is stored denormalized so the
     # search/filter machinery can query it as a column, but it is only ever set by
@@ -192,6 +196,7 @@ _TEXT_FIELDS = (
     "notes",
     "prior_registration",
     "upcoming_registration",
+    "deadline_time",
 )
 
 
@@ -208,6 +213,7 @@ def _row_to_model(row: ConferenceRow) -> Conference:
         "notes": row.notes,
         "prior_registration": row.prior_registration,
         "upcoming_registration": row.upcoming_registration,
+        "deadline_time": row.deadline_time,
         "remote_option": RemoteOption(row.remote_option) if row.remote_option else None,
         "attendance": row.attendance,
         "attendance_year": row.attendance_year,
@@ -497,6 +503,7 @@ _MERGEABLE_TEXT_FIELDS = (
     "notes",
     "prior_registration",
     "upcoming_registration",
+    "deadline_time",
 )
 
 # Integer fields a researched record may carry. Parsed from int/numeric strings;

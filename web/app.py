@@ -66,6 +66,7 @@ _RESULT_COLUMNS = [
     "upcoming_late_abstract_deadline",
     "paper_month",
     "upcoming_paper_deadline",
+    "deadline_time",
     "conference_month",
     "upcoming_start_date",
     "upcoming_end_date",

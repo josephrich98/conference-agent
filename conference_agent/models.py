@@ -365,6 +365,24 @@ class Conference(BaseModel):
         None, description="Source URL the attendance figure was taken from (internal provenance)"
     )
     notes: Optional[str] = Field(None, description="Free-form notes")
+    # Time of day (with time zone) that submissions close. Free text and
+    # per-series rather than per-deadline: a series almost always uses one
+    # convention for every deadline and keeps it year to year, and the value that
+    # matters is the zone ("23:59 AoE" vs "11:59 PM ET" is nearly a day apart).
+    # When deadlines genuinely differ, one labeled line per kind:
+    # "abstract: 11:59 PM ET\nlate abstract: 5 PM ET\npaper: 23:59 AoE".
+    # The stored deadlines stay pure dates (sorting, derived months, date
+    # comparisons, and all-day calendar events depend on that); this rides along
+    # in the table and in the calendar event notes.
+    deadline_time: Optional[str] = Field(
+        None,
+        description=(
+            "Time of day (with time zone) submissions close, free text, e.g. "
+            "'11:59 PM ET' or '23:59 AoE'. One value for the series when every "
+            "deadline shares it; otherwise one 'kind: time' line per deadline "
+            "(abstract / late abstract / paper). Blank when not published."
+        ),
+    )
 
     @property
     def id(self) -> str:
