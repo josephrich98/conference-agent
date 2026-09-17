@@ -62,15 +62,6 @@
       border-radius: 6px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .ai-controls { padding-bottom: 0; }
-    #nl-query {
-      flex: 1 1 420px;
-      min-width: 260px;
-      padding: 9px 12px;
-      font-size: 14px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-    }
     #nl-btn[disabled] { opacity: 0.6; cursor: default; }
     .nl-status { color: var(--muted); font-size: 12px; flex: 1 1 100%; min-height: 14px; }
     .nl-status.err { color: var(--date-recent); }
@@ -243,15 +234,10 @@
     </a>
   </header>
 
-  <div class="controls ai-controls">
-    <input id="nl-query" type="text" placeholder='Ask in plain English — e.g.  big virtual radiology conferences with an abstract deadline after June 2026' autocomplete="off" />
-    <button class="primary" id="nl-btn">✨ AI search</button>
-    <span id="nl-status" class="nl-status"></span>
-  </div>
-
   <div class="controls">
-    <input id="query" type="text" placeholder='e.g.  (virtual OR hybrid) AND size:large' autocomplete="off" />
+    <input id="query" type="text" placeholder='Boolean query, e.g.  (virtual OR hybrid) AND size:large  — or plain English, then AI search' autocomplete="off" />
     <button class="primary" id="search-btn">Search</button>
+    <button class="primary" id="nl-btn" title="Translate a plain-English request in the search box into a boolean query">✨ AI search</button>
     <div class="columns-menu">
       <button id="columns-btn" title="Choose which columns are visible">Columns ▾</button>
       <div id="columns-panel" hidden>
@@ -263,6 +249,7 @@
       </div>
     </div>
     <button id="csv-btn">Export CSV</button>
+    <span id="nl-status" class="nl-status"></span>
   </div>
 
   <div class="syntax">
@@ -668,7 +655,8 @@
 
     // Natural-language ("AI") search. Translates the plain-English request into
     // a boolean query with a small model that runs entirely in the browser over
-    // WebGPU (web/static/nl_query.js), then fills the boolean box and searches.
+    // WebGPU (web/static/nl_query.js), then replaces the search box text with that
+    // query and searches.
     // The model (~1 GB) loads lazily on first use and is cached afterward, so
     // there is no backend and no per-request cost — matching the static site.
     function setNlStatus(msg, isErr) {
@@ -680,11 +668,11 @@
     let nlBusy = false;
     async function nlSearch() {
       if (nlBusy) return;
-      const text = $("nl-query").value.trim();
+      const text = $("query").value.trim();
       if (!text) return;
       if (!window.ConferenceNL || !ConferenceNL.isSupported()) {
         setNlStatus(
-          "AI search needs WebGPU (try a recent Chrome or Edge). Use the boolean box below instead.",
+          "AI search needs WebGPU (try a recent Chrome or Edge). Enter a boolean query and use Search instead.",
           true
         );
         return;
@@ -716,9 +704,8 @@
     }
 
     $("nl-btn").addEventListener("click", nlSearch);
-    $("nl-query").addEventListener("keydown", (e) => { if (e.key === "Enter") nlSearch(); });
 
-    $("search-btn").addEventListener("click", search);
+    $("search-btn").addEventListener("click", () => { setNlStatus(""); search(); });
     $("csv-btn").addEventListener("click", exportCsv);
     // Per-row calendar download (delegated, since rows re-render on each search).
     $("results-body").addEventListener("click", (e) => {
