@@ -126,6 +126,17 @@ class ConferenceRow(Base):
     # the ``Conference`` model -- it is row-level scheduling state, not conference
     # data -- so the conversion helpers below deliberately leave it untouched.
     last_checked: Mapped[Optional[Date]] = mapped_column(Date)
+    # Page-watch state (``refresh.run_watch``), also row-level scheduling state:
+    # the fingerprint of the dates on the row's official pages as of the last
+    # agent run (or first observation), and the date those pages were last
+    # fetched. A changed fingerprint is what triggers an agent run.
+    watch_fingerprint: Mapped[Optional[str]] = mapped_column(String)
+    watch_checked: Mapped[Optional[Date]] = mapped_column(Date)
+    # The link the stored fingerprint was taken from. A refresh may replace the
+    # official link (e.g. with a year-specific site), and a fingerprint of the
+    # old page says nothing about the new one, so a changed link re-baselines
+    # instead of counting as a change.
+    watch_url: Mapped[Optional[str]] = mapped_column(Text)
 
     # Derived month-of-year fields (1-12), stored as real columns so they exist in
     # the database file itself (browsable/queryable outside the ORM). Like ``size``
@@ -672,6 +683,84 @@ def merge_records(
                 written += 1
         session.commit()
     return written
+
+
+# Per-edition fields, as the suffix after ``prior_`` / ``upcoming_``.
+_EDITION_SUFFIXES = (
+    "abstract_deadline",
+    "late_abstract_deadline",
+    "paper_deadline",
+    "start_date",
+    "end_date",
+    "registration",
+)
+# Two start dates further apart than this belong to different editions.
+_NEW_EDITION_GAP_DAYS = 180
+
+
+def _roll_editions(row: ConferenceRow, conf: Conference) -> None:
+    """Realign a row's edition slots with a refreshed record before merging.
+
+    A fill-only merge cannot clear a field, so when a refresh reports a new
+    edition, fields of the old edition that the new record leaves blank would
+    otherwise survive under the wrong edition. When the refreshed upcoming
+    edition starts well after the stored one, the stored upcoming edition has
+    become the prior one: shift it into the prior slots and clear the upcoming
+    slots. When the refreshed prior edition is a different edition from the
+    stored prior one, clear the stored prior slots.
+    """
+    old_up, new_up = row.upcoming_start_date, conf.upcoming_start_date
+    if old_up and new_up and (new_up - old_up).days > _NEW_EDITION_GAP_DAYS:
+        for suffix in _EDITION_SUFFIXES:
+            setattr(row, f"prior_{suffix}", getattr(row, f"upcoming_{suffix}"))
+            setattr(row, f"upcoming_{suffix}", None)
+    old_prior, new_prior = row.prior_start_date, conf.prior_start_date
+    if old_prior and new_prior and abs((new_prior - old_prior).days) > _NEW_EDITION_GAP_DAYS:
+        for suffix in _EDITION_SUFFIXES:
+            setattr(row, f"prior_{suffix}", None)
+
+
+def _conference_to_record(conf: Conference) -> dict:
+    """A :class:`Conference` as a :func:`merge_records` record (blank fields omitted)."""
+    record: dict = {"id": conf.id, "acronym": conf.acronym, "name": conf.name}
+    for field in (*_DATE_FIELDS, *_MERGEABLE_TEXT_FIELDS, *_MERGEABLE_INT_FIELDS):
+        value = getattr(conf, field)
+        if value not in (None, ""):
+            record[field] = value
+    if conf.subcategories:
+        record["subcategories"] = conf.subcategories
+    if conf.formats:
+        record["formats"] = conf.formats
+    if conf.remote_option is not None:
+        record["remote_option"] = conf.remote_option.value
+    return record
+
+
+def apply_refreshed_conferences(
+    conferences: Iterable[Conference], db_url: str = DEFAULT_DATABASE_URL
+) -> int:
+    """Fold a targeted refresh into *existing* rows without losing data.
+
+    A targeted re-check (``discover.refresh_conferences``) researches a handful
+    of named series and may not re-find every field (attendance, cost, ...), so
+    unlike :func:`upsert_conferences` it must not overwrite a stored value with a
+    blank. Each record is merged fill-only via :func:`merge_records`, after
+    :func:`_roll_editions` realigns the edition slots when the refresh reports a
+    new edition. Records for series not already in the table are skipped.
+    Returns the number of rows written.
+    """
+    conferences = list(conferences)
+    engine = get_engine(db_url)
+    records = []
+    with Session(engine) as session:
+        for conf in conferences:
+            row = session.get(ConferenceRow, conf.id)
+            if row is None:
+                continue
+            _roll_editions(row, conf)
+            records.append(_conference_to_record(conf))
+        session.commit()
+    return merge_records(records, db_url=db_url)
 
 
 def seed_conferences(db_url: str = DEFAULT_DATABASE_URL, overwrite: bool = False) -> int:

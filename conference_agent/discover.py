@@ -381,7 +381,11 @@ def _research(
         seed_list=_seed_checklist(subcategories),
         attendance_hints=_attendance_hints_block(attendance_hints),
     )
-    prompt = _research_prompt(subcategories)
+    return _research_loop(client, system, _research_prompt(subcategories), model, max_tokens)
+
+
+def _research_loop(client, system: str, prompt: str, model: str, max_tokens: int) -> str:
+    """The API web-search loop for a given system prompt and instruction."""
     messages = [{"role": "user", "content": prompt}]
 
     response = client.messages.create(
@@ -505,8 +509,13 @@ def _research_via_cli(
         seed_list=_seed_checklist(subcategories),
         attendance_hints=_attendance_hints_block(attendance_hints),
     )
+    return _research_text_via_cli(system, _research_prompt(subcategories), model)
+
+
+def _research_text_via_cli(system: str, prompt: str, model: Optional[str]) -> str:
+    """The CLI web-search research call for a given system prompt and instruction."""
     payload = _run_claude_cli(
-        _research_prompt(subcategories),
+        prompt,
         append_system=system,
         tools=["WebSearch", "WebFetch"],
         model=model,
@@ -586,3 +595,95 @@ def discover_conferences(
     if not research_text.strip():
         return []
     return _extract(client, research_text, resolved_model, max_tokens)
+
+
+# --- Targeted re-check of named series --------------------------------------
+
+_REFRESH_PROMPT = """\
+Re-check ONLY the conferences listed below; do not add any others. For each, \
+verify against its official site -- including its "Important Dates", "Call for \
+Abstracts", and "Submit" pages -- whether:
+- a submission deadline has been extended, moved, or newly announced (extensions \
+  are often posted shortly before a deadline or within days after it passes),
+- the meeting dates or location have changed,
+- the next edition has been announced, if the recorded upcoming edition has \
+  already taken place (the edition that took place then becomes the prior one).
+
+Report the full current record for each conference -- every field your \
+instructions list, not only what changed -- one conference at a time.
+
+Currently recorded:
+{targets}"""
+
+
+def _describe_target(conf: Conference) -> str:
+    """One line per target: identity, link, and the dates currently on record."""
+
+    def edition(prefix: str) -> str:
+        parts = []
+        for label, suffix in (
+            ("abstract", "abstract_deadline"),
+            ("late abstract", "late_abstract_deadline"),
+            ("paper", "paper_deadline"),
+            ("start", "start_date"),
+            ("end", "end_date"),
+        ):
+            value = getattr(conf, f"{prefix}_{suffix}")
+            if value:
+                parts.append(f"{label} {value.isoformat()}")
+        return ", ".join(parts) or "none recorded"
+
+    link = f" -- {conf.url}" if conf.url else ""
+    return (
+        f"- {conf.acronym} -- {conf.name} [{conf.subcategory}]{link}\n"
+        f"  upcoming: {edition('upcoming')}; prior: {edition('prior')}"
+    )
+
+
+def refresh_conferences(
+    targets: Iterable[Conference],
+    backend: str = DEFAULT_BACKEND,
+    model: Optional[str] = None,
+    max_tokens: int = 16000,
+    attendance_hints: "Optional[dict]" = None,
+) -> List[Conference]:
+    """Re-research specific, already-known series and return their current records.
+
+    The targeted counterpart to :func:`discover_conferences`: rather than surveying
+    a whole field, the research phase checks only ``targets`` -- given their
+    official links and the dates on record -- for extended deadlines, changed
+    dates, or a newly announced edition. Extraction is unchanged. Only records
+    whose id matches a target are returned, so the result can be merged back
+    without introducing unrelated rows (see
+    :func:`database.apply_refreshed_conferences`).
+    """
+    if backend not in DISCOVERY_BACKENDS:
+        raise ValueError(
+            f"Unknown discovery backend {backend!r}; expected one of "
+            f"{', '.join(DISCOVERY_BACKENDS)}."
+        )
+    targets = list(targets)
+    if not targets:
+        return []
+    wanted = {t.id for t in targets}
+    system = _RESEARCH_SYSTEM.format(
+        seed_list="\n".join(f"- {t.acronym} — {t.name}" for t in targets),
+        attendance_hints=_attendance_hints_block(attendance_hints),
+    )
+    prompt = _REFRESH_PROMPT.format(targets="\n".join(_describe_target(t) for t in targets))
+
+    if backend == "claude-code":
+        research_text = _research_text_via_cli(system, prompt, model)
+        if not research_text.strip():
+            return []
+        found = _extract_via_cli(research_text, model)
+    else:
+        import anthropic
+
+        resolved_model = model or ANTHROPIC_MODEL
+        client = anthropic.Anthropic()
+        research_text = _research_loop(client, system, prompt, resolved_model, max_tokens)
+        if not research_text.strip():
+            return []
+        found = _extract(client, research_text, resolved_model, max_tokens)
+    return [c for c in found if c.id in wanted]

@@ -8,7 +8,7 @@ https://conferenceagent.vercel.app
 
 An AI agent that automatically compiles a table of major conferences. Includes
 website links, color-coded prior and upcoming submission deadlines and dates, and 
-biweekly updates (every two weeks). 
+daily checks for changed deadlines (see "Scheduled refresh"). 
 Keeps it searchable in a web table, and exports each conference's deadlines and dates 
 as a subscribable calendar feed (`.ics`). Discovery is seeded across medicine, 
 genomics/bioinformatics, and data science; see `TAXONOMY.md`
@@ -66,100 +66,46 @@ conference-agent add \
   --url https://www.rsna.org/annual-meeting
 ```
 
-### Two abstract deadlines for one edition
-
-Some series publish a second, later abstract deadline alongside the main one.
-Two shapes recur: a **poster-only** deadline after a talk-only main deadline
-(CSHL Biological Data Science takes abstracts for talks until Aug 28 and posters
-until Oct 1), and a **late-breaking / late-poster** round that opens after the
-main call closes (ASHG, ISMB, RECOMB). Both go in `--late-abstract-due`:
-
-```bash
-conference-agent add -y \
-  --conference "CSHL-BIODATA - CSHL Biological Data Science" \
-  --abstract-due 2026-08-28 \
-  --late-abstract-due 2026-10-01
-```
-
-`--abstract-due` always holds the **earlier, primary** deadline — a reader who
-meets it can still submit through any route — so the column stays sortable and
-never overstates how much time is left. The `Late abstract month` and `Late
-abstract due` columns show the second date, `late_abstract_due` /
-`late_abstract_month` are searchable, and the row's `.ics` gains a fourth event
-for it. Most series publish only one abstract deadline, and their late columns
-stay blank.
-
-### Many at once (`--json` / `--csv`)
-
-`--json` is usually the easiest path for an agent: one object per conference,
-keyed by the names `conference-agent fields --json` reports.
-
-```bash
-conference-agent add -y --json new_conferences.json
-```
-
-```json
-[
-  {
-    "conference": "CSHL-BIODATA - CSHL Biological Data Science",
-    "subcategory": "genomics, machine learning",
-    "abstract_due": "2026-08-28",
-    "late_abstract_due": "2026-10-01",
-    "conference_dates": "2026-11-11 2026-11-14",
-    "url": "https://meetings.cshl.edu/meetings.aspx?meet=DATA"
-  }
-]
-```
-
-The `Size` column (large / medium / small) is derived automatically from
-`--attendance` — there is no size flag to set. A figure of 1,000+ is large,
-100–999 medium, under 100 small; with no attendance, size is left blank. (The
-thresholds live in `conference_agent/models.py`.)
-
-`--conference` takes the table's first column verbatim — `ACRONYM - Full Name`.
-A bare acronym (or the `ACRONYM - Full Name` form) that matches a row already in
-the table counts as a match: the command shows that entry and asks you to confirm
-before updating it, so a typo can't silently overwrite an existing series. Pass
-`-y`/`--yes` to skip the prompt (required when running unattended). If the series
-already exists, the command updates only the fields you pass — add `--overwrite`
-to replace the whole row instead, clearing anything you omit.
-
-`--csv` takes a file whose header columns are the same names, one conference per
-row (the derived `size`, `category` and `*_month` columns, as in a table export,
-are accepted but ignored).
-`conference_dates` is a single cell holding the start
-and (optional) end date separated by a space, and a multi-value `subcategory` or
-`format` (any of abstract / paper / poster / oral) is quoted
-so its comma stays inside one cell. The broad `category` is derived from the
-subcategory automatically, so you never set it. The raw stored field names
-(`acronym`, `name`, `upcoming_start_date`, …) are also accepted, so the web
-table's "Export CSV" re-imports unchanged.
-
-```bash
-conference-agent add --csv my_conferences.csv
-```
-
-```csv
-conference,subcategory,location,attendance,remote_option,abstract_due,conference_dates,url
-RSNA - Radiological Society of North America,radiology,"Chicago, IL",45000,hybrid,2026-05-06,2026-11-29 2026-12-03,https://www.rsna.org/annual-meeting
-SPR - Society for Pediatric Radiology,"radiology, pediatrics","Austin, TX",1200,in-person,2025-12-01,2026-05-12 2026-05-16,https://www.pedrad.org
-MICCAI - Medical Image Computing & Computer Assisted Intervention,"radiology, machine learning","Daejeon, South Korea",3500,hybrid,2026-03-05,2026-09-23 2026-09-27,https://miccai.org
-```
-
 ## Scheduled refresh
 
-Discovery re-runs on three cadences: **daily** the targeted auto-check
-(`--cadence due` — only series whose next edition is plausibly about to be
-announced, each re-checked at most every `RECHECK_INTERVAL_DAYS` (14) days),
-**weekly** the flagship fields (`--cadence weekly`), and **monthly** the rest
-(`--cadence monthly`). The "due" auto-check is gated by a `last_checked` column,
-so it needs a persistent `CONFERENCE_DATABASE_URL` to work across runs.
+A local cron job runs `scripts/scheduled_discovery.sh` every day at 2 AM. It
+runs the **watch** cadence (`daily_update.py --cadence watch`), which avoids an
+agent run unless something appears to have changed:
 
-These cadences are scheduled in the AWS SAM stack via **EventBridge Scheduler**
-rules that invoke a refresh Lambda (`web/refresh_handler.py`); enable them by
-deploying with `EnableScheduledRefresh=true` (see `DEPLOY_AWS.md`). They replaced
-the former `.github/workflows/{weekly_update,monthly_update,auto_check}.yml` cron
-workflows. You can also run any cadence locally with `daily_update.py` (below).
+| Tier | Which series | Page check |
+|---|---|---|
+| daily | an upcoming submission deadline within 14 days before or after today | every day |
+| soon | an upcoming deadline or the meeting's start within the next 30 days | every 14 days |
+| stale | no future edition on record; the last edition's submission deadline (or start date) 6–24 months ago | every 14 days |
+
+The page check needs no agent: it fetches the official link plus up to three
+same-site "dates" / "deadlines" / "call for abstracts" pages and fingerprints the
+set of dates they mention (`conference_agent/page_watch.py`). The agent then
+re-researches a series, in a targeted run of up to 6 named series rather than a
+whole field, only when:
+
+- the fingerprint changed (an extension, a moved meeting, a new edition);
+- the pages could not be read (blocked, rendered by JavaScript, no link) and the
+  series has not been researched in 14 days; or
+- 28 days have passed without research (a backstop, since a new edition is often
+  announced on a new, year-specific site the stored link never shows).
+
+At most 18 series are researched per run; the rest wait for the next day.
+Targeted results are merged without clearing fields the agent did not re-find.
+If the data the site shows changed, the job redeploys the static site
+(`scripts/deploy_static.sh`). Logs go to `data/logs/`. Preview a run without
+calling the agent or writing anything with:
+
+```bash
+python scripts/daily_update.py --cadence watch --dry-run
+```
+
+The windows and limits are constants in `conference_agent/config.py`. The
+older per-field cadences remain available: `--cadence due` (fields holding a
+series in the 6–24-month window), `weekly` (flagship fields), `monthly` (the
+rest), and `all`. The AWS SAM stack can schedule those via EventBridge Scheduler
+(`EnableScheduledRefresh=true`; see `DEPLOY_AWS.md`), but that stack is torn
+down.
 
 See `TAXONOMY.md` for the field map and cadence policy.
 
@@ -172,7 +118,7 @@ If you want to refresh on demand (outside of the scheduled refresh)
 
 ```bash
 # Refresh a single field immediately, ignoring the staleness window entirely.
-# --subcategory overrides the cadence selection, so the 6–12-month window and the
+# --subcategory overrides the cadence selection, so the 6–24-month window and the
 # 14-day re-check interval do NOT apply — it re-discovers that field right now.
 python scripts/daily_update.py --subcategory genomics
 
@@ -182,7 +128,10 @@ python scripts/daily_update.py --subcategory genomics --subcategory radiology
 # Refresh everything (every seeded field), also bypassing the due-window gating.
 python scripts/daily_update.py --cadence all
 
-# Run the same auto-check the scheduled job runs (only series currently "due").
+# Run the same page-gated check the scheduled job runs.
+python scripts/daily_update.py --cadence watch
+
+# Refresh the fields holding a series in the 6-24-month window.
 python scripts/daily_update.py --cadence due
 
 # Add --no-email to skip the summary email; add --backend api to use the
@@ -213,39 +162,6 @@ The `q` parameter uses the same boolean query language as the web table (see
 agent that needs to construct valid queries should read `/api/fields` first,
 since it returns the exact field names, aliases, and allowed values the parser
 accepts.
-
-### Do I need an MCP server?
-
-Generally **no**. The REST API above is public, self-documenting (via
-`/api/fields`), and already structured for programmatic use, so scripts, the
-Claude Agent SDK, web-fetch-capable models, and the discovery pipeline can all
-consume it as-is. An MCP server would mostly be a thin wrapper over these two
-endpoints; it is worth adding only to give MCP-client users (e.g. Claude
-Desktop / Claude Code) a one-click, typed `search_conferences` tool without
-each writing their own HTTP integration. For everything else, point the agent
-at `/api/fields` and `/api/search`.
-
-## How it works
-
-1. **Discover** — `discover.py` runs an Anthropic web-search loop (research) then
-   a structured-output call (extraction) to produce typed `Conference` records.
-   A seed list of well-known conferences (`SEED_CONFERENCES` in `config.py`)
-   bootstraps the search; the reference pages those seeds were compiled from are
-   recorded alongside it in `SEED_CONFERENCE_SOURCES`.
-2. **Store** — records are upserted into a SQL database, idempotent on the
-   acronym, so re-running discovery rolls a newly announced edition into the
-   "upcoming" columns instead of duplicating the row.
-3. **Search** — a web table (`conference-agent serve`) supports a boolean query
-   language, a "Subscribe (.ics)" calendar feed, and a per-row "📅 cal" button
-   that downloads that conference as a calendar file.
-4. **Calendar** — each conference's upcoming abstract deadline, paper deadline,
-   and conference dates are served as a credential-free iCalendar feed
-   (`GET /api/calendar.ics`) that mirrors the active search. A user subscribes
-   from any calendar app (Google "Add by URL", Apple/Outlook "Add from URL") or
-   downloads a one-off `.ics` — no sign-in, no Google account. Each event carries
-   a stable id, so re-fetching updates events in place rather than duplicating,
-   plus reminders four weeks, one week, and one day ahead.
-5. **Notify** — an optional email summarizes a discovery / daily refresh.
 
 ## Boolean search
 

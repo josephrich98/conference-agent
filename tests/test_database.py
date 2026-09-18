@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from conference_agent.database import (
     ConferenceRow,
+    apply_refreshed_conferences,
     get_engine,
     merge_records,
     query_conferences,
@@ -262,11 +263,11 @@ def test_non_seed_row_keeps_its_own_subcategories(tmp_path):
     url = _db_url(tmp_path)
     # An acronym that is not in the seed table is not subject to the floor.
     upsert_conferences(
-        [_conf(acronym="NOVEL", name="Novel Workshop", subcategories=["robotics", "vision"])],
+        [_conf(acronym="NOVEL", name="Novel Workshop", subcategories=["origami", "vision"])],
         db_url=url,
     )
     got = query_conferences(db_url=url)[0]
-    assert got.subcategories == ["robotics", "vision"]
+    assert got.subcategories == ["origami", "vision"]
     # Neither tag is in the map, so the derived category is empty.
     assert got.categories == []
 
@@ -502,3 +503,59 @@ def test_merge_records_skips_unknown_id_without_identity(tmp_path):
         == 1
     )
     assert {c.id for c in query_conferences(db_url=url)} == {"NEW"}
+
+
+# --- Targeted refresh merge ---------------------------------------------------
+
+
+def test_apply_refreshed_conferences_rolls_a_new_edition(tmp_path):
+    url = f"sqlite:///{tmp_path / 'roll.db'}"
+    upsert_conferences(
+        [Conference(acronym="X", name="X Meeting", subcategory="radiology",
+                    attendance=1200, cost="$500",
+                    prior_start_date=date(2024, 11, 1),
+                    upcoming_abstract_deadline=date(2025, 5, 1),
+                    upcoming_late_abstract_deadline=date(2025, 6, 1),
+                    upcoming_start_date=date(2025, 11, 2))],
+        db_url=url,
+    )
+    # The refresh finds the 2026 edition and says nothing of attendance / cost
+    # or of a late deadline for the new edition.
+    written = apply_refreshed_conferences(
+        [Conference(acronym="X", name="X Meeting", subcategory="radiology",
+                    upcoming_abstract_deadline=date(2026, 5, 3),
+                    upcoming_start_date=date(2026, 11, 1)),
+         Conference(acronym="NEW", name="Not in table", subcategory="radiology")],
+        db_url=url,
+    )
+    assert written == 1
+    (row,) = query_conferences(db_url=url)
+    # The 2025 edition moved to the prior slots, late deadline included ...
+    assert row.prior_start_date == date(2025, 11, 2)
+    assert row.prior_late_abstract_deadline == date(2025, 6, 1)
+    # ... and did not linger in the upcoming ones.
+    assert row.upcoming_late_abstract_deadline is None
+    assert row.upcoming_abstract_deadline == date(2026, 5, 3)
+    assert row.abstract_month == 5
+    # Fields the refresh left blank are kept.
+    assert (row.attendance, row.cost) == (1200, "$500")
+
+
+def test_apply_refreshed_conferences_same_edition_extension(tmp_path):
+    url = f"sqlite:///{tmp_path / 'ext.db'}"
+    upsert_conferences(
+        [Conference(acronym="X", name="X", subcategory="radiology",
+                    prior_start_date=date(2025, 11, 1),
+                    upcoming_abstract_deadline=date(2026, 5, 1),
+                    upcoming_start_date=date(2026, 11, 2))],
+        db_url=url,
+    )
+    apply_refreshed_conferences(
+        [Conference(acronym="X", name="X", subcategory="radiology",
+                    upcoming_abstract_deadline=date(2026, 5, 15),
+                    upcoming_start_date=date(2026, 11, 2))],
+        db_url=url,
+    )
+    (row,) = query_conferences(db_url=url)
+    assert row.upcoming_abstract_deadline == date(2026, 5, 15)
+    assert row.prior_start_date == date(2025, 11, 1)

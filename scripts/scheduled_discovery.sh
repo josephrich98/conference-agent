@@ -1,60 +1,85 @@
 #!/bin/bash
-# Scheduled discovery: runs every 2 weeks (Saturday 2 AM)
-# Discovers conferences due for auto-check (6-12 month staleness window)
-# Uses claude-code backend (local Claude Code subscription, no API key)
-# If the discovery run changes the local DB, it redeploys the static site (scripts/deploy_static.sh)
+# Scheduled discovery: runs daily (cron, 2 AM).
 #
-# Cron fires this weekly; the parity guard below skips odd ISO weeks so the
-# job effectively runs every other Saturday. (Cron can't express "every 2
-# weeks" directly since weeks don't divide evenly into months.)
-
-set -e
-
-# Biweekly guard: only proceed on even ISO week numbers. Strip leading zero so
-# values like "08" aren't parsed as invalid octal.
-WEEK=$((10#$(date +%V)))
-if (( WEEK % 2 != 0 )); then
-  exit 0
-fi
+# Runs the page-gated watch cadence (daily_update.py --cadence watch): series
+# with a submission deadline within two weeks either side are page-checked every
+# day; series with a deadline or meeting in the next month, or waiting on a next
+# edition (6-24 months after the last one), every two weeks. The agent (claude-code
+# backend: local Claude Code subscription, no API key) only re-researches series
+# whose official pages changed -- see conference_agent/refresh.py.
+#
+# If the run changes what the site shows, it redeploys the static site
+# (scripts/deploy_static.sh). The comparison is on the exported site data, not
+# the DB file, because every run updates per-row bookkeeping columns.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="$PROJECT_DIR/data/logs"
-
 mkdir -p "$LOG_DIR"
+
+# cron starts with a minimal PATH (/usr/bin:/bin), which lacks the `claude` CLI
+# (~/.local/bin) and the nvm-managed `vercel` CLI. Add both explicitly.
+export PATH="$HOME/.local/bin:$PATH"
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+# shellcheck disable=SC1091
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null
+# Write progress to the log as it happens rather than in one block at exit.
+export PYTHONUNBUFFERED=1
+
+# One run at a time: a run that is still researching when the next one fires
+# makes the next one exit quietly.
+exec 9>"$LOG_DIR/.scheduled_discovery.lock"
+flock -n 9 || exit 0
+
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 LOG_FILE="$LOG_DIR/discovery_${TIMESTAMP}.log"
+SNAP_DIR="$(mktemp -d)"
+trap 'rm -rf "$SNAP_DIR"' EXIT
 
-{
+run() {
   echo "=== Scheduled Discovery Start: $TIMESTAMP ==="
   echo "Project: $PROJECT_DIR"
   echo ""
 
-  # Activate conda environment
+  for tool in claude vercel; do
+    command -v "$tool" >/dev/null || { echo "ERROR: '$tool' not found on PATH ($PATH)"; return 1; }
+  done
+
   eval "$(conda shell.bash hook)"
-  conda activate conference_agent
+  conda activate conference_agent || return 1
+  # The nvm-managed node links against libatomic, which this system only has
+  # inside conda's lib directory (an interactive shell gets this from .bashrc).
+  export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$HOME/.local/lib:${LD_LIBRARY_PATH:-}"
+  cd "$PROJECT_DIR" || return 1
 
-  # Run discovery: --cadence due targets only conferences due for auto-check
-  cd "$PROJECT_DIR"
+  # Hash of the data the site shows, before and after the run.
+  site_hash() {
+    python scripts/build_static.py --out "$SNAP_DIR" >/dev/null &&
+      sha256sum "$SNAP_DIR/data/conferences.json" | awk '{print $1}'
+  }
+  local before after status
+  before="$(site_hash)" || return 1
 
-  # Hash the local DB before and after so we only push to AWS when it changed.
-  DB_FILE="$PROJECT_DIR/data/conferences.db"
-  db_hash() { [ -f "$1" ] && sha256sum "$1" | awk '{print $1}' || echo "missing"; }
-  DB_HASH_BEFORE="$(db_hash "$DB_FILE")"
+  python scripts/daily_update.py --cadence watch --backend claude-code
+  status=$?
 
-  python scripts/daily_update.py --cadence due --backend claude-code
-
-  DB_HASH_AFTER="$(db_hash "$DB_FILE")"
+  # Deploy even after a partial failure: batches that succeeded are kept.
+  after="$(site_hash)" || return 1
   echo ""
-  if [ "$DB_HASH_BEFORE" != "$DB_HASH_AFTER" ]; then
-    echo "Database changed — redeploying static site via scripts/deploy_static.sh"
-    bash scripts/deploy_static.sh || echo "WARNING: scripts/deploy_static.sh failed (exit $?)"
+  if [ "$before" != "$after" ]; then
+    echo "Site data changed -- redeploying via scripts/deploy_static.sh"
+    bash scripts/deploy_static.sh || { echo "ERROR: deploy failed"; status=1; }
   else
-    echo "Database unchanged — skipping AWS push"
+    echo "Site data unchanged -- no redeploy"
   fi
+  return "$status"
+}
 
-  echo ""
-  echo "=== Scheduled Discovery Complete: $(date +%Y-%m-%d_%H-%M-%S) ==="
-} >> "$LOG_FILE" 2>&1
-
-exit 0
+run >> "$LOG_FILE" 2>&1
+STATUS=$?
+if [ "$STATUS" -eq 0 ]; then
+  echo "=== Scheduled Discovery Complete: $(date +%Y-%m-%d_%H-%M-%S) ===" >> "$LOG_FILE"
+else
+  echo "=== Scheduled Discovery FAILED (exit $STATUS): $(date +%Y-%m-%d_%H-%M-%S) ===" >> "$LOG_FILE"
+fi
+exit "$STATUS"

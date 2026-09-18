@@ -191,8 +191,13 @@ SUBCATEGORY_TO_CATEGORY = {
     "theoretical computer science": "computer science",
     "computer graphics": "computer science",
     "simulation": "computer science",
+    "robotics": "computer science",
+    "data mining": "computer science",
     # --- artificial intelligence ---------------------------------------------
     "machine learning": "artificial intelligence",
+    "natural language processing": "artificial intelligence",
+    "computer vision": "artificial intelligence",
+    "learning theory": "artificial intelligence",
 }
 
 

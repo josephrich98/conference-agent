@@ -44,11 +44,11 @@ set per field, not per conference.
 - **Monthly** — every other field. Run locally via
   `daily_update.py --cadence monthly`.
 
-The scheduling of these cadences lives in the AWS SAM stack as EventBridge
+These per-field cadences can be scheduled from the AWS SAM stack as EventBridge
 Scheduler rules (daily `due` / weekly / monthly) targeting a refresh Lambda
-(`web/refresh_handler.py`) — see `infra/template.yaml` and `DEPLOY_AWS.md`. They
-replaced the former `.github/workflows/{weekly_update,monthly_update,auto_check}.yml`
-cron workflows.
+(`web/refresh_handler.py`); see `infra/template.yaml` and `DEPLOY_AWS.md`. That
+stack is torn down, so the live schedule is the local cron job running the watch
+cadence (below).
 
 Weekly and monthly are disjoint and together cover every seeded field. To change
 a field's cadence, move it in/out of `WEEKLY_SUBCATEGORIES` (one edit).
@@ -59,21 +59,42 @@ Layered on top of the per-field cadence is a per-conference policy
 (`conference_agent.refresh`) that spends discovery calls only when a new edition
 is plausibly about to be announced. A series is **due for a check** once its most
 recent known edition is between `CHECK_WINDOW_MIN_MONTHS` (6) and
-`CHECK_WINDOW_MAX_MONTHS` (12) old — old enough that next year's dates may be out
-soon, recent enough to assume the series is still active. Within that window it is
-re-checked every `RECHECK_INTERVAL_DAYS` (14) days (tracked per row via
-`last_checked`) until either a future edition is found — at which point it is
-**updated** and dropped — or the edition ages past one year, at which point
-checking stops. A never-checked, date-less row is checked once so freshly seeded
-rows get an initial pass.
+`CHECK_WINDOW_MAX_MONTHS` (24) old, measured from that edition's earliest
+submission deadline (or its start date when no deadline is known). That is old
+enough that next year's dates may be out soon, and recent enough to assume the
+series is still active; the two-year ceiling keeps biennial meetings in view.
+Within that window it is re-checked every `RECHECK_INTERVAL_DAYS` (14) days
+(tracked per row via `last_checked`) until either a future edition is found (at
+which point it is **updated** and dropped) or the edition ages past two years,
+at which point checking stops. A never-checked, date-less row is checked once so
+freshly seeded rows get an initial pass.
 
-Run via `daily_update.py --cadence due` (locally) or the daily EventBridge
-Scheduler rule in the AWS stack (`infra/template.yaml`, `{"cadence":"due"}`).
-Because the 14-day interval is enforced per series, the schedule can run as often
-as daily and still check each conference at most biweekly; it refreshes only the
-fields that contain a due series. The three numbers above are the policy's only
-knob (in `config.py`). This job needs a persistent `CONFERENCE_DATABASE_URL` so
-`last_checked` survives between runs.
+`daily_update.py --cadence due` refreshes the whole fields that contain a due
+series. The scheduled job uses the finer **watch** cadence instead.
+
+### Watch (per-series, page-gated) — the scheduled job
+
+`daily_update.py --cadence watch` runs daily from cron
+(`scripts/scheduled_discovery.sh`). Each series falls in at most one tier:
+
+- **daily**: an upcoming submission deadline within `WATCH_DAILY_WINDOW_DAYS`
+  (14) days before or after today, when extensions are usually announced.
+  Checked every run.
+- **soon**: an upcoming deadline or the meeting's start date within the next
+  `WATCH_SOON_WINDOW_DAYS` (30) days. Checked every 14 days.
+- **stale**: in the 6–24-month window above. Checked every 14 days.
+
+A check is agent-free: `conference_agent/page_watch.py` fetches the official link
+and up to three same-site dates / deadlines / call-for-abstracts pages and hashes
+the set of dates they mention (stored as `watch_fingerprint`, with the check date
+in `watch_checked`). The agent re-researches a series, in a targeted run of up
+to `WATCH_BATCH_SIZE` (6) named series (`discover.refresh_conferences`), only when
+the fingerprint changed; when the pages could not be read and the series has not
+been researched in 14 days; or when `WATCH_BACKSTOP_DAYS` (28) have passed
+without research. At most `WATCH_MAX_AGENT_PER_RUN` (18) series are researched
+per run, in tier order; the rest are deferred to the next run. Results are merged
+fill-only (`database.apply_refreshed_conferences`), so a targeted run never
+clears a field it did not re-find.
 
 > **Decision for review:** the weekly set is currently the five highest-velocity
 > fields. Tell me which others should be weekly (each weekly field is one extra
@@ -168,21 +189,30 @@ verified against ISCB and official conference sites).
 > Social Insects, Cell & Membrane Fusion). Tell me whether to (a) keep them under
 > `genomics`, (b) give them their own fields, or (c) drop them.
 
-### Data science
+### Data science / machine learning / AI
 
-Per your instruction, exactly five:
+The conference venues from a field-grouped list of top ML/AI venues. Series that
+are also core machine-learning venues (COLM, CVPR, ICCV, ECCV, CoRL, KDD, COLT)
+carry a second `machine learning` tag.
 
-| Field | Flagship seeds |
-|---|---|
-| machine learning | NeurIPS, ICML, ICLR, CVPR, ICCV |
+| Field | Category | Flagship seeds |
+|---|---|---|
+| machine learning | artificial intelligence | NeurIPS, ICML, ICLR, UAI, AISTATS (+ `statistics`), AAAI, IJCAI |
+| natural language processing | artificial intelligence | ACL, EMNLP, EACL, NAACL, IJCNLP-AACL, COLM |
+| computer vision | artificial intelligence | CVPR, ICCV, ECCV, 3DV |
+| robotics | computer science | ICRA, IROS, RSS, CoRL |
+| data mining | computer science | KDD |
+| learning theory | artificial intelligence | COLT |
 
-> **Note:** all five are filed under one `machine learning` category. Say the
-> word if you'd rather split vision (CVPR, ICCV) into a `computer vision` field.
+> **Not seeded:** the journals on that list (JMLR, TMLR, CL, TACL, PAMI, JAIR)
+> accept rolling submissions, so they have no deadlines or meeting dates for the
+> table or calendar feed. Named sub-tracks (NeurIPS Datasets & Benchmarks,
+> ACL/EMNLP "Findings") are part of their parent conference's row.
 
 ## Seed coverage at a glance
 
-174 seed conferences across 38 fields (33 medical, genomics + CSHL, and one
-`machine learning` field). The seeds bootstrap discovery; the agent finds each
+228 seed conferences across 62 fields (medicine, genomics + CSHL, ML/AI,
+chemistry, physics, biology, statistics, computer science, and mathematics). The seeds bootstrap discovery; the agent finds each
 field's long tail and verifies dates against official sites.
 
 ## Open decisions (summary)
@@ -191,6 +221,7 @@ field's long tail and verifies dates against official sites.
    `genomics`, `machine learning`; every other field refreshes monthly. Tell me
    which others (e.g. `hematology`) should move to weekly.
 2. **CSHL routing** — keep the basic-biology meetings under `genomics`, split, or drop?
-3. **Data-science scope** — kept to the five you named (NeurIPS, ICML, ICLR,
-   CVPR, ICCV) under one `machine learning` field; say the word to split out
-   `computer vision` (CVPR, ICCV).
+3. **Data-science scope** — the conference venues listed under
+   "Data science / machine learning / AI" above, split into machine learning,
+   NLP, computer vision, robotics, data mining, and learning theory; journals
+   are excluded.

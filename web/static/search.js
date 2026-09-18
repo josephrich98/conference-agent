@@ -565,6 +565,7 @@ const STOPWORDS = new Set([
 const KEYWORD_SYNONYMS = {
   ai: ["artificial intelligence"],
   ml: ["machine learning"],
+  nlp: ["natural language processing"],
   cs: ["computer science"],
   online: ["virtual", "hybrid"],
   remote: ["virtual", "hybrid"],

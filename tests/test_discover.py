@@ -341,3 +341,39 @@ def test_run_claude_cli_raises_when_cli_missing(monkeypatch):
     monkeypatch.setattr(discover.shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="claude"):
         discover._run_claude_cli("prompt", tools=[], timeout=10)
+
+
+def test_refresh_conferences_targets_named_series_only(monkeypatch):
+    from datetime import date
+
+    from conference_agent.models import Conference
+
+    target = Conference(acronym="RSNA", name="Radiological Society of North America",
+                        subcategory="radiology", url="https://www.rsna.org/annual-meeting",
+                        upcoming_abstract_deadline=date(2026, 5, 6))
+    seen = {}
+
+    def fake_research(system, prompt, model):
+        seen["system"], seen["prompt"] = system, prompt
+        return "notes"
+
+    monkeypatch.setattr(discover, "_research_text_via_cli", fake_research)
+    monkeypatch.setattr(
+        discover,
+        "_extract_via_cli",
+        lambda text, model: [
+            Conference(acronym="RSNA", name="RSNA", subcategory="radiology"),
+            Conference(acronym="OTHER", name="Other", subcategory="radiology"),
+        ],
+    )
+    found = discover.refresh_conferences([target])
+    assert [c.id for c in found] == ["RSNA"]
+    assert "Re-check ONLY" in seen["prompt"]
+    assert "https://www.rsna.org/annual-meeting" in seen["prompt"]
+    assert "abstract 2026-05-06" in seen["prompt"]
+    assert "- RSNA — Radiological Society of North America" in seen["system"]
+
+
+def test_refresh_conferences_empty_targets_skip_the_agent(monkeypatch):
+    monkeypatch.setattr(discover, "_research_text_via_cli", lambda *a: pytest.fail("called"))
+    assert discover.refresh_conferences([]) == []

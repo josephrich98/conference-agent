@@ -72,8 +72,14 @@ for the design.
   - `calendar_sync.py` — iCalendar (`.ics`) feed builder (RFC 5545; stable,
     deterministic event ids so a re-fetched feed updates events in place)
   - `refresh.py` — per-conference auto-check policy: decides which series are
-    "due" for re-discovery (6–12-month staleness window, biweekly re-check via a
-    `last_checked` column) so `daily_update.py --cadence due` targets only them
+    "due" for re-discovery (6–24-month staleness window from the last edition's
+    submission deadline, biweekly re-check via a `last_checked` column) so
+    `daily_update.py --cadence due` targets only them; and the page-gated
+    **watch** cadence (`run_watch`, the scheduled job): tiers series by deadline
+    proximity, runs the agent-free page check, and re-researches only changed
+    series via the targeted `discover.refresh_conferences`
+  - `page_watch.py` — agent-free change detection: fetches a conference's link
+    plus a few same-site dates pages and fingerprints the set of dates mentioned
   - `notify.py` — email summary after a discovery / daily refresh
   - `cli.py` — command-line entry point (`discover` / `seed` / `add` / `fields` /
     `list` / `serve`). `_SCALAR_FIELDS` + `_COMPOSITE_FIELDS` is the single
@@ -89,7 +95,7 @@ for the design.
   static-hosting design decision below)
 - `scripts/` — runnable entry points (`build_table.py`, `daily_update.py`,
   `push_db.py`, `deploy.sh` one-command reconcile + deploy, `scheduled_discovery.sh`
-  the biweekly cron job, `build_static.py` the static-site bundler)
+  the daily cron job, `build_static.py` the static-site bundler)
 - `infra/` — AWS SAM deployment (`template.yaml`: CloudFront over an
   IAM-protected Lambda Function URL + RDS PostgreSQL in a VPC, with optional
   `DomainName`/`AcmCertificateArn` for a custom domain; `samconfig.toml`); built
@@ -302,11 +308,16 @@ dependencies there rather than installing ad hoc.
   for a normal deploy — `deploy/vercel/` is linked to the same Vercel project, so
   deploying from it would revert the public URL to proxying AWS. Use them only
   when explicitly working on the AWS stack.
-- **Automatic refresh.** `scripts/scheduled_discovery.sh` (the biweekly cron job)
-  hashes `data/conferences.db` before and after the `daily_update.py --cadence
-  due` run and redeploys (via `scripts/deploy_static.sh`) only when the DB
-  actually changed, so the live site tracks new discoveries without a manual
-  step.
+- **Automatic refresh.** A local cron entry (`0 2 * * *`) runs
+  `scripts/scheduled_discovery.sh` daily. It runs `daily_update.py --cadence
+  watch`, which page-checks series by tier (deadline within ±14 days: daily; a
+  deadline or meeting within 30 days, or 6–24 months since the last edition:
+  every 14 days) and calls the agent only for series whose pages' dates changed
+  (or that are unreadable / past a 28-day backstop). It redeploys (via
+  `scripts/deploy_static.sh`) only when the exported site data changed; the DB
+  file itself changes every run from bookkeeping columns, so it is not the
+  comparison. cron's minimal PATH lacks `~/.local/bin` (`claude`) and nvm
+  (`vercel`); the script adds both. Logs: `data/logs/`.
 
 ## Conventions
 

@@ -323,14 +323,42 @@ SEED_CONFERENCES = [
     ("CSHL-BRAINDEV", "CSHL Development & 3D Modeling of the Human Brain", ("neurology", "genomics")),
     ("CSHL-BRAINBAR", "CSHL Brain Barriers", ("neurology", "genomics")),
 
-    # --- Data science / machine learning -----------------------------------
+    # --- Data science / machine learning / AI -------------------------------
+    # Conference venues from a field-grouped list of top ML/AI venues. The
+    # journals on that list (JMLR, TMLR, CL, TACL, PAMI, JAIR) are omitted: they
+    # take rolling submissions, so they have no deadlines or dates to track. Its
+    # sub-tracks (NeurIPS Datasets & Benchmarks, ACL/EMNLP "Findings") belong to
+    # their parent conference's row.
+    # Machine learning
     ("NeurIPS", "Conference on Neural Information Processing Systems", "machine learning"),
     ("ICML", "International Conference on Machine Learning", "machine learning"),
     ("ICLR", "International Conference on Learning Representations", "machine learning"),
-    ("CVPR", "IEEE/CVF Conference on Computer Vision and Pattern Recognition", "machine learning"),
-    ("ICCV", "IEEE/CVF International Conference on Computer Vision", "machine learning"),
-    ("ECCV", "European Conference on Computer Vision", "machine learning"),
+    ("UAI", "Conference on Uncertainty in Artificial Intelligence", "machine learning"),
+    ("AISTATS", "International Conference on Artificial Intelligence and Statistics", ("machine learning", "statistics")),
+    # Natural language processing / language modeling
+    ("ACL", "Annual Meeting of the Association for Computational Linguistics", "natural language processing"),
+    ("EMNLP", "Conference on Empirical Methods in Natural Language Processing", "natural language processing"),
+    ("EACL", "Conference of the European Chapter of the Association for Computational Linguistics", "natural language processing"),
+    ("NAACL", "Annual Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics", "natural language processing"),
+    ("IJCNLP-AACL", "International Joint Conference on Natural Language Processing and Asia-Pacific Chapter of the ACL", "natural language processing"),
+    ("COLM", "Conference on Language Modeling", ("natural language processing", "machine learning")),
+    # Computer vision
+    ("CVPR", "IEEE/CVF Conference on Computer Vision and Pattern Recognition", ("computer vision", "machine learning")),
+    ("ICCV", "IEEE/CVF International Conference on Computer Vision", ("computer vision", "machine learning")),
+    ("ECCV", "European Conference on Computer Vision", ("computer vision", "machine learning")),
+    ("3DV", "International Conference on 3D Vision", "computer vision"),
+    # Artificial intelligence (general)
     ("AAAI", "AAAI Conference on Artificial Intelligence", "machine learning"),
+    ("IJCAI", "International Joint Conference on Artificial Intelligence", "machine learning"),
+    # Robotics
+    ("ICRA", "IEEE International Conference on Robotics and Automation", "robotics"),
+    ("IROS", "IEEE/RSJ International Conference on Intelligent Robots and Systems", "robotics"),
+    ("RSS", "Robotics: Science and Systems", "robotics"),
+    ("CoRL", "Conference on Robot Learning", ("robotics", "machine learning")),
+    # Data mining
+    ("KDD", "ACM SIGKDD Conference on Knowledge Discovery and Data Mining", ("data mining", "machine learning")),
+    # Learning theory
+    ("COLT", "Conference on Learning Theory", ("learning theory", "machine learning")),
 
     # --- Chemistry ---------------------------------------------------------
     ("ACS-CHEM", "American Chemical Society National Meeting & Exposition", "chemistry"),
@@ -543,6 +571,24 @@ SEED_CONFERENCE_URLS: dict[str, "str | None"] = {
     "ICCV": "https://iccv.thecvf.com",
     "ECCV": "https://eccv.ecva.net",
     "AAAI": "https://aaai.org",
+    "UAI": "https://www.auai.org",
+    "AISTATS": "https://aistats.org",
+    # The ACL-family meetings move to a new per-year domain each edition, so
+    # the stable home is the ACL portal; discovery records the edition site.
+    "ACL": "https://www.aclweb.org",
+    "EMNLP": "https://www.aclweb.org",
+    "EACL": "https://www.aclweb.org",
+    "NAACL": "https://www.aclweb.org",
+    "IJCNLP-AACL": "https://www.aclweb.org",
+    "COLM": "https://colmweb.org",
+    "3DV": "https://3dvconf.github.io",
+    "IJCAI": "https://www.ijcai.org",
+    "ICRA": "https://www.ieee-ras.org",
+    "IROS": "https://www.ieee-ras.org",
+    "RSS": "https://roboticsconference.org",
+    "CoRL": "https://www.corl.org",
+    "KDD": "https://kdd.org",
+    "COLT": "https://learningtheory.org",
     # --- Chemistry ---------------------------------------------------------
     "ACS-CHEM": "https://www.acs.org/meetings/acs-meetings.html",
     "GCE": "https://www.gcande.org",
@@ -770,16 +816,47 @@ def monthly_subcategories() -> list[str]:
 # when a new edition is plausibly about to be announced.
 #
 # A series becomes "due for a check" once its latest known edition is between
-# CHECK_WINDOW_MIN_MONTHS and CHECK_WINDOW_MAX_MONTHS old: old enough that the
-# next edition's dates may be published soon, but recent enough to assume the
-# series is still active (not dead or infrequent). While inside that window it is
-# re-checked every RECHECK_INTERVAL_DAYS days until either a future ("upcoming")
-# edition is found -- at which point it is updated and no longer due -- or the
-# edition ages past the maximum, at which point checking stops. These three
-# numbers are the only knob for the policy. See ``conference_agent.refresh``.
+# CHECK_WINDOW_MIN_MONTHS and CHECK_WINDOW_MAX_MONTHS old -- measured from that
+# edition's earliest submission deadline, or its start date when no deadline is
+# known: old enough that the next edition's dates may be published soon, but
+# recent enough to assume the series is still active (the two-year ceiling keeps
+# biennial meetings in view). While inside that window it is re-checked every
+# RECHECK_INTERVAL_DAYS days until either a future ("upcoming") edition is found
+# -- at which point it is updated and no longer due -- or the edition ages past
+# the maximum, at which point checking stops. See ``conference_agent.refresh``.
 CHECK_WINDOW_MIN_MONTHS = 6
-CHECK_WINDOW_MAX_MONTHS = 12
+CHECK_WINDOW_MAX_MONTHS = 24
 RECHECK_INTERVAL_DAYS = 14
+
+# --- Page-watch schedule (``daily_update.py --cadence watch``) ---------------
+#
+# The watch cadence runs daily but spends a discovery (agent) call on a series
+# only when a cheap, agent-free check of its official pages suggests something
+# changed. Each series falls into at most one tier (see ``refresh.watch_tier``):
+#
+# - "daily": an upcoming submission deadline lies within WATCH_DAILY_WINDOW_DAYS
+#   before or after today -- when extensions are announced, both just before and
+#   shortly after a deadline. Its pages are checked every run.
+# - "soon": an upcoming deadline or the meeting's start date lies within the next
+#   WATCH_SOON_WINDOW_DAYS days. Checked every RECHECK_INTERVAL_DAYS days.
+# - "stale": no future edition on record and the latest edition is inside the
+#   CHECK_WINDOW_* window above. Checked every RECHECK_INTERVAL_DAYS days.
+#
+# The cheap check (``conference_agent.page_watch``) fetches the official link and
+# a few same-site "dates" / "deadlines" / "call for abstracts" pages and hashes
+# the set of dates they mention. The agent runs when that fingerprint changes;
+# when the pages cannot be read it falls back to one agent run per
+# RECHECK_INTERVAL_DAYS; and even an unchanged page gets an agent run after
+# WATCH_BACKSTOP_DAYS, since a new edition is often announced on a new site
+# (e.g. a year-stamped domain) that the stored link never shows.
+WATCH_DAILY_WINDOW_DAYS = 14
+WATCH_SOON_WINDOW_DAYS = 30
+WATCH_BACKSTOP_DAYS = 28
+# Conferences re-researched per agent session, and the most re-researched in one
+# run. Anything over the cap is deferred (left unstamped) to the next run, so a
+# burst of changes spreads over several days instead of one long run.
+WATCH_BATCH_SIZE = 6
+WATCH_MAX_AGENT_PER_RUN = 18
 
 # Provenance for the seed list above: the reference pages used to compile the
 # radiology seeds. Recorded for auditability and as starting points when refresh-

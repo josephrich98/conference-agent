@@ -66,6 +66,7 @@ trash/
 tmp.*
 output/
 outputs/
+manuscript/
 
 # ---- Private ops docs ----
 # Personal AWS run-book (stack IDs, VPC/subnet IDs, bring-up/teardown steps).
