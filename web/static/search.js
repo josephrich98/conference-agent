@@ -11,7 +11,8 @@
  * tokenizer regex, parser, and comparison semantics are all mirrored from it.
  *
  * Exposes `buildPredicate(query)` (returns a `(row) => boolean`, or `null` for an
- * empty query meaning "match everything") and `sortRows(rows, sort, order)`.
+ * empty query meaning "match everything") and `sortRows(rows, sort, order)`, plus
+ * the browser-only `keywordSearch(query, rows)` fallback (see the end of the file).
  */
 
 // --- Field registry (mirrors web/search.py) --------------------------------
@@ -502,9 +503,255 @@ function sortRows(rows, sort, order) {
   });
 }
 
-// Browser global + CommonJS export (for the Node-based parity test).
+// --- Keyword fallback (browser-only; no counterpart in web/search.py) -------
+//
+// The boolean language above is exact: every bare word must appear verbatim as a
+// substring, so a typo ("radiolgy"), an inflection ("radiological"), or a filler
+// word ("conferences in europe") returns nothing. When a query matches no rows,
+// or does not parse, the page falls back to `keywordSearch`, a forgiving,
+// search-engine-style ranking: each word matches loosely (whole word, prefix,
+// shared stem, inside a longer word, or a small typo), rows that
+// match more of the words rank first, and a hit in the acronym, name, or
+// subcategory counts for more than one in the notes. It is a UI convenience
+// only, so it does not affect the parity test or the server API.
+
+// Row column -> weight of a hit in that column.
+const KEYWORD_FIELDS = [
+  ["acronym", 4],
+  ["name", 3],
+  ["subcategory", 3],
+  ["category", 2],
+  ["location", 2],
+  ["format", 1],
+  ["remote_option", 1],
+  ["size", 1],
+  ["cost", 0.5],
+  ["deadline_time", 0.5],
+  ["upcoming_registration", 0.5],
+  ["prior_registration", 0.5],
+  ["url", 0.5],
+  ["notes", 0.5],
+];
+
+// Long free-text columns where typo-tolerant matching mostly produces noise.
+const KEYWORD_EXACT_ONLY = new Set([
+  "notes", "url", "upcoming_registration", "prior_registration",
+]);
+
+// Displayed-date columns a four-digit year is checked against.
+const KEYWORD_DATE_COLUMNS = [
+  "upcoming_start_date", "prior_start_date",
+  "upcoming_abstract_deadline", "prior_abstract_deadline",
+  "upcoming_late_abstract_deadline", "prior_late_abstract_deadline",
+  "upcoming_paper_deadline", "prior_paper_deadline",
+];
+
+const KEYWORD_MONTH_COLUMNS = [
+  "conference_month", "abstract_month", "late_abstract_month", "paper_month",
+];
+
+// Filler words dropped from a keyword query (plus the boolean operators).
+const STOPWORDS = new Set([
+  "a", "an", "the", "and", "or", "not", "of", "in", "on", "at", "for", "to",
+  "with", "without", "by", "from", "about", "as", "is", "are", "be", "that",
+  "this", "these", "those", "which", "what", "where", "when", "who", "i", "me",
+  "my", "we", "our", "you", "your", "any", "all", "some", "find", "show", "list",
+  "give", "want", "looking", "look", "need", "near", "held", "conference",
+  "conferences", "meeting", "meetings", "event", "events",
+]);
+
+// Common shorthand -> the wording used in the data. A term matches if it or any
+// of its expansions matches.
+const KEYWORD_SYNONYMS = {
+  ai: ["artificial intelligence"],
+  ml: ["machine learning"],
+  cs: ["computer science"],
+  online: ["virtual", "hybrid"],
+  remote: ["virtual", "hybrid"],
+  big: ["large"],
+  major: ["large"],
+  huge: ["large"],
+  tiny: ["small"],
+};
+
+function foldText(s) {
+  return String(s).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+function splitWords(s) {
+  return foldText(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+// Optimal-string-alignment edit distance (a transposition costs 1), with an
+// early exit once the distance is known to exceed `max`.
+function editDistance(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev2 = null;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        v = Math.min(v, prev2[j - 2] + 1);
+      }
+      cur.push(v);
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1;
+    prev2 = prev;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+function commonPrefixLength(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+}
+
+// How well a single-word term matches one word of the row text, 0 (no match)
+// to 1 (the same word).
+function wordQuality(term, word, fuzzy) {
+  if (term === word) return 1;
+  if (term.length < 3) return 0; // "ai", "us": whole-word matches only
+  if (word.startsWith(term)) return 0.9; // neuro -> neurology
+  const shared = commonPrefixLength(term, word);
+  if (shared >= Math.max(4, Math.ceil(0.75 * Math.min(term.length, word.length)))) {
+    return 0.8; // radiological ~ radiology, imaging ~ image
+  }
+  if (term.length >= 4 && word.includes(term)) return 0.7; // informatics in bioinformatics
+  // Short words sit too close to unrelated ones ("stats" vs "states"), so typo
+  // tolerance starts at six letters.
+  if (fuzzy && term.length >= 6) {
+    const max = term.length >= 9 ? 2 : 1;
+    if (editDistance(term, word, max) <= max) return 0.6; // radiolgy ~ radiology
+  }
+  return 0;
+}
+
+// Per-row tokenized text, computed once per row object.
+const KEYWORD_INDEX = new WeakMap();
+
+function keywordIndex(row) {
+  let idx = KEYWORD_INDEX.get(row);
+  if (!idx) {
+    idx = KEYWORD_FIELDS
+      .filter(([col]) => isPresent(row[col]) && row[col] !== "")
+      .map(([col, weight]) => ({
+        weight,
+        fuzzy: !KEYWORD_EXACT_ONLY.has(col),
+        text: ` ${splitWords(row[col]).join(" ")} `,
+        words: [...new Set(splitWords(row[col]))],
+      }));
+    KEYWORD_INDEX.set(row, idx);
+  }
+  return idx;
+}
+
+// Every field name and alias the boolean grammar accepts; a `field:` prefix in a
+// query that fell through to keyword search is dropped rather than searched for.
+const KNOWN_FIELD_NAMES = new Set([
+  ...Object.keys(TEXT_FIELDS), ...Object.keys(DATE_FIELDS),
+  ...Object.keys(INT_FIELDS), ...Object.keys(ALIASES),
+]);
+
+/** Split a query into keyword terms: quoted phrases stay whole, filler words drop. */
+function keywordTerms(query) {
+  const terms = [];
+  const seen = new Set();
+  const add = (t) => {
+    if (!seen.has(t)) {
+      seen.add(t);
+      terms.push(t);
+    }
+  };
+  let rest = String(query || "").replace(/"([^"]*)"/g, (_, phrase) => {
+    const words = splitWords(phrase);
+    if (words.length) add(words.join(" "));
+    return " ";
+  });
+  rest = rest.replace(/([A-Za-z_]\w*)\s*:/g, (m, name) =>
+    KNOWN_FIELD_NAMES.has(name.toLowerCase()) ? " " : ` ${name} `
+  );
+  for (const word of splitWords(rest)) {
+    if (STOPWORDS.has(word)) continue;
+    if (/^\d+$/.test(word) && !/^(19|20)\d\d$/.test(word)) continue; // "06" of a date
+    if (word.length < 2) continue;
+    add(word);
+  }
+  return terms;
+}
+
+// Best weighted match of one term anywhere in the row, 0 if none.
+function termScore(term, row) {
+  const idx = keywordIndex(row);
+  const alternatives = [term, ...(KEYWORD_SYNONYMS[term] || [])];
+  let best = 0;
+  for (const alt of alternatives) {
+    const isPhrase = alt.includes(" ");
+    for (const field of idx) {
+      if (field.weight <= best) continue; // cannot beat the best hit so far
+      let q = 0;
+      if (isPhrase) {
+        if (field.text.includes(` ${alt} `)) q = 1;
+        else if (field.text.includes(alt)) q = 0.8;
+      } else {
+        for (const word of field.words) {
+          q = Math.max(q, wordQuality(alt, word, field.fuzzy));
+          if (q === 1) break;
+        }
+      }
+      best = Math.max(best, q * field.weight);
+    }
+  }
+  if (/^(19|20)\d\d$/.test(term) &&
+      KEYWORD_DATE_COLUMNS.some((c) => isPresent(row[c]) && String(row[c]).startsWith(term))) {
+    best = Math.max(best, 1);
+  }
+  const month = MONTH_NAMES[term];
+  if (month !== undefined && KEYWORD_MONTH_COLUMNS.some((c) => row[c] === month)) {
+    best = Math.max(best, 1);
+  }
+  return best;
+}
+
+/**
+ * Forgiving keyword ranking over `rows`. Returns `[{row, matched, score}]` for
+ * rows matching at least half as many of the query's terms as the best row does,
+ * most relevant first (more terms matched, then a higher score). Terms that match
+ * few rows weigh more than ones that match many, as in a search engine. Returns
+ * an empty array when the query has no usable terms.
+ */
+function keywordSearch(query, rows) {
+  const terms = keywordTerms(query);
+  if (terms.length === 0) return [];
+  const perRow = rows.map((row) => terms.map((t) => termScore(t, row)));
+  const idf = terms.map((_, i) => {
+    const df = perRow.filter((scores) => scores[i] > 0).length;
+    return df ? Math.log(1 + rows.length / df) : 0;
+  });
+  const hits = [];
+  perRow.forEach((scores, r) => {
+    const matched = scores.filter((s) => s > 0).length;
+    if (matched === 0) return;
+    const score = scores.reduce((sum, s, i) => sum + s * idf[i], 0);
+    hits.push({ row: rows[r], matched, score });
+  });
+  const bestMatched = hits.reduce((m, h) => Math.max(m, h.matched), 0);
+  const minMatched = Math.ceil(bestMatched / 2);
+  return hits
+    .filter((h) => h.matched >= minMatched)
+    .sort((a, b) => b.matched - a.matched || b.score - a.score);
+}
+
+// Browser global + CommonJS export (for the Node-based tests).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { buildPredicate, sortRows, QueryError };
+  module.exports = { buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError };
 } else {
-  window.ConferenceSearch = { buildPredicate, sortRows, QueryError };
+  window.ConferenceSearch = { buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError };
 }

@@ -218,7 +218,15 @@ dependencies there rather than installing ad hoc.
   boolean query language (`field:value`, `AND`/`OR`/`NOT`, parentheses, date
   comparisons) compiled to SQLAlchemy filters, a FastAPI JSON/CSV API, and a
   static single-page table with a per-row "📅 cal" calendar-download button and a
-  "Subscribe (.ics)" feed URL that mirrors the active search.
+  "Subscribe (.ics)" feed URL that mirrors the active search. One search box
+  serves both modes: the exact boolean search runs first, and when it matches
+  nothing (or the text does not parse) the page falls back to
+  `keywordSearch` in `web/static/search.js`, a forgiving, relevance-ranked
+  keyword match (prefix/stem/typo tolerant, filler words dropped, rows matching
+  more terms first). The fallback is browser-only, so the boolean grammar, its
+  Python parity, and the API are unchanged; `tests/test_keyword_search.py`
+  covers it via Node. An "✨ AI search" button next to Search (or Ctrl+Enter)
+  sends the same box's text to the natural-language translator.
 - **Optional natural-language search over a local LLM.** `web/nl_query.py`
   translates a plain-English request into the boolean query language above using
   a free, local Ollama model (no API key, no external network call). The system

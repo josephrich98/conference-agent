@@ -235,9 +235,9 @@
   </header>
 
   <div class="controls">
-    <input id="query" type="text" placeholder='Boolean query, e.g.  (virtual OR hybrid) AND size:large  — or plain English, then AI search' autocomplete="off" />
+    <input id="query" type="text" placeholder='Keywords (pediatric radiology), a boolean query ((virtual OR hybrid) AND size:large), or plain English for ✨ AI search' autocomplete="off" />
     <button class="primary" id="search-btn">Search</button>
-    <button class="primary" id="nl-btn" title="Translate a plain-English request in the search box into a boolean query">✨ AI search</button>
+    <button class="primary" id="nl-btn" title="Translate a plain-English request in the search box into a boolean query (Ctrl+Enter)">✨ AI search</button>
     <div class="columns-menu">
       <button id="columns-btn" title="Choose which columns are visible">Columns ▾</button>
       <div id="columns-panel" hidden>
@@ -253,7 +253,8 @@
   </div>
 
   <div class="syntax">
-    Boolean search:
+    Plain keywords work, typos included; if nothing matches exactly, the closest
+    keyword matches are shown, most relevant first. Boolean search:
     <code>category:medicine</code>
     <code>subcategory:radiology</code>
     <code>size:large</code>
@@ -305,7 +306,7 @@
       { key: "cal", label: "Calendar", sort: null },
     ];
 
-    let state = { sort: "upcoming_start_date", order: "asc", rows: [] };
+    let state = { sort: "upcoming_start_date", order: "asc", rows: [], relevance: true };
 
     // The full catalog snapshot, loaded once from the static JSON. All search,
     // sort, CSV export, and .ics generation run in the browser over this — there
@@ -447,25 +448,28 @@
       return /^https?:\/\//i.test(url) ? url : `https://${url}`;
     }
 
-    function renderHeader() {
+    function renderHeader(showSortArrow = true) {
       const row = $("header-row");
       row.innerHTML = "";
       for (const col of COLUMNS) {
         const th = document.createElement("th");
         th.dataset.col = col.key;
         let arrow = "";
-        if (col.sort && col.sort === state.sort) {
+        if (showSortArrow && col.sort && col.sort === state.sort) {
           arrow = ` <span class="arrow">${state.order === "asc" ? "▲" : "▼"}</span>`;
         }
         th.innerHTML = col.label + arrow;
         if (col.sort) {
           th.addEventListener("click", () => {
-            if (state.sort === col.sort) {
+            // Toggle the column already sorted on; otherwise (including leaving
+            // relevance order, where no arrow shows) start the column ascending.
+            if (showSortArrow && state.sort === col.sort) {
               state.order = state.order === "asc" ? "desc" : "asc";
             } else {
               state.sort = col.sort;
               state.order = "asc";
             }
+            state.relevance = false;
             search();
           });
         } else {
@@ -556,25 +560,54 @@
       }
     }
 
-    // Run the active query over the in-memory catalog. Filtering and sorting both
-    // mirror the former server endpoints (see search.js / the old /api/search).
+    // Run the active query over the in-memory catalog. The exact boolean search
+    // mirrors the former server endpoints (see search.js / the old /api/search).
+    // When it matches nothing, or the text does not parse as a boolean query
+    // (plain English with a stray colon, say), fall back to the forgiving keyword
+    // ranking in search.js, which tolerates typos, inflections, and filler words.
+    // Keyword results are ordered by relevance until a column header is clicked.
     function search() {
-      renderHeader();
       const q = $("query").value;
-      let predicate;
+      const plural = (n) => `${n} conference${n === 1 ? "" : "s"}`;
+      let rows = [];
+      let status;
+      let queryError = null;
       try {
-        predicate = ConferenceSearch.buildPredicate(q);
+        const predicate = ConferenceSearch.buildPredicate(q);
+        const filtered = predicate ? DATA.conferences.filter(predicate) : DATA.conferences;
+        rows = ConferenceSearch.sortRows(filtered, state.sort, state.order);
+        status = `${plural(rows.length)}.`;
       } catch (e) {
-        // QueryError — surface the message like the API's 400 detail.
-        $("status").textContent = `Query error: ${e.message}`;
-        renderRows([]);
-        return;
+        queryError = e.message; // QueryError, like the API's 400 detail
+        status = `Query error: ${queryError}`;
       }
-      const filtered = predicate ? DATA.conferences.filter(predicate) : DATA.conferences;
-      const rows = ConferenceSearch.sortRows(filtered, state.sort, state.order);
+
+      let byRelevance = false;
+      if (rows.length === 0 && q.trim()) {
+        const hits = ConferenceSearch.keywordSearch(q, DATA.conferences).map((h) => h.row);
+        if (hits.length) {
+          byRelevance = state.relevance;
+          rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order);
+          const why = queryError ? `Not a valid boolean query (${queryError})` : "No exact matches";
+          status = `${why} — showing ${plural(rows.length)} matching some of your keywords` +
+            (byRelevance ? ", most relevant first" : "") +
+            ". For a precise filter, try ✨ AI search.";
+        } else if (!queryError) {
+          status = "0 conferences. Try fewer or different keywords, or ✨ AI search.";
+        }
+      }
+
+      renderHeader(!byRelevance);
       state.rows = rows;
-      $("status").textContent = `${rows.length} conference${rows.length === 1 ? "" : "s"}.`;
+      $("status").textContent = status;
       renderRows(rows);
+    }
+
+    // A new query starts in relevance order (used only by the keyword fallback);
+    // clicking a column header switches to that column's order.
+    function newSearch() {
+      state.relevance = true;
+      search();
     }
 
     // Export the current result set as CSV, matching the columns and order the
@@ -689,7 +722,7 @@
           },
         });
         $("query").value = query;
-        search();
+        newSearch();
         setNlStatus(
           query
             ? `Translated to: ${query}${repaired ? "  (auto-corrected)" : ""}`
@@ -705,7 +738,7 @@
 
     $("nl-btn").addEventListener("click", nlSearch);
 
-    $("search-btn").addEventListener("click", () => { setNlStatus(""); search(); });
+    $("search-btn").addEventListener("click", () => { setNlStatus(""); newSearch(); });
     $("csv-btn").addEventListener("click", exportCsv);
     // Per-row calendar download (delegated, since rows re-render on each search).
     $("results-body").addEventListener("click", (e) => {
@@ -724,7 +757,12 @@
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".columns-menu")) $("columns-panel").hidden = true;
     });
-    $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+    $("query").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      // Enter runs the keyword/boolean search; Ctrl/Cmd+Enter runs AI search.
+      if (e.ctrlKey || e.metaKey) nlSearch();
+      else { setNlStatus(""); newSearch(); }
+    });
     $("help-toggle").addEventListener("click", () => {
       const h = $("fields-help");
       const showing = h.style.display === "block";
