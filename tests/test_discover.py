@@ -377,3 +377,23 @@ def test_refresh_conferences_targets_named_series_only(monkeypatch):
 def test_refresh_conferences_empty_targets_skip_the_agent(monkeypatch):
     monkeypatch.setattr(discover, "_research_text_via_cli", lambda *a: pytest.fail("called"))
     assert discover.refresh_conferences([]) == []
+
+
+def test_to_conference_carries_deadline_time_and_registration():
+    # These fields are requested by the research prompt; extraction must carry
+    # them through (they were once missing from the schema and silently dropped).
+    conf = _to_conference(
+        _extracted(
+            acronym="iclr",
+            name="ICLR",
+            deadline_time="23:59 AoE",
+            upcoming_registration="Early bird: Jan 5 - Mar 1",
+            prior_registration="Opened Feb 2026",
+        )
+    )
+    assert conf.deadline_time == "23:59 AoE"
+    assert conf.upcoming_registration == "Early bird: Jan 5 - Mar 1"
+    assert conf.prior_registration == "Opened Feb 2026"
+    # Unstated -> None, so a fill-only refresh merge never blanks a stored value.
+    blank = _to_conference(_extracted(acronym="abc", name="Some Conf"))
+    assert blank.deadline_time is None and blank.upcoming_registration is None

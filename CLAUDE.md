@@ -81,6 +81,10 @@ for the design.
   - `page_watch.py` — agent-free change detection: fetches a conference's link
     plus a few same-site dates pages and fingerprints the set of dates mentioned
   - `notify.py` — email summary after a discovery / daily refresh
+  - `subscriptions.py` — per-conference update emails to site visitors: diffs
+    each series' subscriber-facing fields against the last run's snapshot
+    (`data/notify_state.json`) and emails that series' subscribers the changes
+    plus its updated `.ics`, with signed unsubscribe links
   - `cli.py` — command-line entry point (`discover` / `seed` / `add` / `fields` /
     `list` / `serve`). `_SCALAR_FIELDS` + `_COMPOSITE_FIELDS` is the single
     registry defining what `add` accepts; it generates the argparse flags, the
@@ -95,7 +99,18 @@ for the design.
   static-hosting design decision below)
 - `scripts/` — runnable entry points (`build_table.py`, `daily_update.py`,
   `push_db.py`, `deploy.sh` one-command reconcile + deploy, `scheduled_discovery.sh`
-  the daily cron job, `build_static.py` the static-site bundler)
+  the daily cron job, `build_static.py` the static-site bundler,
+  `notify_subscribers.py` the subscriber-email step of the cron job)
+- `scripts/seo_pages.py` — prerenders crawlable per-conference (`/c/<id>/`, with
+  `Event` JSON-LD) and per-field (`/field/<tag>/`) pages, `sitemap.xml`,
+  `robots.txt`, and the home page's browse links; called by `build_static.py`
+  (the table itself is JS-rendered, so crawlers need these). The payload's
+  `generated` date is the "Last updated" shown in the header. Vercel Web
+  Analytics (`/_vercel/insights/script.js`) must be enabled in the project dashboard.
+- `web/vercel/` — the Vercel Functions behind the table's ✉️ notify button
+  (`api/subscribe.js`, `confirm.js`, `unsubscribe.js`, `subscriptions.js`,
+  shared `_lib.js`) and their `package.json`; `build_static.py` copies them into
+  `dist/`
 - `infra/` — AWS SAM deployment (`template.yaml`: CloudFront over an
   IAM-protected Lambda Function URL + RDS PostgreSQL in a VPC, with optional
   `DomainName`/`AcmCertificateArn` for a custom domain; `samconfig.toml`); built
@@ -232,7 +247,14 @@ dependencies there rather than installing ad hoc.
   more terms first). The fallback is browser-only, so the boolean grammar, its
   Python parity, and the API are unchanged; `tests/test_keyword_search.py`
   covers it via Node. An "✨ AI search" button next to Search (or Ctrl+Enter)
-  sends the same box's text to the natural-language translator.
+  sends the same box's text to the natural-language translator. Categorical
+  column headers (category, subcategory, format, size, remote, the four month
+  columns) carry an Excel-style ▾ checkbox value filter; clicking a cell (or
+  one tag in it) in those columns opens the same list beside it with that value
+  pre-checked. The chosen values are
+  browser-only state held apart from the search box and ANDed with it, so they
+  survive an AI search and the boolean grammar (which has no exact-match
+  operator for text) stays unchanged.
 - **Optional natural-language search over a local LLM.** `web/nl_query.py`
   translates a plain-English request into the boolean query language above using
   a free, local Ollama model (no API key, no external network call). The system
@@ -247,6 +269,27 @@ dependencies there rather than installing ad hoc.
 - **Separation of concerns.** Discovery, persistence, the calendar feed, email
   notification, and the web layer are independent modules; each can run on its
   own schedule.
+- **Per-conference update emails (the one piece of server compute).** The ✉️
+  notify button next to 📅 cal asks for an email address (remembered in
+  `localStorage`, so later it is prefilled and Enter subscribes) and POSTs to the
+  Vercel Function `/api/subscribe`. Subscriptions are double opt-in: the first
+  time, a signed confirmation link (HMAC over email + id + expiry, keyed by
+  `SUBSCRIBE_SECRET`) is emailed and nothing is stored until a person clicks
+  Confirm on the linked page (GET only renders a button, because mail scanners
+  prefetch links). Confirming writes `subs/<base64url(email)>/<id>` to a
+  **private** Vercel Blob store and sets an HttpOnly `ca_verified` cookie, so
+  later subscriptions for that address from the same browser apply without
+  another email. Confirmation emails are capped at 3 per address per day. The
+  sending half runs locally: after each cron refresh (and redeploy),
+  `scripts/notify_subscribers.py` reads the list from the bearer-protected
+  `/api/subscriptions`, and for each series whose watched fields
+  (`subscriptions.WATCHED_FIELDS`) changed, emails its subscribers the changes
+  with the series' `.ics` attached (same UIDs as the site, so re-importing
+  updates events in place) and RFC 8058 one-click unsubscribe links. A series'
+  snapshot advances only after its sends succeed, so failures retry next run.
+  The tokens must match between `web/vercel/api/_lib.js` and
+  `subscriptions.sign` (a test pins a JS-computed value). The functions run only
+  on subscribe / confirm / unsubscribe, never for browsing or search.
 - **Static, compute-free hosting path.** The deployed site is read-only
   (discovery/ingestion run offline), so it can be served as static files with no
   per-request compute — there is no Lambda to invoke and no database to keep
@@ -317,7 +360,16 @@ dependencies there rather than installing ad hoc.
   `scripts/deploy_static.sh`) only when the exported site data changed; the DB
   file itself changes every run from bookkeeping columns, so it is not the
   comparison. cron's minimal PATH lacks `~/.local/bin` (`claude`) and nvm
-  (`vercel`); the script adds both. Logs: `data/logs/`.
+  (`vercel`); the script adds both, and sources email secrets (`SMTP_USER`,
+  `SMTP_PASSWORD`, `SUBSCRIBE_SECRET`) from
+  `~/.config/conference-agent/secrets.env` (outside the repo). After the
+  redeploy it runs `scripts/notify_subscribers.py` (see the update-emails design
+  decision). Logs: `data/logs/`.
+- **Update-email setup (Vercel).** The functions need a private Blob store
+  connected to the **conferenceagent** project and the env vars
+  `SUBSCRIBE_SECRET` (same value as the local secrets file), `SMTP_USER`, and
+  `SMTP_PASSWORD` (optionally `SMTP_HOST` / `SMTP_PORT`) in its Production
+  environment.
 
 ## Conventions
 

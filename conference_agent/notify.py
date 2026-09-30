@@ -30,7 +30,7 @@ def send_email(subject: str, body: str, to_address: Optional[str] = None) -> boo
     not set, so callers can always invoke it without guarding.
     """
     to_address = to_address or NOTIFY_EMAIL
-    if not (SMTP_USER and SMTP_PASSWORD and to_address):
+    if not (smtp_configured() and to_address):
         return False
 
     message = EmailMessage()
@@ -38,12 +38,21 @@ def send_email(subject: str, body: str, to_address: Optional[str] = None) -> boo
     message["From"] = SMTP_USER
     message["To"] = to_address
     message.set_content(body)
+    send_message(message)
+    return True
 
+
+def smtp_configured() -> bool:
+    """Whether SMTP credentials are available to send mail."""
+    return bool(SMTP_USER and SMTP_PASSWORD)
+
+
+def send_message(message: EmailMessage) -> None:
+    """Send a fully built message over the configured SMTP server (raises on error)."""
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USER, SMTP_PASSWORD)
         server.send_message(message)
-    return True
 
 
 def _summarize(conferences: Iterable[Conference]) -> str:

@@ -3,7 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Conference Agent</title>
+  <title>Conference Agent: conference deadlines and dates for AI, medicine, and genomics</title>
+  <meta name="description" content="Searchable database of academic conference abstract deadlines, paper deadlines, dates, registration, and cost for artificial intelligence, medicine, and genomics. Add deadlines to your calendar or get email updates.">
+  <link rel="canonical" href="https://conferenceagent.vercel.app/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Conference Agent: conference deadlines and dates">
+  <meta property="og:description" content="Conference database for artificial intelligence, medicine, and genomics, with calendar events and email reminders.">
+  <meta property="og:url" content="https://conferenceagent.vercel.app/">
   <style>
     :root {
       --bg: #f7f8fa;
@@ -132,6 +138,9 @@
     #fields-help table { border-collapse: collapse; font-size: 12px; }
     #fields-help td { padding: 2px 12px 2px 0; vertical-align: top; }
     #fields-help .fname { font-family: ui-monospace, monospace; color: var(--text); }
+    #browse { padding: 8px 24px 32px; font-size: 13px; color: var(--muted); }
+    #browse h2 { font-size: 14px; margin: 16px 0 6px; color: var(--text); }
+    #browse a { color: var(--accent); }
     #status { padding: 0 24px 8px; color: var(--muted); font-size: 13px; min-height: 18px; }
     .table-wrap { padding: 0 24px 40px; overflow-x: auto; }
     table.results {
@@ -202,6 +211,108 @@
       cursor: pointer;
     }
     .cal-btn:hover { filter: brightness(0.98); }
+    .cal-cell .notify-btn { margin-left: 4px; }
+    /* ✉️ notify: asks for an email address to send this conference's updates to. */
+    #notify-pop {
+      position: absolute;
+      z-index: 20;
+      width: 320px;
+      max-width: calc(100vw - 16px);
+      padding: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      font-size: 13px;
+    }
+    #notify-pop[hidden] { display: none; }
+    #notify-pop .np-head { margin: 0 0 4px; }
+    #notify-pop .np-note { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+    #np-email {
+      width: 100%;
+      padding: 7px 9px;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    #np-email[aria-invalid="true"] { border-color: var(--date-recent); }
+    #np-error { color: var(--date-recent); font-size: 12px; min-height: 16px; margin: 4px 0 0; }
+    #notify-pop .np-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+    #notify-pop .np-foot button { padding: 6px 12px; font-size: 13px; }
+    #notify-pop .np-foot button:disabled { opacity: 0.6; cursor: default; }
+    /* Per-column value filter: the ▾ in a categorical header opens a checkbox list. */
+    table.results th .filt {
+      border: none;
+      background: none;
+      color: var(--muted);
+      font-size: 11px;
+      margin-left: 4px;
+      padding: 1px 4px;
+      border-radius: 4px;
+      vertical-align: 1px;
+    }
+    table.results th .filt:hover { color: var(--text); background: var(--accent-weak); }
+    table.results th .filt.on { color: #fff; background: var(--accent); }
+    /* A categorical cell opens the same checkbox list, preset to its value. */
+    table.results td.facet-cell { cursor: pointer; }
+    table.results td.facet-cell:hover { background: var(--accent-weak); }
+    table.results td.facet-cell .cat-tag:hover { outline: 1px solid var(--accent); }
+    #status a { color: var(--accent); cursor: pointer; }
+    #filter-pop {
+      position: absolute;
+      z-index: 20;
+      width: 280px;
+      max-width: calc(100vw - 16px);
+      padding: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      font-size: 13px;
+    }
+    #filter-pop[hidden] { display: none; }
+    #filter-pop .fp-head { padding: 2px 4px 8px; color: var(--muted); }
+    #filter-pop .fp-head b { color: var(--text); }
+    #fp-search {
+      width: 100%;
+      padding: 6px 8px;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    #filter-pop label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #filter-pop label:hover { background: var(--accent-weak); }
+    #filter-pop .fp-all {
+      margin-top: 6px;
+      border-bottom: 1px solid var(--border);
+      border-radius: 0;
+      padding-bottom: 7px;
+    }
+    #fp-list { max-height: 300px; overflow-y: auto; padding-top: 4px; }
+    #fp-list .fp-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    #fp-list label.blank .fp-label { color: var(--muted); font-style: italic; }
+    #fp-list .fp-n { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    #filter-pop .fp-note { color: var(--muted); padding: 6px; font-size: 12px; }
+    #filter-pop .fp-foot {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-top: 8px;
+      margin-top: 4px;
+      border-top: 1px solid var(--border);
+    }
+    #filter-pop .fp-foot .spacer { flex: 1; }
+    #filter-pop .fp-foot button { padding: 6px 12px; font-size: 13px; }
+    #filter-pop .fp-foot button:disabled { opacity: 0.5; cursor: default; }
+    #fp-clear { color: var(--accent); cursor: pointer; font-size: 12px; }
+    #fp-clear[hidden] { display: none; }
     #toast {
       position: fixed;
       bottom: 20px;
@@ -226,7 +337,7 @@
   <header>
     <div class="header-text">
       <h1>Conference Agent</h1>
-      <p class="subtitle">Curated conference deadlines and dates. Search the table, or add any row to your calendar (.ics).</p>
+      <p class="subtitle">Conference database for artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. <span id="last-updated" class="muted"></span></p>
     </div>
     <a class="repo-link" href="https://github.com/josephrich98/conference-agent" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
@@ -253,15 +364,7 @@
   </div>
 
   <div class="syntax">
-    Plain keywords work, typos included; if nothing matches exactly, the closest
-    keyword matches are shown, most relevant first. Boolean search:
-    <code>category:medicine</code>
-    <code>subcategory:radiology</code>
-    <code>size:large</code>
-    <code>(virtual OR hybrid) AND cost:*</code>
-    <code>conference_dates:&gt;=2026-06-01</code>
-    <code>NOT abstract_due:*</code>
-    &nbsp;·&nbsp;<span id="help-toggle">show fields</span>
+    <span id="help-toggle">show fields</span>
     <div id="fields-help"></div>
   </div>
 
@@ -278,29 +381,71 @@
 
   <div id="toast"></div>
 
+  <div id="filter-pop" hidden role="dialog" aria-label="Filter by value">
+    <div class="fp-head">Show rows where <b id="fp-title"></b> is</div>
+    <input id="fp-search" type="text" autocomplete="off" spellcheck="false" placeholder="Search values" aria-label="Search values" />
+    <label class="fp-all"><input type="checkbox" id="fp-all" /><span id="fp-all-label">Select all</span></label>
+    <div id="fp-list"></div>
+    <div class="fp-foot">
+      <a id="fp-clear">Clear filter</a>
+      <span class="spacer"></span>
+      <button id="fp-cancel">Cancel</button>
+      <button class="primary" id="fp-ok">OK</button>
+    </div>
+  </div>
+
+  <form id="notify-pop" hidden role="dialog" aria-labelledby="np-title" novalidate>
+    <p class="np-head" id="np-title">Email me when <b id="np-conf"></b> changes</p>
+    <p class="np-note">You'll get an email with the updated calendar file whenever its deadlines or dates change. Every email has an unsubscribe link.</p>
+    <input id="np-email" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.org" aria-label="Email address" aria-describedby="np-error" />
+    <p id="np-error" role="alert"></p>
+    <div class="np-foot">
+      <button type="button" id="np-cancel">Cancel</button>
+      <button type="submit" class="primary" id="np-ok">Notify me</button>
+    </div>
+  </form>
+
+  <!--SEO_LINKS-->
+
   <script src="search.js"></script>
   <script src="calendar.js"></script>
   <script src="nl_query.js"></script>
   <script defer src="/_vercel/insights/script.js"></script>   <!-- Vercel Web Analytics -->
   <script>
+    // Value-filter specs for the categorical columns (the header ▾). `values(r)`
+    // gives the values a row holds (none means blank); `label` and `rank`
+    // optionally set how a value is shown and ordered in the list (default:
+    // alphabetical). Multi-valued columns are comma-separated lists.
+    const splitList = (s) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
+    const listFacet = (key) => ({ values: (r) => splitList(r[key]) });
+    const monthFacet = (key) => ({
+      values: (r) => (r[key] >= 1 && r[key] <= 12 ? [String(r[key])] : []),
+      label: (v) => MONTHS[Number(v)],
+      rank: (v) => Number(v),
+    });
+    const SIZE_RANK = { large: 1, medium: 2, small: 3 };
+
     const COLUMNS = [
       { key: "conference", label: "Conference", sort: "acronym" },
-      { key: "category", label: "Category", sort: "category" },
-      { key: "subcategory", label: "Subcategory", sort: "subcategory" },
-      { key: "format", label: "Format", sort: "format" },
+      { key: "category", label: "Category", sort: "category", facet: listFacet("category") },
+      { key: "subcategory", label: "Subcategory", sort: "subcategory", facet: listFacet("subcategory") },
+      { key: "format", label: "Format", sort: "format", facet: listFacet("format") },
       { key: "location", label: "Location", sort: "location" },
-      { key: "size", label: "Size", sort: "size" },
+      { key: "size", label: "Size", sort: "size",
+        facet: { values: (r) => (r.size ? [r.size] : []), rank: (v) => SIZE_RANK[v] || 9 } },
       { key: "attendance", label: "Attendance", sort: "attendance" },
-      { key: "remote_option", label: "Remote", sort: "remote_option" },
+      // "unknown" renders as a dash, so it is filtered as blank too.
+      { key: "remote_option", label: "Remote", sort: "remote_option",
+        facet: { values: (r) => (r.remote_option && r.remote_option !== "unknown" ? [r.remote_option] : []) } },
       { key: "cost", label: "Cost", sort: null },
-      { key: "abstract_month", label: "Abstract month", sort: "abstract_month" },
+      { key: "abstract_month", label: "Abstract month", sort: "abstract_month", facet: monthFacet("abstract_month") },
       { key: "upcoming_abstract_deadline", label: "Abstract due", sort: "upcoming_abstract_deadline" },
-      { key: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month" },
+      { key: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month", facet: monthFacet("late_abstract_month") },
       { key: "upcoming_late_abstract_deadline", label: "Late abstract due", sort: "upcoming_late_abstract_deadline" },
-      { key: "paper_month", label: "Paper month", sort: "paper_month" },
+      { key: "paper_month", label: "Paper month", sort: "paper_month", facet: monthFacet("paper_month") },
       { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
       { key: "deadline_time", label: "Deadline time", sort: null },
-      { key: "conference_month", label: "Conference month", sort: "conference_month" },
+      { key: "conference_month", label: "Conference month", sort: "conference_month", facet: monthFacet("conference_month") },
       { key: "upcoming_dates", label: "Conference dates", sort: "upcoming_start_date" },
       { key: "registration", label: "Registration", sort: null },
       { key: "cal", label: "Calendar", sort: null },
@@ -459,6 +604,21 @@
           arrow = ` <span class="arrow">${state.order === "asc" ? "▲" : "▼"}</span>`;
         }
         th.innerHTML = col.label + arrow;
+        if (col.facet) {
+          const on = col.key in filters;
+          const fb = document.createElement("button");
+          fb.className = `filt${on ? " on" : ""}`;
+          fb.textContent = "▾";
+          fb.title = on ? "Filtered: change" : "Filter by value";
+          fb.setAttribute("aria-label", `Filter ${col.label} by value`);
+          fb.addEventListener("click", (e) => {
+            e.stopPropagation(); // not a sort click
+            $("columns-panel").hidden = true;
+            if (fp && fp.col.key === col.key) closeFilter();
+            else openFilter(col, fb);
+          });
+          th.appendChild(fb);
+        }
         if (col.sort) {
           th.addEventListener("click", () => {
             // Toggle the column already sorted on; otherwise (including leaving
@@ -515,22 +675,16 @@
 
         // Category (the broad bucket, derived) and subcategory (the specific
         // field) are both multi-valued; render each as comma-split tags.
-        const cats = (r.category || "").split(",").map((s) => s.trim()).filter(Boolean);
-        const catHtml = cats.length
-          ? cats.map((c) => `<span class="cat-tag">${c}</span>`).join("")
-          : '<span class="muted">—</span>';
-
-        const subcats = (r.subcategory || "").split(",").map((s) => s.trim()).filter(Boolean);
-        const subcatHtml = subcats.length
-          ? subcats.map((c) => `<span class="cat-tag">${c}</span>`).join("")
-          : '<span class="muted">—</span>';
+        // `data-v` lets a click on one tag preset the column filter to it.
+        const tagList = (vals) => (vals.length
+          ? vals.map((v) => `<span class="cat-tag" data-v="${escapeHtml(v)}">${v}</span>`).join("")
+          : '<span class="muted">—</span>');
+        const catHtml = tagList(splitList(r.category));
+        const subcatHtml = tagList(splitList(r.subcategory));
 
         // Submission/presentation formats (abstract, paper, poster, oral),
         // rendered as tags like the category column.
-        const fmts = (r.format || "").split(",").map((s) => s.trim()).filter(Boolean);
-        const formatHtml = fmts.length
-          ? fmts.map((f) => `<span class="cat-tag">${f}</span>`).join("")
-          : '<span class="muted">—</span>';
+        const formatHtml = tagList(splitList(r.format));
 
         tr.innerHTML = `
           <td data-col="conference"><div class="conf-name">${name}</div></td>
@@ -553,9 +707,17 @@
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="cal" class="cal-cell">
-            <button class="cal-btn" data-conf-id="${escapeHtml(r.id)}" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</button>
+            <button class="cal-btn" data-conf-id="${escapeHtml(r.id)}" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</button><button class="cal-btn notify-btn" data-conf-id="${escapeHtml(r.id)}" title="Email me, with the updated calendar file, when this conference's deadlines or dates change">✉️ notify</button>
           </td>
         `;
+        tr.dataset.confId = r.id;
+        for (const td of tr.children) {
+          const col = COLUMNS.find((c) => c.key === td.dataset.col);
+          if (col && col.facet) {
+            td.classList.add("facet-cell");
+            td.title = `Filter ${col.label} by value`;
+          }
+        }
         body.appendChild(tr);
       }
     }
@@ -566,7 +728,10 @@
     // (plain English with a stray colon, say), fall back to the forgiving keyword
     // ranking in search.js, which tolerates typos, inflections, and filler words.
     // Keyword results are ordered by relevance until a column header is clicked.
-    function search() {
+    //
+    // `pool` is the catalog after the column filters, so the boolean search and
+    // its keyword fallback both run within them.
+    function runQuery(pool) {
       const q = $("query").value;
       const plural = (n) => `${n} conference${n === 1 ? "" : "s"}`;
       let rows = [];
@@ -574,7 +739,7 @@
       let queryError = null;
       try {
         const predicate = ConferenceSearch.buildPredicate(q);
-        const filtered = predicate ? DATA.conferences.filter(predicate) : DATA.conferences;
+        const filtered = predicate ? pool.filter(predicate) : pool;
         rows = ConferenceSearch.sortRows(filtered, state.sort, state.order);
         status = `${plural(rows.length)}.`;
       } catch (e) {
@@ -584,7 +749,7 @@
 
       let byRelevance = false;
       if (rows.length === 0 && q.trim()) {
-        const hits = ConferenceSearch.keywordSearch(q, DATA.conferences).map((h) => h.row);
+        const hits = ConferenceSearch.keywordSearch(q, pool).map((h) => h.row);
         if (hits.length) {
           byRelevance = state.relevance;
           rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order);
@@ -596,11 +761,159 @@
           status = "0 conferences. Try fewer or different keywords, or ✨ AI search.";
         }
       }
+      return { rows, status, byRelevance };
+    }
 
+    function search() {
+      closeFilter();
+      const { rows, status, byRelevance } = runQuery(DATA.conferences.filter((r) => passesFilters(r)));
       renderHeader(!byRelevance);
       state.rows = rows;
-      $("status").textContent = status;
+      const active = COLUMNS.filter((c) => c.key in filters).map((c) => c.label);
+      $("status").innerHTML = escapeHtml(status) + (active.length
+        ? ` Column filters: ${escapeHtml(active.join(", "))} · <a id="clear-filters">clear</a>`
+        : "");
       renderRows(rows);
+    }
+
+    // ---------------------------------------------------------- column filters
+    // Excel-style value lists behind each categorical header's ▾. The chosen
+    // values are held here, not in the search box, and ANDed with whatever the
+    // box holds (a boolean query, keywords, or an AI-translated query), so an AI
+    // search keeps the filters and the boolean grammar is unchanged. A row
+    // passes a column's filter when any of its values is checked; BLANK stands
+    // for a row with no value.
+
+    const BLANK = "\u0000blank";
+    let filters = {}; // column key -> Set of kept values
+    let fp = null;    // the open popup: {col, btn, items: [{v, label, n, on, i}]}
+    const FP_MAX = 500; // values listed at once; the popup search narrows the rest
+
+    function passesFilters(r, skipKey) {
+      for (const key in filters) {
+        if (key === skipKey) continue;
+        const vals = COLUMNS.find((c) => c.key === key).facet.values(r);
+        const keep = filters[key];
+        if (vals.length ? !vals.some((v) => keep.has(v)) : !keep.has(BLANK)) return false;
+      }
+      return true;
+    }
+
+    // `preset`, when given (a click on a cell), is the set of values to check
+    // instead of the column's current selection.
+    function openFilter(col, btn, preset) {
+      const facet = col.facet;
+      const label = (v) => (v === BLANK ? "(blank)" : facet.label ? facet.label(v) : v);
+      const kept = filters[col.key];
+      // Count values over the rows the table would show under every *other*
+      // filter, as Excel does; if that is nothing (say the query errors), over
+      // every row those filters allow.
+      const pool = DATA.conferences.filter((r) => passesFilters(r, col.key));
+      let rows = runQuery(pool).rows;
+      if (!rows.length) rows = pool;
+      const counts = new Map();
+      const bump = (v) => {
+        const x = counts.get(v);
+        if (x) x.n += 1; else counts.set(v, { v, label: label(v), n: 1 });
+      };
+      for (const r of rows) {
+        const vals = facet.values(r);
+        if (!vals.length) bump(BLANK);
+        for (const v of new Set(vals)) bump(v);
+      }
+      // A value the filter keeps stays listed (at 0) even if other filters hide it.
+      for (const v of kept || []) {
+        if (!counts.has(v)) counts.set(v, { v, label: label(v), n: 0 });
+      }
+      const byLabel = (a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true });
+      const items = [...counts.values()].sort((a, b) =>
+        (a.v === BLANK) - (b.v === BLANK)
+        || (facet.rank ? facet.rank(a.v) - facet.rank(b.v) : byLabel(a, b)));
+      items.forEach((it, i) => {
+        it.i = i;
+        it.on = preset ? preset.has(it.v) : !kept || kept.has(it.v);
+      });
+
+      fp = { col, btn, items };
+      $("fp-title").textContent = col.label;
+      $("fp-search").value = "";
+      $("fp-clear").hidden = !kept;
+      renderFilterList();
+      $("filter-pop").hidden = false;
+      placeFilter();
+      $("fp-search").focus({ preventScroll: true });
+    }
+
+    // Under the header's ▾; re-run when the page or table scrolls sideways.
+    function placeFilter() {
+      const pop = $("filter-pop");
+      const b = fp.btn.getBoundingClientRect();
+      const maxLeft = window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8;
+      pop.style.left = `${Math.max(window.scrollX + 8, Math.min(window.scrollX + b.left, maxLeft))}px`;
+      pop.style.top = `${window.scrollY + b.bottom + 4}px`;
+    }
+
+    function visibleItems() {
+      const q = $("fp-search").value.trim().toLowerCase();
+      return q ? fp.items.filter((it) => it.label.toLowerCase().includes(q)) : fp.items;
+    }
+
+    function renderFilterList() {
+      const vis = visibleItems();
+      const shown = vis.slice(0, FP_MAX);
+      $("fp-list").innerHTML = shown.length
+        ? shown.map((it) => `<label${it.v === BLANK ? ' class="blank"' : ""}><input type="checkbox" data-i="${it.i}"${it.on ? " checked" : ""}><span class="fp-label">${escapeHtml(it.label)}</span><span class="fp-n">${it.n.toLocaleString()}</span></label>`).join("")
+          + (vis.length > FP_MAX ? `<div class="fp-note">${(vis.length - FP_MAX).toLocaleString()} more; type to narrow</div>` : "")
+        : '<div class="fp-note">No values match.</div>';
+      updateFilterControls(vis);
+    }
+
+    function updateFilterControls(vis = visibleItems()) {
+      const on = vis.filter((it) => it.on).length;
+      const all = $("fp-all");
+      all.checked = vis.length > 0 && on === vis.length;
+      all.indeterminate = on > 0 && on < vis.length;
+      $("fp-all-label").textContent = $("fp-search").value.trim() ? "Select all search results" : "Select all";
+      $("fp-ok").disabled = !vis.some((it) => it.on);
+    }
+
+    function closeFilter() {
+      fp = null;
+      $("filter-pop").hidden = true;
+    }
+
+    // Keep the checked values. With a search typed, only the checked values
+    // among the results count, as in Excel. Everything checked means no filter.
+    function applyFilter() {
+      const vis = new Set(visibleItems());
+      const on = fp.items.filter((it) => it.on && vis.has(it));
+      const key = fp.col.key;
+      if (on.length === fp.items.length) delete filters[key];
+      else filters[key] = new Set(on.map((it) => it.v));
+      search();
+    }
+
+    // A click on a categorical cell opens its column's list beside it with that
+    // row's value checked (just the clicked tag, when a tag was clicked), so
+    // OK narrows the table to it and other values can be ticked first.
+    function openCellFilter(e) {
+      const td = e.target.closest("td.facet-cell");
+      if (!td || e.target.closest("a") || String(window.getSelection())) return;
+      const col = COLUMNS.find((c) => c.key === td.dataset.col);
+      const row = DATA.byId[td.parentElement.dataset.confId];
+      if (!col || !row) return;
+      e.stopPropagation(); // not an outside click that closes the popup
+      const tag = e.target.closest("[data-v]");
+      const vals = tag ? [tag.dataset.v] : col.facet.values(row);
+      $("columns-panel").hidden = true;
+      if (np) closeNotify();
+      if (fp && fp.btn === (tag || td)) { closeFilter(); return; }
+      openFilter(col, tag || td, new Set(vals.length ? vals : [BLANK]));
+    }
+
+    function clearFilter(key) {
+      if (key) delete filters[key]; else filters = {};
+      search();
     }
 
     // A new query starts in relevance order (used only by the keyword fallback);
@@ -634,11 +947,96 @@
       URL.revokeObjectURL(a.href);
     }
 
-    function toast(msg, ok) {
+    function toast(msg, ok, ms = 4000) {
       const t = $("toast");
       t.textContent = msg;
       t.className = `show ${ok ? "ok" : "err"}`;
-      setTimeout(() => { t.className = ""; }, 4000);
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => { t.className = ""; }, ms);
+    }
+
+    // Per-conference update emails. The ✉️ button opens a small form under it;
+    // the address is remembered in this browser after the first successful
+    // subscription, so later it is prefilled and Enter alone subscribes. The
+    // Vercel Function at /api/subscribe (web/vercel/api/) emails a confirmation
+    // link the first time; the local refresh job sends the updates.
+    const NOTIFY_EMAIL_KEY = "conference-agent.notify-email";
+    // Mirrors EMAIL_RE in web/vercel/api/_lib.js.
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    let np = null; // { id, btn } while the form is open
+
+    function openNotify(id, btn) {
+      closeFilter();
+      $("columns-panel").hidden = true;
+      const r = DATA.byId[id];
+      np = { id, btn };
+      $("np-conf").textContent = (r && (r.acronym || r.name)) || id;
+      let saved = "";
+      try { saved = localStorage.getItem(NOTIFY_EMAIL_KEY) || ""; } catch (e) { /* storage blocked */ }
+      $("np-email").value = saved;
+      setNotifyError("");
+      $("np-ok").disabled = false;
+      $("notify-pop").hidden = false;
+      placeNotify();
+      const input = $("np-email");
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(saved.length, saved.length);
+    }
+
+    function placeNotify() {
+      const pop = $("notify-pop");
+      const b = np.btn.getBoundingClientRect();
+      const maxLeft = window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8;
+      pop.style.left = `${Math.max(window.scrollX + 8, Math.min(window.scrollX + b.right - pop.offsetWidth, maxLeft))}px`;
+      pop.style.top = `${window.scrollY + b.bottom + 4}px`;
+    }
+
+    function closeNotify() {
+      np = null;
+      $("notify-pop").hidden = true;
+    }
+
+    function setNotifyError(msg) {
+      $("np-error").textContent = msg;
+      $("np-email").setAttribute("aria-invalid", msg ? "true" : "false");
+    }
+
+    async function submitNotify(e) {
+      e.preventDefault();
+      if (!np || $("np-ok").disabled) return;
+      const email = $("np-email").value.trim().toLowerCase();
+      if (!EMAIL_RE.test(email) || email.length > 254) {
+        setNotifyError("Enter a valid email address, like name@example.org.");
+        $("np-email").focus();
+        return;
+      }
+      setNotifyError("");
+      $("np-ok").disabled = true;
+      $("np-ok").textContent = "Sending…";
+      try {
+        const resp = await fetch("/api/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, id: np.id }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          setNotifyError(
+            resp.status === 404 && !data.error
+              ? "Update emails are only available on the live site."
+              : data.error || `Couldn't subscribe (${resp.status}).`
+          );
+          return;
+        }
+        try { localStorage.setItem(NOTIFY_EMAIL_KEY, email); } catch (err) { /* storage blocked */ }
+        closeNotify();
+        toast(data.message || "Subscribed.", true, 8000);
+      } catch (err) {
+        setNotifyError("Couldn't reach the server. Check your connection and try again.");
+      } finally {
+        $("np-ok").disabled = false;
+        $("np-ok").textContent = "Notify me";
+      }
     }
 
     // Load the catalog snapshot once, then run the initial search. All later
@@ -651,10 +1049,13 @@
         const payload = await resp.json();
         DATA.conferences = payload.conferences || [];
         DATA.columns = payload.columns || [];
+        if (payload.generated) $("last-updated").textContent = `Last updated ${payload.generated}.`;
         DATA.fields = payload.fields || [];
         DATA.byId = {};
         for (const r of DATA.conferences) DATA.byId[r.id] = r;
         renderFields(DATA.fields);
+        const q0 = new URLSearchParams(location.search).get("q");
+        if (q0) $("query").value = q0;
         search();
       } catch (e) {
         $("status").textContent = `Failed to load catalog: ${e.message || e}`;
@@ -664,11 +1065,11 @@
     function renderFields(fields) {
       try {
         const rows = fields
-          .map(({ field, type }) =>
-            `<tr><td class="fname">${field}</td><td class="muted">(${type})</td></tr>`)
+          .map(({ field, type, description }) =>
+            `<tr><td class="fname">${escapeHtml(field)}</td><td class="muted">(${escapeHtml(type)})</td><td>${escapeHtml(description || "")}</td></tr>`)
           .join("");
         $("fields-help").innerHTML =
-          `<p class="muted" style="margin:0 0 6px">Search fields match the table columns:</p>` +
+          `<p class="muted" style="margin:0 0 6px">Search fields (column, type, description):</p>` +
           `<table>${rows}</table>` +
           `<p class="muted" style="margin:10px 0 4px">Size color coding (by annual attendance):</p>` +
           `<table>` +
@@ -742,21 +1143,62 @@
     $("csv-btn").addEventListener("click", exportCsv);
     // Per-row calendar download (delegated, since rows re-render on each search).
     $("results-body").addEventListener("click", (e) => {
+      const nb = e.target.closest(".notify-btn");
+      if (nb) {
+        e.stopPropagation();
+        if (np && np.btn === nb) closeNotify(); else openNotify(nb.dataset.confId, nb);
+        return;
+      }
       const btn = e.target.closest(".cal-btn");
-      if (!btn) return;
+      if (!btn) {
+        openCellFilter(e);
+        return;
+      }
       const row = DATA.byId[btn.dataset.confId];
       if (row) ConferenceCalendar.downloadIcs(row);
     });
     $("columns-btn").addEventListener("click", (e) => {
       e.stopPropagation();
+      closeFilter();
       $("columns-panel").hidden = !$("columns-panel").hidden;
     });
     $("columns-all").addEventListener("click", () => setAllColumns(true));
     $("columns-none").addEventListener("click", () => setAllColumns(false));
-    // Close the columns dropdown when clicking outside it.
+    // Close the columns dropdown and the filter popup when clicking outside them.
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".columns-menu")) $("columns-panel").hidden = true;
+      if (fp && !e.target.closest("#filter-pop")) closeFilter();
+      if (np && !e.target.closest("#notify-pop")) closeNotify();
     });
+    $("notify-pop").addEventListener("submit", submitNotify);
+    $("np-cancel").addEventListener("click", closeNotify);
+    $("np-email").addEventListener("input", () => setNotifyError(""));
+    $("status").addEventListener("click", (e) => {
+      if (e.target.id === "clear-filters") clearFilter();
+    });
+    $("fp-search").addEventListener("input", renderFilterList);
+    $("fp-search").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !$("fp-ok").disabled) applyFilter();
+    });
+    $("fp-list").addEventListener("change", (e) => {
+      const it = fp.items[Number(e.target.dataset.i)];
+      if (it) it.on = e.target.checked;
+      updateFilterControls();
+    });
+    $("fp-all").addEventListener("change", (e) => {
+      visibleItems().forEach((it) => { it.on = e.target.checked; });
+      renderFilterList();
+    });
+    $("fp-ok").addEventListener("click", applyFilter);
+    $("fp-cancel").addEventListener("click", closeFilter);
+    $("fp-clear").addEventListener("click", () => clearFilter(fp.col.key));
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (fp) closeFilter();
+      if (np) closeNotify();
+    });
+    window.addEventListener("resize", () => { if (fp) placeFilter(); if (np) placeNotify(); });
+    document.querySelector(".table-wrap").addEventListener("scroll", () => { if (fp) placeFilter(); if (np) placeNotify(); });
     $("query").addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
       // Enter runs the keyword/boolean search; Ctrl/Cmd+Enter runs AI search.

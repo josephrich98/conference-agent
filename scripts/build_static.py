@@ -21,7 +21,14 @@ The output is a self-contained directory::
       search.js           # boolean query language, ported to run in the browser
       calendar.js         # per-row iCalendar (.ics) generation in the browser
       nl_query.js         # natural-language ("AI") search via in-browser WebLLM
+      c/<id>/, field/<tag>/, sitemap.xml, robots.txt  # prerendered SEO pages
       data/conferences.json   # the catalog snapshot + queryable-field metadata
+      api/ + package.json     # Vercel Functions for per-conference update emails
+
+The ``api/`` functions (from ``web/vercel/``) are the one exception to "no
+compute": they run only when a visitor subscribes, confirms, or unsubscribes,
+never for browsing or search. Other static hosts serve the table unchanged; only
+the ✉️ subscribe button needs them.
 
 ``dist/`` is gitignored (data-derived); regenerate it at deploy time.
 """
@@ -32,8 +39,10 @@ import argparse
 import json
 import os
 import shutil
+from datetime import date
 from pathlib import Path
 
+from seo_pages import write_pages
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -45,6 +54,8 @@ from web.search import field_help
 # Static assets copied verbatim into the bundle (the UI is the product now).
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 _ASSETS = ("index.html", "search.js", "calendar.js", "nl_query.js")
+# Vercel Functions (subscribe / confirm / unsubscribe) and their dependencies.
+_VERCEL_DIR = _STATIC_DIR.parent / "vercel"
 
 
 def _export_rows(db_url: str) -> list[dict]:
@@ -76,7 +87,9 @@ def build(db_url: str, out_dir: Path) -> int:
     data_dir = out_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    generated = date.today().isoformat()
     payload = {
+        "generated": generated,
         "columns": _RESULT_COLUMNS,
         "fields": field_help()["fields"],
         "conferences": rows,
@@ -88,6 +101,16 @@ def build(db_url: str, out_dir: Path) -> int:
 
     for name in _ASSETS:
         shutil.copyfile(_STATIC_DIR / name, out_dir / name)
+
+    # Crawlable pages + sitemap; inject the browse links into the home page.
+    seo = write_pages(rows, out_dir, generated)
+    index = out_dir / "index.html"
+    index.write_text(
+        index.read_text(encoding="utf-8").replace("<!--SEO_LINKS-->", seo["browse"]),
+        encoding="utf-8",
+    )
+    shutil.copyfile(_VERCEL_DIR / "package.json", out_dir / "package.json")
+    shutil.copytree(_VERCEL_DIR / "api", out_dir / "api", dirs_exist_ok=True)
 
     return len(rows)
 

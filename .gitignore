@@ -88,3 +88,6 @@ token.json
 data/*
 !data/.gitkeep
 !data/conferences.db
+
+# Vercel Functions dependencies (installed by Vercel at deploy time)
+node_modules/

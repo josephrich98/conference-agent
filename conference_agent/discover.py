@@ -182,7 +182,10 @@ abstract-only meetings rather than repeating the abstract deadline. The \
 deadline_time field is the time of day (with time zone) submissions close, as the \
 notes state it (e.g. "11:59 PM ET"), one value when shared by every deadline or \
 one "kind: time" line per deadline (abstract / late abstract / paper) when they \
-differ; "" when the notes give no time. The location \
+differ; "" when the notes give no time. The prior_registration and \
+upcoming_registration fields are the registration window(s) of each edition as \
+free text (e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"), "" \
+when the notes give none. The location \
 field is the host city / venue \
 (e.g. "Chicago, IL" or "Vienna, Austria"). The cost field should carry the \
 actual price figure(s) when the notes give one (e.g. "$1,095 member, \
@@ -229,6 +232,19 @@ class _ExtractedConference(BaseModel):
     upcoming_paper_deadline: str
     upcoming_start_date: str
     upcoming_end_date: str
+    prior_registration: str = Field(
+        default="",
+        description="Free-text registration window(s) of the prior edition, or ''",
+    )
+    upcoming_registration: str = Field(
+        default="",
+        description="Free-text registration window(s) of the upcoming edition, or ''",
+    )
+    deadline_time: str = Field(
+        default="",
+        description="Time of day (with time zone) submissions close, e.g. "
+        "'23:59 AoE'; one 'kind: time' line per deadline when they differ; or ''",
+    )
     location: str
     url: str
     remote_option: str
@@ -304,6 +320,9 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         upcoming_paper_deadline=_parse_date(item.upcoming_paper_deadline),
         upcoming_start_date=_parse_date(item.upcoming_start_date),
         upcoming_end_date=_parse_date(item.upcoming_end_date),
+        prior_registration=_clean(item.prior_registration),
+        upcoming_registration=_clean(item.upcoming_registration),
+        deadline_time=_clean(item.deadline_time),
         location=_clean(item.location),
         url=_clean(item.url),
         remote_option=remote,
@@ -607,7 +626,10 @@ Abstracts", and "Submit" pages -- whether:
   are often posted shortly before a deadline or within days after it passes),
 - the meeting dates or location have changed,
 - the next edition has been announced, if the recorded upcoming edition has \
-  already taken place (the edition that took place then becomes the prior one).
+  already taken place (the edition that took place then becomes the prior one),
+- the time of day and time zone at which submissions close (deadline_time) -- \
+  read it from the call for abstracts / important dates page, and re-read it for \
+  a newly announced edition rather than assuming last year's time.
 
 Report the full current record for each conference -- every field your \
 instructions list, not only what changed -- one conference at a time.
@@ -634,9 +656,10 @@ def _describe_target(conf: Conference) -> str:
         return ", ".join(parts) or "none recorded"
 
     link = f" -- {conf.url}" if conf.url else ""
+    time = f"; deadline time: {conf.deadline_time}" if conf.deadline_time else ""
     return (
         f"- {conf.acronym} -- {conf.name} [{conf.subcategory}]{link}\n"
-        f"  upcoming: {edition('upcoming')}; prior: {edition('prior')}"
+        f"  upcoming: {edition('upcoming')}; prior: {edition('prior')}{time}"
     )
 
 

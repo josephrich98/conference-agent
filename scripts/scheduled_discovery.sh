@@ -25,6 +25,16 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null
 # Write progress to the log as it happens rather than in one block at exit.
 export PYTHONUNBUFFERED=1
+# Email credentials (SMTP_USER, SMTP_PASSWORD, SUBSCRIBE_SECRET) live outside
+# the repo, since cron's environment has none of them. Without them the refresh
+# still runs; only the emails are skipped.
+SECRETS_FILE="${CONFERENCE_SECRETS_FILE:-$HOME/.config/conference-agent/secrets.env}"
+if [ -r "$SECRETS_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$SECRETS_FILE"
+  set +a
+fi
 
 # One run at a time: a run that is still researching when the next one fires
 # makes the next one exit quietly.
@@ -66,11 +76,19 @@ run() {
   # Deploy even after a partial failure: batches that succeeded are kept.
   after="$(site_hash)" || return 1
   echo ""
+  local deployed=1
   if [ "$before" != "$after" ]; then
     echo "Site data changed -- redeploying via scripts/deploy_static.sh"
-    bash scripts/deploy_static.sh || { echo "ERROR: deploy failed"; status=1; }
+    bash scripts/deploy_static.sh || { echo "ERROR: deploy failed"; status=1; deployed=0; }
   else
     echo "Site data unchanged -- no redeploy"
+  fi
+
+  # Email visitors subscribed to a changed conference, once the site shows the
+  # change. Runs even when nothing changed this time, to retry failed sends.
+  if [ "$deployed" -eq 1 ]; then
+    echo ""
+    python scripts/notify_subscribers.py || { echo "ERROR: subscriber emails failed"; status=1; }
   fi
   return "$status"
 }

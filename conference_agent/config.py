@@ -52,6 +52,12 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER")  # e.g. a Gmail address
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")  # e.g. a Gmail app password
 
+# Per-conference update emails for site visitors (see subscriptions.py). The
+# secret signs unsubscribe links and authorizes reading the subscription list;
+# it must equal SUBSCRIBE_SECRET in the Vercel project's environment.
+SUBSCRIBE_SECRET = os.environ.get("SUBSCRIBE_SECRET")
+SITE_URL = os.environ.get("CONFERENCE_SITE_URL", "https://conferenceagent.vercel.app")
+
 # --- Calendar feed (.ics) --------------------------------------------------
 
 # Lead times (in days before the event) for the reminders attached to every

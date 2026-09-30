@@ -216,10 +216,37 @@ def _resolve_field(name: str) -> str:
     return key
 
 
+_FIELD_DESCRIPTIONS = {
+    "conference": "conference name and hyperlink to its website",
+    "category": "broad top-level field, derived from the subcategories",
+    "subcategory": "specific field(s) the conference covers; one or more per series",
+    "format": "submission types accepted (abstract, paper, poster, oral)",
+    "location": "city and country of the upcoming (or most recent) meeting",
+    "size": "bucket from annual attendance: large 1,000+, medium 100-999, small under 100",
+    "remote": "whether the meeting is in-person, virtual, or hybrid",
+    "cost": "registration fee or fee range",
+    "registration": "registration windows, e.g. early bird and regular periods",
+    "deadline_time": "time of day and time zone that submissions close",
+    "abstract_due": "earliest (primary) abstract deadline",
+    "late_abstract_due": "later abstract deadline: poster-only or late-breaking round",
+    "paper_due": "full-paper submission deadline",
+    "conference_dates": "start and end dates of the meeting",
+    "conference_month": "month of the conference (1-12), for sorting by season",
+    "abstract_month": "month of the abstract deadline (1-12)",
+    "late_abstract_month": "month of the late abstract deadline (1-12)",
+    "paper_month": "month of the paper deadline (1-12)",
+}
+
+
 def field_help() -> dict:
-    """Return the queryable fields and their data types (for the UI help panel)."""
+    """Return the queryable fields, data types, and descriptions (for the UI help panel)."""
     order = list(_TEXT_FIELDS) + list(_DATE_FIELDS) + list(_INT_FIELDS)
-    return {"fields": [{"field": f, "type": _FIELD_TYPES[f]} for f in order]}
+    return {
+        "fields": [
+            {"field": f, "type": _FIELD_TYPES[f], "description": _FIELD_DESCRIPTIONS[f]}
+            for f in order
+        ]
+    }
 
 
 # --- AST --------------------------------------------------------------------
