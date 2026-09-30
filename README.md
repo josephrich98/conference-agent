@@ -214,7 +214,7 @@ CONFERENCE_NL_QUERY_MODEL=llama3.2:3b conference-agent serve   # or qwen2.5:7b
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` and
   `CONFERENCE_NOTIFY_EMAIL` — optional, enable the summary email.
 - `SUBSCRIBE_SECRET` (and the SMTP settings above) — enable the per-conference
-  update emails that visitors request with the table's ✉️ notify button. The
+  update emails that visitors request with the table's ✉️ subscribe button. The
   same secret must be set in the Vercel project, which also needs a private
   Blob store (see CLAUDE.md, "Update-email setup"). `CONFERENCE_SITE_URL`
   (default `https://conferenceagent.vercel.app`) sets the site the links point to.
@@ -235,7 +235,7 @@ python scripts/build_static.py                 # snapshot DB + UI into dist/
 
 Search, sort, CSV export, and per-row `.ics` download all run client-side over
 the JSON snapshot. The only server code is the small set of Vercel Functions in
-`web/vercel/api/` behind the ✉️ notify button (subscribe / confirm /
+`web/vercel/api/` behind the ✉️ subscribe button (subscribe / confirm /
 unsubscribe). Cloudflare Pages (`npx wrangler pages deploy dist`) is an
 equivalent static host. See [DEPLOY.md](DEPLOY.md).
 

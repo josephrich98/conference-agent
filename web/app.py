@@ -285,7 +285,7 @@ def api_translate(
 @app.get("/api/search")
 def api_search(
     q: str = Query("", description="Boolean query. Empty matches everything."),
-    sort: str = Query("upcoming_start_date"),
+    sort: str = Query("acronym"),
     order: str = Query("asc", pattern="^(asc|desc)$"),
     format: str = Query("json", pattern="^(json|csv)$"),
     limit: int = Query(_MAX_RESULTS, ge=1, le=_MAX_RESULTS),

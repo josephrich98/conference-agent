@@ -255,13 +255,11 @@ def write_pages(rows: list[dict], out_dir: Path, generated: str) -> dict:
         shutil.rmtree(out_dir / sub, ignore_errors=True)
 
     urls: list[str] = ["/"]
-    conf_links: list[str] = []
     for row in sorted(rows, key=lambda r: _label(r).lower()):
         path, doc = conference_page(row, generated)
         (out_dir / path.strip("/")).mkdir(parents=True, exist_ok=True)
         (out_dir / path.strip("/") / "index.html").write_text(doc, encoding="utf-8")
         urls.append(path)
-        conf_links.append(f'<a href="{path}">{_e(_label(row))}</a>')
 
     field_links: list[str] = []
     for tag, group in sorted(_field_groups(rows).items()):
@@ -282,9 +280,10 @@ def write_pages(rows: list[dict], out_dir: Path, generated: str) -> dict:
         f"User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: {SITE_URL}/sitemap.xml\n", encoding="utf-8"
     )
 
+    # Field pages link to every conference, so the home page only needs the field
+    # links; they sit in a collapsed <details> (crawlable, but out of the way).
     block = (
         '<nav id="browse" aria-label="Browse conferences">'
-        "<h2>Browse by field</h2><p>" + " · ".join(field_links) + "</p>"
-        "<h2>All conferences</h2><p>" + " · ".join(conf_links) + "</p></nav>"
+        "<details><summary>Browse by field</summary><p>" + " · ".join(field_links) + "</p></details></nav>"
     )
     return {"browse": block, "pages": len(urls)}

@@ -62,7 +62,7 @@ def test_add_new_conference_via_flags(tmp_path):
     assert conf.location == "Chicago, IL"
     assert conf.attendance == 45000
     assert conf.attendance_year == 2025
-    assert conf.size.value == "large"  # derived from attendance
+    assert conf.size.value == "massive"  # derived from attendance
     assert conf.remote_option.value == "hybrid"
     assert conf.cost == "$500"
     assert conf.url == "example.org/zzt"
@@ -352,7 +352,7 @@ def test_add_from_csv_inserts_multiple_rows(tmp_path):
     assert stored["AAA"].upcoming_start_date == date(2026, 5, 12)
     assert stored["AAA"].size.value == "medium"  # 500 attendees
     assert stored["BBB"].attendance == 12000
-    assert stored["BBB"].size.value == "large"  # 12000 attendees
+    assert stored["BBB"].size.value == "massive"  # 12000 attendees
     assert stored["BBB"].remote_option.value == "hybrid"
 
 
@@ -371,7 +371,7 @@ def test_add_from_csv_with_table_facing_columns(tmp_path):
     conf = _by_id(url)["ZZT"]
     assert conf.name == "Test Imaging Conference"
     assert conf.subcategories == ["radiology", "machine learning"]
-    assert conf.size.value == "large"  # derived from 12000 attendees
+    assert conf.size.value == "massive"  # derived from 12000 attendees
     assert conf.upcoming_abstract_deadline == date(2026, 4, 8)
     assert conf.upcoming_start_date == date(2026, 11, 29)
     assert conf.upcoming_end_date == date(2026, 12, 3)

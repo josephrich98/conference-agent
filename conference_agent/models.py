@@ -29,9 +29,10 @@ class ConferenceSize(str, Enum):
     filter and color consistently. Unlike a subjective reputation judgment, the
     bucket is *derived deterministically* from a sourced attendance figure (see
     :func:`size_for_attendance`), so it is a fact that can be cited rather than an
-    opinion. Example: RSNA (~45,000 attendees) is ``large``.
+    opinion. Example: RSNA (~45,000 attendees) is ``massive``.
     """
 
+    MASSIVE = "massive"
     LARGE = "large"
     MEDIUM = "medium"
     SMALL = "small"
@@ -40,8 +41,9 @@ class ConferenceSize(str, Enum):
 # Attendance thresholds (inclusive lower bounds) that bucket a conference into a
 # size. Centralized so the rule is changed in one place and applied identically
 # on read (the ``Conference.size`` property) and on write (the stored ``size``
-# column). A meeting with >= LARGE attendees is "large"; >= MEDIUM is "medium";
-# fewer is "small"; an unknown attendance yields no size.
+# column). A meeting with >= MASSIVE attendees is "massive"; >= LARGE is "large";
+# >= MEDIUM is "medium"; fewer is "small"; an unknown attendance yields no size.
+MASSIVE_ATTENDANCE_THRESHOLD = 10_000
 LARGE_ATTENDANCE_THRESHOLD = 1_000
 MEDIUM_ATTENDANCE_THRESHOLD = 100
 
@@ -54,6 +56,8 @@ def size_for_attendance(attendance: "int | None") -> "ConferenceSize | None":
     """
     if attendance is None:
         return None
+    if attendance >= MASSIVE_ATTENDANCE_THRESHOLD:
+        return ConferenceSize.MASSIVE
     if attendance >= LARGE_ATTENDANCE_THRESHOLD:
         return ConferenceSize.LARGE
     if attendance >= MEDIUM_ATTENDANCE_THRESHOLD:

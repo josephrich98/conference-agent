@@ -71,7 +71,7 @@ def test_to_conference_maps_dates_and_enums():
     assert conf.attendance == 45000
     assert conf.attendance_year == 2025
     assert conf.attendance_source == "https://www.rsna.org/annual-meeting/attendance"
-    assert conf.size == ConferenceSize.LARGE
+    assert conf.size == ConferenceSize.MASSIVE
     assert conf.remote_option == RemoteOption.HYBRID
     assert conf.cost == "$1,095"
 
@@ -103,7 +103,7 @@ def test_to_conference_parses_formats():
 def test_size_is_derived_from_extracted_attendance():
     # Size follows the attendance figure deterministically, not a model label.
     big = _to_conference(_extracted(acronym="ecr", name="European Congress of Radiology", attendance="30000"))
-    assert big.size == ConferenceSize.LARGE
+    assert big.size == ConferenceSize.MASSIVE
 
     mid = _to_conference(_extracted(acronym="spr", name="Society for Pediatric Radiology", attendance="500"))
     assert mid.size == ConferenceSize.MEDIUM

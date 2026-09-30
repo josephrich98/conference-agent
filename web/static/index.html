@@ -19,6 +19,7 @@
       --muted: #6b7280;
       --accent: #2563eb;
       --accent-weak: #eff4ff;
+      --massive: #2563eb;
       --large: #16a34a;
       --medium: #ea580c;
       --small: #1f2933;
@@ -53,7 +54,7 @@
     .repo-link:hover { color: var(--fg); }
     .repo-link svg { width: 16px; height: 16px; fill: currentColor; }
     .controls {
-      padding: 8px 24px 16px;
+      padding: 8px 24px 6px;
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
@@ -69,7 +70,8 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     #nl-btn[disabled] { opacity: 0.6; cursor: default; }
-    .nl-status { color: var(--muted); font-size: 12px; flex: 1 1 100%; min-height: 14px; }
+    .nl-status { color: var(--muted); font-size: 12px; flex: 1 1 100%; }
+    .nl-status:empty { display: none; }
     .nl-status.err { color: var(--date-recent); }
     button {
       padding: 9px 14px;
@@ -139,7 +141,7 @@
     #fields-help td { padding: 2px 12px 2px 0; vertical-align: top; }
     #fields-help .fname { font-family: ui-monospace, monospace; color: var(--text); }
     #browse { padding: 8px 24px 32px; font-size: 13px; color: var(--muted); }
-    #browse h2 { font-size: 14px; margin: 16px 0 6px; color: var(--text); }
+    #browse summary { cursor: pointer; width: max-content; }
     #browse a { color: var(--accent); }
     #status { padding: 0 24px 8px; color: var(--muted); font-size: 13px; min-height: 18px; }
     .table-wrap { padding: 0 24px 40px; overflow-x: auto; }
@@ -180,6 +182,7 @@
     .date-old { color: var(--date-old); }
     .date-soon { color: var(--date-soon); }
     .size { font-weight: 600; text-transform: capitalize; }
+    .size.massive { color: var(--massive); }
     .size.large { color: var(--large); }
     .size.medium { color: var(--medium); }
     .size.small { color: var(--small); }
@@ -211,8 +214,7 @@
       cursor: pointer;
     }
     .cal-btn:hover { filter: brightness(0.98); }
-    .cal-cell .notify-btn { margin-left: 4px; }
-    /* ✉️ notify: asks for an email address to send this conference's updates to. */
+    /* ✉️ subscribe: asks for an email address to send this conference's updates to. */
     #notify-pop {
       position: absolute;
       z-index: 20;
@@ -364,7 +366,8 @@
   </div>
 
   <div class="syntax">
-    <span id="help-toggle">show fields</span>
+    <span class="muted">More information about search term formatting, fields, and color-coding</span>
+    &nbsp;·&nbsp;<span id="help-toggle">more info</span>
     <div id="fields-help"></div>
   </div>
 
@@ -401,7 +404,7 @@
     <p id="np-error" role="alert"></p>
     <div class="np-foot">
       <button type="button" id="np-cancel">Cancel</button>
-      <button type="submit" class="primary" id="np-ok">Notify me</button>
+      <button type="submit" class="primary" id="np-ok">Subscribe</button>
     </div>
   </form>
 
@@ -423,35 +426,39 @@
       label: (v) => MONTHS[Number(v)],
       rank: (v) => Number(v),
     });
-    const SIZE_RANK = { large: 1, medium: 2, small: 3 };
+    const SIZE_RANK = { massive: 1, large: 2, medium: 3, small: 4 };
 
     const COLUMNS = [
-      { key: "conference", label: "Conference", sort: "acronym" },
-      { key: "category", label: "Category", sort: "category", facet: listFacet("category") },
-      { key: "subcategory", label: "Subcategory", sort: "subcategory", facet: listFacet("subcategory") },
-      { key: "format", label: "Format", sort: "format", facet: listFacet("format") },
-      { key: "location", label: "Location", sort: "location" },
-      { key: "size", label: "Size", sort: "size",
+      { key: "conference", field: "conference", label: "Conference", sort: "acronym" },
+      { key: "category", field: "category", label: "Category", sort: "category", facet: listFacet("category") },
+      { key: "subcategory", field: "subcategory", label: "Subcategory", sort: "subcategory", facet: listFacet("subcategory") },
+      { key: "format", field: "format", label: "Format", sort: "format", facet: listFacet("format") },
+      { key: "location", field: "location", label: "Location", sort: "location" },
+      { key: "size", field: "size", label: "Size", sort: "size",
         facet: { values: (r) => (r.size ? [r.size] : []), rank: (v) => SIZE_RANK[v] || 9 } },
-      { key: "attendance", label: "Attendance", sort: "attendance" },
+      { key: "attendance", label: "Attendance", sort: "attendance",
+        note: "Most recent annual attendance (year); sortable, not searchable" },
       // "unknown" renders as a dash, so it is filtered as blank too.
-      { key: "remote_option", label: "Remote", sort: "remote_option",
+      { key: "remote_option", field: "remote", label: "Remote", sort: "remote_option",
         facet: { values: (r) => (r.remote_option && r.remote_option !== "unknown" ? [r.remote_option] : []) } },
-      { key: "cost", label: "Cost", sort: null },
-      { key: "abstract_month", label: "Abstract month", sort: "abstract_month", facet: monthFacet("abstract_month") },
-      { key: "upcoming_abstract_deadline", label: "Abstract due", sort: "upcoming_abstract_deadline" },
-      { key: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month", facet: monthFacet("late_abstract_month") },
-      { key: "upcoming_late_abstract_deadline", label: "Late abstract due", sort: "upcoming_late_abstract_deadline" },
-      { key: "paper_month", label: "Paper month", sort: "paper_month", facet: monthFacet("paper_month") },
-      { key: "upcoming_paper_deadline", label: "Paper due", sort: "upcoming_paper_deadline" },
-      { key: "deadline_time", label: "Deadline time", sort: null },
-      { key: "conference_month", label: "Conference month", sort: "conference_month", facet: monthFacet("conference_month") },
-      { key: "upcoming_dates", label: "Conference dates", sort: "upcoming_start_date" },
-      { key: "registration", label: "Registration", sort: null },
-      { key: "cal", label: "Calendar", sort: null },
+      { key: "cost", field: "cost", label: "Cost", sort: null },
+      { key: "abstract_month", field: "abstract_month", label: "Abstract month", sort: "abstract_month", facet: monthFacet("abstract_month") },
+      { key: "upcoming_abstract_deadline", field: "abstract_due", label: "Abstract due", sort: "upcoming_abstract_deadline" },
+      { key: "late_abstract_month", field: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month", facet: monthFacet("late_abstract_month") },
+      { key: "upcoming_late_abstract_deadline", field: "late_abstract_due", label: "Late abstract due", sort: "upcoming_late_abstract_deadline" },
+      { key: "paper_month", field: "paper_month", label: "Paper month", sort: "paper_month", facet: monthFacet("paper_month") },
+      { key: "upcoming_paper_deadline", field: "paper_due", label: "Paper due", sort: "upcoming_paper_deadline" },
+      { key: "deadline_time", field: "deadline_time", label: "Deadline time", sort: null },
+      { key: "conference_month", field: "conference_month", label: "Conference month", sort: "conference_month", facet: monthFacet("conference_month") },
+      { key: "upcoming_dates", field: "conference_dates", label: "Conference dates", sort: "upcoming_start_date" },
+      { key: "registration", field: "registration", label: "Registration", sort: null },
+      { key: "cal", label: "Calendar", sort: null,
+        note: "Download this conference's deadlines and dates as a calendar (.ics) file" },
+      { key: "email", label: "Email", sort: null,
+        note: "Get an email, with the updated calendar file, when this conference's deadlines or dates change" },
     ];
 
-    let state = { sort: "upcoming_start_date", order: "asc", rows: [], relevance: true };
+    let state = { sort: "acronym", order: "asc", rows: [], relevance: true };
 
     // The full catalog snapshot, loaded once from the static JSON. All search,
     // sort, CSV export, and .ics generation run in the browser over this — there
@@ -707,7 +714,10 @@
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="cal" class="cal-cell">
-            <button class="cal-btn" data-conf-id="${escapeHtml(r.id)}" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</button><button class="cal-btn notify-btn" data-conf-id="${escapeHtml(r.id)}" title="Email me, with the updated calendar file, when this conference's deadlines or dates change">✉️ notify</button>
+            <button class="cal-btn" data-conf-id="${escapeHtml(r.id)}" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</button>
+          </td>
+          <td data-col="email" class="cal-cell">
+            <button class="cal-btn notify-btn" data-conf-id="${escapeHtml(r.id)}" title="Email me, with the updated calendar file, when this conference's deadlines or dates change">✉️ subscribe</button>
           </td>
         `;
         tr.dataset.confId = r.id;
@@ -1035,7 +1045,7 @@
         setNotifyError("Couldn't reach the server. Check your connection and try again.");
       } finally {
         $("np-ok").disabled = false;
-        $("np-ok").textContent = "Notify me";
+        $("np-ok").textContent = "Subscribe";
       }
     }
 
@@ -1062,18 +1072,67 @@
       }
     }
 
+    // Example queries for the help panel: [query, what it finds].
+    const SEARCH_EXAMPLES = [
+      ["Simple keywords", [
+        ["machine learning", "any row mentioning both words, in any field"],
+        ['subcategory:"machine learning"', "tagged with the machine learning field (quote multi-word values)"],
+        ['category:"artificial intelligence"', "any AI subfield (machine learning, NLP, computer vision, ...)"],
+        ["conference:NeurIPS", "match on the conference name or acronym"],
+      ]],
+      ["Dates and date ranges", [
+        ['subcategory:"machine learning" AND conference_dates:2027', "machine learning conferences held in 2027"],
+        ['subcategory:"machine learning" AND abstract_due:>=2026-10-01 AND abstract_due:<2027-01-01', "abstracts due in Q4 2026"],
+        ['subcategory:"machine learning" AND paper_due:>=2026-10', "paper deadline in October 2026 or later"],
+        ['subcategory:"machine learning" AND conference_month:>=jun AND conference_month:<=aug', "summer meetings, any year"],
+      ]],
+      ["Chaining with boolean logic", [
+        ['subcategory:"machine learning" AND size:massive', "massive machine learning conferences"],
+        ['subcategory:"machine learning" OR subcategory:"computer vision"', "either field"],
+        ['subcategory:"machine learning" NOT remote:in-person', "machine learning with a virtual or hybrid option"],
+        ['subcategory:"machine learning" AND category:medicine', "machine learning applied to medicine (e.g. MICCAI)"],
+        ['(subcategory:"natural language processing" OR subcategory:"computer vision") AND abstract_due:>=2026-10-01', "parentheses group terms"],
+        ['category:"artificial intelligence" AND NOT paper_due:*', "AI conferences with no paper deadline listed (* = field is set)"],
+      ]],
+    ];
+
     function renderFields(fields) {
       try {
-        const rows = fields
-          .map(({ field, type, description }) =>
-            `<tr><td class="fname">${escapeHtml(field)}</td><td class="muted">(${escapeHtml(type)})</td><td>${escapeHtml(description || "")}</td></tr>`)
+        // One row per table column, in table order, so the help mirrors the
+        // table; columns with no search field (attendance, the buttons) show "—".
+        const byField = new Map(fields.map((f) => [f.field, f]));
+        const listed = new Set();
+        const row = (label, field, type, description) =>
+          `<tr><td>${escapeHtml(label)}</td><td class="fname">${field ? escapeHtml(field) : '<span class="muted">—</span>'}</td>` +
+          `<td class="muted">${type ? `(${escapeHtml(type)})` : ""}</td><td>${escapeHtml(description || "")}</td></tr>`;
+        // Categorical types carry their vocabulary ("cat: a, b, c"); show just "cat".
+        const shortType = (t) => (t.startsWith("cat:") ? "cat" : t);
+        let rows = COLUMNS.map((col) => {
+          const f = col.field && byField.get(col.field);
+          if (!f) return row(col.label, null, null, col.note);
+          listed.add(f.field);
+          return row(col.label, f.field, shortType(f.type), f.description);
+        }).join("");
+        // Any search field without a table column still gets listed, last.
+        rows += fields.filter((f) => !listed.has(f.field))
+          .map((f) => row("", f.field, shortType(f.type), f.description)).join("");
+        const examples = SEARCH_EXAMPLES
+          .map(([heading, items]) =>
+            `<p class="muted" style="margin:8px 0 2px">${escapeHtml(heading)}:</p><table>` +
+            items.map(([q, desc]) =>
+              `<tr><td><code>${escapeHtml(q)}</code></td><td class="muted">${escapeHtml(desc)}</td></tr>`).join("") +
+            `</table>`)
           .join("");
         $("fields-help").innerHTML =
-          `<p class="muted" style="margin:0 0 6px">Search fields (column, type, description):</p>` +
+          `<p class="muted" style="margin:0 0 4px"><strong>Search term formatting</strong> ` +
+          `(adjacent terms are ANDed; operators AND / OR / NOT are case-insensitive):</p>` +
+          examples +
+          `<p class="muted" style="margin:12px 0 6px">Columns, in table order (column, search field, type, description):</p>` +
           `<table>${rows}</table>` +
           `<p class="muted" style="margin:10px 0 4px">Size color coding (by annual attendance):</p>` +
           `<table>` +
-            `<tr><td><span class="size large">large</span></td><td class="muted">1,000+ attendees</td></tr>` +
+            `<tr><td><span class="size massive">massive</span></td><td class="muted">10,000+ attendees</td></tr>` +
+            `<tr><td><span class="size large">large</span></td><td class="muted">1,000–9,999 attendees</td></tr>` +
             `<tr><td><span class="size medium">medium</span></td><td class="muted">100–999 attendees</td></tr>` +
             `<tr><td><span class="size small">small</span></td><td class="muted">under 100 attendees</td></tr>` +
           `</table>` +
@@ -1209,7 +1268,7 @@
       const h = $("fields-help");
       const showing = h.style.display === "block";
       h.style.display = showing ? "none" : "block";
-      $("help-toggle").textContent = showing ? "show fields" : "hide fields";
+      $("help-toggle").textContent = showing ? "more info" : "less info";
     });
 
     renderColumnsMenu();

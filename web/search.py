@@ -222,7 +222,7 @@ _FIELD_DESCRIPTIONS = {
     "subcategory": "specific field(s) the conference covers; one or more per series",
     "format": "submission types accepted (abstract, paper, poster, oral)",
     "location": "city and country of the upcoming (or most recent) meeting",
-    "size": "bucket from annual attendance: large 1,000+, medium 100-999, small under 100",
+    "size": "bucket from annual attendance: massive 10,000+, large 1,000-9,999, medium 100-999, small under 100",
     "remote": "whether the meeting is in-person, virtual, or hybrid",
     "cost": "registration fee or fee range",
     "registration": "registration windows, e.g. early bird and regular periods",

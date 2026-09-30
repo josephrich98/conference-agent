@@ -57,7 +57,7 @@ ${fieldReference(fields)}
 
 Guidance:
 - Use \`subcategory\` for a specific field (radiology, oncology, "machine learning", genomics, ...). Use \`category\` only for the broad buckets listed for it (medicine, computer science, artificial intelligence, ...).
-- Map size words to the \`size\` vocabulary: big/large→large, mid-size→medium, small→small.
+- Map size words to the \`size\` vocabulary: huge/massive/very large→massive, big/large→large, mid-size→medium, small→small.
 - Map attendance/format/remote words to their controlled vocabularies.
 - "deadline" alone means abstract_due. "no/without X" means NOT X:*.
 - A "late", "late-breaking", or "poster-only" deadline means late_abstract_due (or late_abstract_month) — the second, later abstract deadline some series publish. A plain deadline request means abstract_due.

@@ -28,8 +28,11 @@ def test_conference_id_is_upper_acronym():
 
 def test_size_is_derived_from_attendance():
     # Size is a computed bucket of the attendance figure, not a stored label.
-    # Buckets track the thresholds in models.py (large >= 1000, medium >= 100).
-    assert _conf(attendance=45000).size == ConferenceSize.LARGE
+    # Buckets track the thresholds in models.py (massive >= 10000, large >= 1000,
+    # medium >= 100).
+    assert _conf(attendance=45000).size == ConferenceSize.MASSIVE
+    assert _conf(attendance=10000).size == ConferenceSize.MASSIVE  # inclusive lower bound
+    assert _conf(attendance=9999).size == ConferenceSize.LARGE
     assert _conf(attendance=1000).size == ConferenceSize.LARGE  # inclusive lower bound
     assert _conf(attendance=500).size == ConferenceSize.MEDIUM
     assert _conf(attendance=100).size == ConferenceSize.MEDIUM  # inclusive lower bound

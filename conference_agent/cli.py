@@ -408,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", help="Print the stored conference table")
     p_list.add_argument("--category", help="Filter by broad category (e.g. medicine)")
     p_list.add_argument("--subcategory", help="Filter by subcategory (e.g. radiology)")
-    p_list.add_argument("--size", help="Filter by size (large/medium/small)")
+    p_list.add_argument("--size", help="Filter by size (massive/large/medium/small)")
 
     p_serve = sub.add_parser("serve", help="Launch the web table interface")
     p_serve.add_argument("--host", default="127.0.0.1")

@@ -48,7 +48,7 @@ def test_upsert_then_query_round_trips(tmp_path):
     assert got.id == "RSNA"
     assert got.attendance == 45000
     assert got.attendance_year == 2025
-    assert got.size == ConferenceSize.LARGE  # derived from attendance
+    assert got.size == ConferenceSize.MASSIVE  # derived from attendance
     assert got.remote_option == RemoteOption.HYBRID
     assert got.upcoming_start_date == date(2026, 11, 29)
     assert got.cost == "$1,095 (member)"
@@ -200,7 +200,7 @@ def test_query_filters_by_subcategory_category_and_size(tmp_path):
     url = _db_url(tmp_path)
     upsert_conferences(
         [
-            _conf(acronym="RSNA", attendance=45000),  # large, radiology -> medicine
+            _conf(acronym="RSNA", attendance=45000),  # massive, radiology -> medicine
             _conf(acronym="SIIM", name="SIIM", attendance=500),  # medium, radiology
             _conf(acronym="ASHG", name="ASHG", subcategory="genomics", attendance=12000),  # biology
         ],
@@ -208,7 +208,7 @@ def test_query_filters_by_subcategory_category_and_size(tmp_path):
     )
 
     assert {c.id for c in query_conferences(subcategory="radiology", db_url=url)} == {"RSNA", "SIIM"}
-    assert {c.id for c in query_conferences(size="large", db_url=url)} == {"RSNA", "ASHG"}
+    assert {c.id for c in query_conferences(size="massive", db_url=url)} == {"RSNA", "ASHG"}
     # The derived broad category groups the two radiology rows under medicine,
     # while genomics sorts into biology.
     assert {c.id for c in query_conferences(category="medicine", db_url=url)} == {"RSNA", "SIIM"}
@@ -403,7 +403,7 @@ def test_merge_records_fills_dates_without_clobbering(tmp_path):
     # url is the verified deep link regardless of the homepage passed at seed.
     assert got.url == "https://www.rsna.org/annual-meeting"
     assert got.attendance == 45000
-    assert got.size == ConferenceSize.LARGE
+    assert got.size == ConferenceSize.MASSIVE
     assert got.name == "RSNA Annual Meeting"
 
 
@@ -418,7 +418,7 @@ def test_merge_records_recomputes_size_from_attendance(tmp_path):
     got = query_conferences(db_url=url)[0]
     assert got.attendance == 45000
     assert got.attendance_year == 2025
-    assert got.size == ConferenceSize.LARGE
+    assert got.size == ConferenceSize.MASSIVE
 
 
 def test_recompute_sizes_rederives_stored_bucket(tmp_path):

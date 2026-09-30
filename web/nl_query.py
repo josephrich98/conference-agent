@@ -92,7 +92,7 @@ Guidance:
 - Use `subcategory` for a specific field (radiology, oncology, "machine \
 learning", genomics, ...). Use `category` only for the broad buckets listed for \
 it (medicine, computer science, artificial intelligence, ...).
-- Map size words to the `size` vocabulary: big/large→large, mid-size→medium, \
+- Map size words to the `size` vocabulary: huge/massive/very large→massive, big/large→large, mid-size→medium, \
 small→small.
 - Map attendance/format/remote words to their controlled vocabularies.
 - "deadline" alone means abstract_due. "no/without X" means NOT X:*.

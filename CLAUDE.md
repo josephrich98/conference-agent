@@ -23,8 +23,8 @@ month (each
 taken from the matching date so rows sort by season even when their years are
 offset; registration, being free text, has no derived month), the official
 link, remote-attendance option, cost, a sourced annual-attendance figure, and a
-size bucket derived deterministically from that figure (large / medium / small,
-an objective proxy for prominence — e.g. RSNA ≈ 45,000 attendees = large). It
+size bucket derived deterministically from that figure (massive / large / medium /
+small, an objective proxy for prominence — e.g. RSNA ≈ 45,000 attendees = massive). It
 normalizes that information into a typed schema, stores it in a
 SQL database, exposes it through a boolean-searchable web table, and serves each
 conference's deadlines and dates as a credential-free iCalendar (`.ics`) feed.
@@ -107,7 +107,7 @@ for the design.
   (the table itself is JS-rendered, so crawlers need these). The payload's
   `generated` date is the "Last updated" shown in the header. Vercel Web
   Analytics (`/_vercel/insights/script.js`) must be enabled in the project dashboard.
-- `web/vercel/` — the Vercel Functions behind the table's ✉️ notify button
+- `web/vercel/` — the Vercel Functions behind the table's ✉️ subscribe button
   (`api/subscribe.js`, `confirm.js`, `unsubscribe.js`, `subscriptions.js`,
   shared `_lib.js`) and their `package.json`; `build_static.py` copies them into
   `dist/`
@@ -200,7 +200,7 @@ dependencies there rather than installing ad hoc.
   (`calendar_sync.deadline_time_for` picks the shared value or the entry for
   that event kind; mirrored in `calendar.js`) while the event itself remains
   all-day.
-- **Controlled vocabularies.** `ConferenceSize` (`large`/`medium`/`small`) and
+- **Controlled vocabularies.** `ConferenceSize` (`massive`/`large`/`medium`/`small`) and
   `RemoteOption` (`in-person`/`virtual`/`hybrid`/`unknown`) are enums, not free
   text, so the table and queries can filter/color consistently.
 - **Two-level classification: derived category over free-form subcategory.** The
@@ -217,7 +217,8 @@ dependencies there rather than installing ad hoc.
   `subcategory` in place on first open by `database._migrate_category_to_subcategory`.
 - **Deterministic, sourced size (not a subjective reputation label).** Size is a
   computed property, never a stored hand-set value: `models.size_for_attendance`
-  buckets the `attendance` integer (≥1,000 → large, ≥100 → medium, else small;
+  buckets the `attendance` integer (≥10,000 → massive, ≥1,000 → large, ≥100 →
+  medium, else small;
   blank when attendance is unknown — thresholds live in `models.py`). The stored `size` column is only ever written
   by that function, so it can never drift from the figure. Each attendance figure
   carries the year it describes and the source URL it came from (provenance kept
@@ -270,7 +271,7 @@ dependencies there rather than installing ad hoc.
   notification, and the web layer are independent modules; each can run on its
   own schedule.
 - **Per-conference update emails (the one piece of server compute).** The ✉️
-  notify button next to 📅 cal asks for an email address (remembered in
+  subscribe button next to 📅 cal asks for an email address (remembered in
   `localStorage`, so later it is prefilled and Enter subscribes) and POSTs to the
   Vercel Function `/api/subscribe`. Subscriptions are double opt-in: the first
   time, a signed confirmation link (HMAC over email + id + expiry, keyed by

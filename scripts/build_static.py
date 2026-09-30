@@ -61,22 +61,15 @@ _VERCEL_DIR = _STATIC_DIR.parent / "vercel"
 def _export_rows(db_url: str) -> list[dict]:
     """All conference rows as JSON-friendly dicts (same shape as ``/api/search``).
 
-    Ordered by the table's default sort (upcoming start date, falling back to the
-    prior edition's, NULLs last) so the first paint is sensible before the user
-    re-sorts in the browser.
+    Ordered by the table's default sort (conference acronym, falling back to the
+    name) so the first paint is sensible before the user re-sorts in the browser.
     """
     seed_conferences(db_url)
     engine = get_engine(db_url)
     with Session(engine) as session:
         rows = list(session.scalars(select(ConferenceRow)))
     dicts = [_row_to_dict(r) for r in rows]
-
-    def sort_key(d: dict):
-        value = d.get("upcoming_start_date") or d.get("prior_start_date")
-        # ISO date strings sort lexicographically; missing dates sort last.
-        return (value is None, value or "", d.get("acronym") or d.get("name") or "")
-
-    dicts.sort(key=sort_key)
+    dicts.sort(key=lambda d: d.get("acronym") or d.get("name") or "")
     return dicts
 
 

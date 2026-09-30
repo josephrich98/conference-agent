@@ -569,9 +569,10 @@ const KEYWORD_SYNONYMS = {
   cs: ["computer science"],
   online: ["virtual", "hybrid"],
   remote: ["virtual", "hybrid"],
-  big: ["large"],
-  major: ["large"],
-  huge: ["large"],
+  big: ["large", "massive"],
+  major: ["large", "massive"],
+  huge: ["massive"],
+  enormous: ["massive"],
   tiny: ["small"],
 };
 
