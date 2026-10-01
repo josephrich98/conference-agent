@@ -53,6 +53,67 @@
     }
     .repo-link:hover { color: var(--fg); }
     .repo-link svg { width: 16px; height: 16px; fill: currentColor; }
+    .header-links { flex: none; display: flex; align-items: center; gap: 14px; }
+    .add-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 12px;
+      font-size: 13px;
+      white-space: nowrap;
+      color: #fff;
+      background: var(--accent);
+      border-radius: 6px;
+      text-decoration: none;
+    }
+    .add-link:hover { filter: brightness(1.08); }
+    .add-more { text-align: right; margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+    /* "Browse by field": one card per category, then the chosen category's
+       subcategories as chips. Both are the category / subcategory column
+       filters, mirrored in the URL (?category=...&subcategory=...). */
+    .fields-bar { padding: 8px 24px 4px; }
+    .fields-bar h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 8px; }
+    .cat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 8px;
+    }
+    .cat-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      text-align: left;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    .cat-card:hover { border-color: var(--accent); filter: none; }
+    .cat-card .ic { font-size: 22px; line-height: 1; }
+    .cat-card .n { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+    .cat-card.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .cat-card.on .n { color: rgba(255, 255, 255, 0.85); }
+    .sub-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .sub-chips:empty { display: none; }
+    .sub-chip {
+      padding: 5px 11px;
+      font-size: 13px;
+      border-radius: 999px;
+      background: var(--panel);
+    }
+    .sub-chip .n { color: var(--muted); margin-left: 4px; }
+    .sub-chip.on { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); }
+    .share-link { margin-top: 8px; font-size: 13px; color: var(--muted); }
+    .share-link[hidden] { display: none; }
+    .share-link a { color: var(--accent); cursor: pointer; }
+    @media (max-width: 600px) {
+      .fields-bar { padding: 8px 16px 4px; }
+      .cat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .add-more a { color: var(--accent); }
     .controls {
       padding: 8px 24px 6px;
       display: flex;
@@ -362,11 +423,21 @@
       <h1>Conference Agent</h1>
       <p class="subtitle">Conference database for artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. <span id="last-updated" class="muted"></span></p>
     </div>
+    <div class="header-links">
+    <a class="add-link" href="add/">Add a conference</a>
     <a class="repo-link" href="https://github.com/josephrich98/conference-agent" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
       GitHub
     </a>
+    </div>
   </header>
+
+  <nav class="fields-bar" aria-label="Browse by field">
+    <h2>Browse by field</h2>
+    <div class="cat-grid" id="cat-grid"></div>
+    <div class="sub-chips" id="sub-chips"></div>
+    <div class="share-link" id="share-link" hidden>Share this view: <a id="share-copy" title="Copy this page's link"></a></div>
+  </nav>
 
   <div class="controls">
     <input id="query" type="text" placeholder='Keywords (pediatric radiology), a boolean query ((virtual OR hybrid) AND size:large), or plain English for ✨ AI search' autocomplete="off" />
@@ -401,6 +472,7 @@
       </thead>
       <tbody id="results-body"></tbody>
     </table>
+    <p class="add-more">Don't see your conference? <a href="add/">Add it here</a>.</p>
   </div>
 
   <div id="toast"></div>
@@ -463,9 +535,8 @@
       { key: "size", field: "size", label: "Size", sort: "size",
         facet: { values: (r) => (r.size ? [r.size] : []), rank: (v) => SIZE_RANK[v] || 9 } },
       { key: "attendance", field: "attendance", label: "Attendance", sort: "attendance" },
-      // "unknown" renders as a dash, so it is filtered as blank too.
       { key: "remote_option", field: "remote", label: "Remote", sort: "remote_option",
-        facet: { values: (r) => (r.remote_option && r.remote_option !== "unknown" ? [r.remote_option] : []) } },
+        facet: { values: (r) => (r.remote_option ? [r.remote_option] : []) } },
       { key: "cost", field: "cost", label: "Cost", sort: null },
       { key: "abstract_month", field: "abstract_month", label: "Abstract month", sort: "abstract_month", facet: monthFacet("abstract_month") },
       { key: "upcoming_abstract_deadline", field: "abstract_due", label: "Abstract due", sort: "upcoming_abstract_deadline" },
@@ -827,7 +898,7 @@
           <td data-col="location">${r.location || '<span class="muted">—</span>'}</td>
           <td data-col="size">${sizeHtml}</td>
           <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
-          <td data-col="remote_option">${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
+          <td data-col="remote_option">${r.remote_option ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
           <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
           <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
@@ -911,6 +982,8 @@
         ? ` Column filters: ${escapeHtml(active.join(", "))} · <a id="clear-filters">clear</a>`
         : "");
       renderRows(rows);
+      renderFieldsBar();
+      syncUrl();
     }
 
     // ---------------------------------------------------------- column filters
@@ -1081,6 +1154,161 @@
       search();
     }
 
+    // --------------------------------------------------------- browse by field
+    // The cards above the search box pick a category, and the chips under them
+    // one of its subcategories. They set the same category / subcategory column
+    // filters as the header ■ lists, and the selection and search text are kept
+    // in the URL (e.g. /?subcategory=machine-learning), so a field's view can be
+    // shared as a link.
+    const CATEGORY_ICONS = {
+      "medicine": "🩺", "biology": "🧬", "artificial intelligence": "🤖",
+      "computer science": "💻", "physics": "⚛️", "stats": "📊", "chemistry": "⚗️",
+      "mathematics": "📐", "humanities": "📚", "social science": "🏛️",
+    };
+    const CATEGORY_LABELS = { "stats": "Statistics" };
+    const fieldSlug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "x";
+    const fieldLabel = (v) => CATEGORY_LABELS[v] || v.charAt(0).toUpperCase() + v.slice(1);
+    const BASE_TITLE = document.title;
+    let FIELD_BAR = { cats: new Map(), subs: new Map(), subCat: {} }; // value -> row count
+    let urlPush = false; // the next search adds a history entry (a bar click)
+
+    function indexFields(payload) {
+      const cats = new Map();
+      const subs = new Map();
+      for (const r of DATA.conferences) {
+        for (const c of new Set(splitList(r.category))) cats.set(c, (cats.get(c) || 0) + 1);
+        for (const t of new Set(splitList(r.subcategory))) subs.set(t, (subs.get(t) || 0) + 1);
+      }
+      const byCount = (m) => new Map([...m].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
+      FIELD_BAR = { cats: byCount(cats), subs: byCount(subs), subCat: payload.subcategory_categories || {} };
+    }
+
+    // The category a subcategory derives. A tag missing from the snapshot's map
+    // falls back to a category every row tagged with it shares.
+    function subCategoryOf(tag) {
+      if (FIELD_BAR.subCat[tag]) return FIELD_BAR.subCat[tag];
+      let shared = null;
+      for (const r of DATA.conferences) {
+        if (!splitList(r.subcategory).includes(tag)) continue;
+        const c = new Set(splitList(r.category));
+        shared = shared ? new Set([...shared].filter((x) => c.has(x))) : c;
+      }
+      return shared && shared.size ? [...shared][0] : null;
+    }
+
+    // The category whose chips are shown: the one category filtered on, or the
+    // one the filtered subcategories all belong to.
+    function activeCategory() {
+      const cats = filters.category;
+      if (cats) return cats.size === 1 ? [...cats][0] : null;
+      const subs = filters.subcategory;
+      if (!subs) return null;
+      const owners = new Set([...subs].map(subCategoryOf));
+      return owners.size === 1 ? [...owners][0] : null;
+    }
+
+    function renderFieldsBar() {
+      const active = activeCategory();
+      const subs = filters.subcategory;
+      const allOn = !filters.category && !subs;
+      const card = (value, icon, label, n, on) =>
+        `<button class="cat-card${on ? " on" : ""}" data-cat="${escapeHtml(value)}" aria-pressed="${on}">` +
+        `<span class="ic" aria-hidden="true">${icon}</span><span>${escapeHtml(label)}` +
+        `<span class="n">${n.toLocaleString()} conference${n === 1 ? "" : "s"}</span></span></button>`;
+      $("cat-grid").innerHTML =
+        card("", "🌐", "All fields", DATA.conferences.length, allOn) +
+        [...FIELD_BAR.cats].map(([c, n]) => card(c, CATEGORY_ICONS[c] || "🏷️", fieldLabel(c), n,
+          c === active || !!(filters.category && filters.category.has(c)))).join("");
+
+      let chips = "";
+      if (active) {
+        const chip = (value, label, n, on) =>
+          `<button class="sub-chip${on ? " on" : ""}" data-sub="${escapeHtml(value)}" aria-pressed="${on}">` +
+          `${escapeHtml(label)}<span class="n">${n.toLocaleString()}</span></button>`;
+        chips = chip("", `All ${fieldLabel(active).toLowerCase()}`, FIELD_BAR.cats.get(active) || 0, !subs) +
+          [...FIELD_BAR.subs].filter(([t]) => subCategoryOf(t) === active)
+            .map(([t, n]) => chip(t, t, n, !!(subs && subs.has(t)))).join("");
+      }
+      $("sub-chips").innerHTML = chips;
+    }
+
+    function onFieldsBarClick(e) {
+      const card = e.target.closest(".cat-card");
+      const chip = e.target.closest(".sub-chip");
+      if (!card && !chip) return;
+      const only = (set, v) => !!set && set.size === 1 && set.has(v);
+      if (card) {
+        const c = card.dataset.cat;
+        // A second click on the selected category goes back to every field.
+        const again = only(filters.category, c) && !filters.subcategory;
+        delete filters.subcategory;
+        if (!c || again) delete filters.category;
+        else filters.category = new Set([c]);
+      } else {
+        const cat = activeCategory();
+        const t = chip.dataset.sub;
+        if (!t || only(filters.subcategory, t)) {
+          delete filters.subcategory;
+          filters.category = new Set([cat]);
+        } else {
+          filters.subcategory = new Set([t]);
+          // The subcategory implies its category; keep the link short.
+          if (only(filters.category, cat)) delete filters.category;
+        }
+      }
+      urlPush = true;
+      search();
+    }
+
+    // ?category=<slug>,...&subcategory=<slug>,...&q=<search text>
+    function stateUrl() {
+      const parts = [];
+      for (const key of ["category", "subcategory"]) {
+        const vals = [...(filters[key] || [])].filter((v) => v !== BLANK).map(fieldSlug);
+        if (vals.length) parts.push(`${key}=${vals.join(",")}`);
+      }
+      const q = $("query").value.trim();
+      if (q) parts.push(`q=${encodeURIComponent(q)}`);
+      return location.pathname + (parts.length ? `?${parts.join("&")}` : "") + location.hash;
+    }
+
+    function syncUrl() {
+      const url = stateUrl();
+      if (url !== location.pathname + location.search + location.hash) {
+        history[urlPush ? "pushState" : "replaceState"](null, "", url);
+      }
+      urlPush = false;
+      const subs = [...(filters.subcategory || [])];
+      const cats = [...(filters.category || [])];
+      const named = (subs.length ? subs : cats).filter((v) => v !== BLANK);
+      document.title = named.length
+        ? `${named.map(fieldLabel).join(", ")} conference deadlines and dates | Conference Agent`
+        : BASE_TITLE;
+      $("share-link").hidden = !named.length;
+      $("share-copy").textContent = location.href;
+    }
+
+    // Read the category, subcategory, and search text from the URL (slugs or
+    // plain names). Unknown values are ignored.
+    function applyUrlState() {
+      const p = new URLSearchParams(location.search);
+      $("query").value = p.get("q") || "";
+      for (const [key, known] of [["category", FIELD_BAR.cats], ["subcategory", FIELD_BAR.subs]]) {
+        const want = new Set((p.get(key) || "").split(",").map((v) => v.trim()).filter(Boolean).map(fieldSlug));
+        const hit = [...known.keys()].filter((v) => want.has(fieldSlug(v)));
+        if (hit.length) filters[key] = new Set(hit); else delete filters[key];
+      }
+    }
+
+    async function copyShareLink() {
+      try {
+        await navigator.clipboard.writeText(location.href);
+        toast("Link copied.", true, 2500);
+      } catch (e) {
+        window.getSelection().selectAllChildren($("share-copy"));
+      }
+    }
+
     // A new query starts in relevance order (used only by the keyword fallback);
     // clicking a column header switches to that column's order.
     function newSearch() {
@@ -1219,8 +1447,8 @@
         DATA.byId = {};
         for (const r of DATA.conferences) DATA.byId[r.id] = r;
         renderFields(DATA.fields);
-        const q0 = new URLSearchParams(location.search).get("q");
-        if (q0) $("query").value = q0;
+        indexFields(payload);
+        applyUrlState();
         search();
       } catch (e) {
         $("status").textContent = `Failed to load catalog: ${e.message || e}`;
@@ -1394,6 +1622,15 @@
     $("np-email").addEventListener("input", () => setNotifyError(""));
     $("status").addEventListener("click", (e) => {
       if (e.target.id === "clear-filters") clearFilter();
+    });
+    $("cat-grid").addEventListener("click", onFieldsBarClick);
+    $("sub-chips").addEventListener("click", onFieldsBarClick);
+    $("share-copy").addEventListener("click", copyShareLink);
+    // Back / Forward step through field selections.
+    window.addEventListener("popstate", () => {
+      if (!DATA.conferences.length) return;
+      applyUrlState();
+      search();
     });
     $("fp-search").addEventListener("input", renderFilterList);
     $("fp-search").addEventListener("keydown", (e) => {

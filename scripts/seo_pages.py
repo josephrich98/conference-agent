@@ -24,6 +24,8 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable, Optional
 
+from conference_agent.models import CATEGORIES
+
 SITE_URL = "https://conferenceagent.vercel.app"
 SITE_NAME = "Conference Agent"
 
@@ -148,7 +150,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Conference dates", _date_range(row.get("upcoming_start_date"), row.get("upcoming_end_date"))),
         ("Registration", row.get("upcoming_registration")),
         ("Location", row.get("location")),
-        ("Attendance format", row.get("remote_option") if row.get("remote_option") != "unknown" else None),
+        ("Attendance format", row.get("remote_option")),
         ("Cost", row.get("cost")),
         ("Submission types", row.get("format")),
         ("Fields", row.get("subcategory")),
@@ -240,7 +242,8 @@ def field_page(tag: str, rows: list[dict], generated: str) -> tuple[str, str]:
         f"<p>{len(rows)} {_e(tag)} conference series with abstract and paper deadlines, "
         "conference dates, registration, and cost.</p>"
         f"<ul>{''.join(items)}</ul>"
-        f'<p><a href="/?q={_e(tag)}">Search and filter these in the full table</a>, '
+        f'<p><a href="/?{"category" if tag in CATEGORIES else "subcategory"}={slugify(tag)}">'
+        "Search and filter these in the full table</a>, "
         "add deadlines to your calendar, or get email updates.</p>"
         f'<p class="muted">Data last updated {_e(generated)}.</p>'
     )

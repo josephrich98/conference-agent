@@ -23,12 +23,15 @@ The output is a self-contained directory::
       nl_query.js         # natural-language ("AI") search via in-browser WebLLM
       c/<id>/, field/<tag>/, sitemap.xml, robots.txt  # prerendered SEO pages
       data/conferences.json   # the catalog snapshot (minus retired series) + field metadata
+      add/index.html      # "Add a conference" form (fields from `add --fields`)
+      data/add_fields.json    # the `conference-agent add` input vocabulary, for the form
       api/ + package.json     # Vercel Functions for per-conference update emails
 
 The ``api/`` functions (from ``web/vercel/``) are the one exception to "no
 compute": they run only when a visitor subscribes, confirms, or unsubscribes,
 never for browsing or search. Other static hosts serve the table unchanged; only
-the ✉️ subscribe button needs them.
+the ✉️ subscribe button and the "Add a conference" form (which opens a GitHub pull
+request via ``api/propose``) need them.
 
 ``dist/`` is gitignored (data-derived); regenerate it at deploy time.
 """
@@ -46,8 +49,10 @@ from seo_pages import slugify, write_pages
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from conference_agent.cli import add_field_schema
 from conference_agent.config import DEFAULT_DATABASE_URL
 from conference_agent.database import ConferenceRow, former_ids, get_engine, seed_conferences
+from conference_agent.models import SUBCATEGORY_TO_CATEGORY
 from conference_agent.refresh import is_retired
 from web.app import _RESULT_COLUMNS, _row_to_dict
 from web.search import field_help
@@ -118,6 +123,9 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
         "generated": generated,
         "columns": _RESULT_COLUMNS,
         "fields": field_help()["fields"],
+        # The page's "Browse by field" bar lists each subcategory under the
+        # category it derives.
+        "subcategory_categories": SUBCATEGORY_TO_CATEGORY,
         "conferences": rows,
     }
     (data_dir / "conferences.json").write_text(
@@ -125,8 +133,15 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
         encoding="utf-8",
     )
 
+    (data_dir / "add_fields.json").write_text(
+        json.dumps(add_field_schema(), ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+
     for name in _ASSETS:
         shutil.copyfile(_STATIC_DIR / name, out_dir / name)
+    # The "Add a conference" form, served at /add/.
+    (out_dir / "add").mkdir(exist_ok=True)
+    shutil.copyfile(_STATIC_DIR / "add.html", out_dir / "add" / "index.html")
 
     # Crawlable pages + sitemap; inject the browse links into the home page.
     seo = write_pages(rows, out_dir, generated)

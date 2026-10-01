@@ -824,6 +824,74 @@ def _require_names(records: list[dict], errors: list[str]) -> None:
         seen.add(name_id(name))
 
 
+_URL_FIELDS = ("url", "attendance_source")
+_DATE_RANGES = (
+    ("conference_dates", "upcoming_start_date", "upcoming_end_date"),
+    ("prior_conference_dates", "prior_start_date", "prior_end_date"),
+)
+_MIN_ATTENDANCE_YEAR = 1900
+
+
+def _check_values(records: list[dict], matches: list, errors: list[str]) -> None:
+    """Reject malformed URLs, reversed date ranges, and out-of-range numbers.
+
+    ``matches`` holds each record's stored conference (or ``None``), so an update
+    that supplies only one end of a date range is checked against the other end
+    already on file.
+    """
+    from urllib.parse import urlparse
+
+    from conference_agent.database import _coerce_date
+
+    for record, match in zip(records, matches):
+        name = record["name"]
+        for field in _URL_FIELDS:
+            value = str(record.get(field) or "").strip()
+            if not value:
+                continue
+            # A bare domain ("rsna.org/meeting") is fine: the table adds https://.
+            has_scheme = "://" in value
+            parsed = urlparse(value if has_scheme else "https://" + value)
+            host = parsed.hostname or ""
+            if (
+                parsed.scheme not in ("http", "https")
+                or "." not in host.strip(".")
+                or any(c.isspace() for c in value)
+            ):
+                errors.append(
+                    f"'{name}': {field} '{value}' is not an http(s) URL "
+                    "(e.g. https://www.rsna.org or rsna.org)."
+                )
+
+        for column, start_field, end_field in _DATE_RANGES:
+            try:
+                start = _coerce_date(record.get(start_field))
+                end = _coerce_date(record.get(end_field))
+            except ValueError:
+                continue  # not a date at all; reported when the record is written
+            if match is not None:
+                start = start or getattr(match, start_field)
+                end = end or getattr(match, end_field)
+            if start and end and end < start:
+                errors.append(f"'{name}': {column} ends ({end}) before it starts ({start}).")
+
+        for field, low, high in (
+            ("attendance", 1, None),
+            ("attendance_year", _MIN_ATTENDANCE_YEAR, date.today().year),
+        ):
+            value = record.get(field)
+            if value in (None, ""):
+                continue
+            try:
+                number = int(str(value).strip())
+            except ValueError:
+                errors.append(f"'{name}': {field} '{value}' is not a whole number.")
+                continue
+            if number < low or (high is not None and number > high):
+                bounds = f"between {low} and {high}" if high is not None else f"at least {low}"
+                errors.append(f"'{name}': {field} {number} must be {bounds}.")
+
+
 def _report(errors: list[str]) -> int:
     for message in errors:
         print(f"Error: {message}", file=sys.stderr)
@@ -867,7 +935,9 @@ def _add_new(records: list[dict], args) -> int:
     from conference_agent.models import name_id
 
     errors: list[str] = []
-    for record, match in zip(records, _match_names(records, args.db)):
+    matches = _match_names(records, args.db)
+    _check_values(records, [None] * len(records), errors)
+    for record, match in zip(records, matches):
         name = record["name"]
         if match is not None:
             errors.append(f"'{name}' already exists; use `add --update` to change it.")
@@ -920,6 +990,8 @@ def _update_existing(records: list[dict], args) -> int:
             ):
                 errors.append(f"cannot rename to '{new_name}': that name is already in use.")
             taken.add(new_id)
+    # With --overwrite the stored row is replaced, so only the record's own dates count.
+    _check_values(records, [None] * len(records) if args.overwrite else matches, errors)
     if errors:
         return _report(errors)
 
@@ -1043,30 +1115,50 @@ _KIND_VALUE = {
 }
 
 
+def _field_specs() -> list[_Field]:
+    """The `add` input fields in display order (identity, composites, the rest)."""
+    return list(_SCALAR_FIELDS[:2]) + list(_COMPOSITE_FIELDS) + list(_SCALAR_FIELDS[2:])
+
+
+def add_field_schema() -> dict:
+    """The `add` input vocabulary as JSON-friendly data.
+
+    Printed by ``conference-agent add --fields json`` and exported by
+    ``scripts/build_static.py`` for the website's "Add a conference" form, whose
+    submissions are ``--json`` records keyed by these names.
+    """
+    from conference_agent.deadline_time import TIMEZONES
+
+    return {
+        "fields": [
+            {
+                "name": f.column,
+                "flag": _flag_for(f.column),
+                "kind": f.kind,
+                "value": _KIND_VALUE[f.kind],
+                "stored_as": f.field,
+                # One of the two identity fields is required per row.
+                "required": f.column in ("conference_acronym", "conference_name"),
+                "description": f.help,
+                "website": _NOT_DISPLAYED.get(f.column, "own column"),
+            }
+            for f in _field_specs()
+        ],
+        "derived": [{"name": n, "description": d} for n, d in _DERIVED_FIELDS],
+        "remote_options": [o.value for o in RemoteOption],
+        "formats": list(CONFERENCE_FORMATS),
+        "timezones": list(TIMEZONES),
+    }
+
+
 def _print_fields(as_json: bool) -> int:
     """Print the input vocabulary shared by --flag, --csv header, and --json key."""
-    specs = list(_SCALAR_FIELDS[:2]) + list(_COMPOSITE_FIELDS) + list(_SCALAR_FIELDS[2:])
+    specs = _field_specs()
 
     if as_json:
         import json
 
-        payload = {
-            "fields": [
-                {
-                    "name": f.column,
-                    "flag": _flag_for(f.column),
-                    "value": _KIND_VALUE[f.kind],
-                    "stored_as": f.field,
-                    # One of the two identity fields is required per row.
-                    "required": f.column in ("conference_acronym", "conference_name"),
-                    "description": f.help,
-                    "website": _NOT_DISPLAYED.get(f.column, "own column"),
-                }
-                for f in specs
-            ],
-            "derived": [{"name": n, "description": d} for n, d in _DERIVED_FIELDS],
-        }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(add_field_schema(), indent=2))
         return 0
 
     import shutil

@@ -202,7 +202,7 @@ early-bird"). The attendance field must be a plain integer count of attendees \
 (digits only, no commas or words) or "" if the notes give no figure; \
 attendance_year is the four-digit year that figure describes (or ""); \
 attendance_source is the URL the figure came from (or ""). The remote_option \
-field must be "in-person", "virtual", "hybrid", "unknown", or "". The formats \
+field must be "in-person", "virtual", "hybrid", or "" if unknown. The formats \
 field lists the submission/presentation formats the conference offers -- any of \
 "abstract", "paper", "poster", "oral" -- comma-separated, or "" if the notes do \
 not say; use "paper" only for a genuine full-paper / manuscript venue, not for an \

@@ -669,3 +669,65 @@ def test_fields_text_flags_columns_hidden_on_website(capsys):
     # A field with its own column carries no note.
     j = lines.index("  location")
     assert lines[j + 2] == ""
+
+
+def _add(url, *extra):
+    return main(["--db", url, "add", "--conference-name", "Value Check Meeting",
+                 "--subcategory", "radiology", *extra])
+
+
+def test_add_rejects_malformed_url(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    assert _add(url, "--url", "notaurl") == 1
+    assert _add(url, "--attendance-source", "ftp://example.org") == 1
+    err = capsys.readouterr().err
+    assert "url 'notaurl' is not an http(s) URL" in err
+    assert "Nothing was written." in err
+    assert query_conferences(db_url=url) == []
+    assert _add(url, "--url", "www.example .org") == 1
+    assert _add(url, "--url", "https://www.example.org/meeting") == 0
+    # A bare domain is accepted (the table adds the scheme when linking).
+    code = main(["--db", url, "add", "--conference-name", "Bare Domain Meeting",
+                 "--subcategory", "radiology", "--url", "example.org/meeting"])
+    assert code == 0
+
+
+def test_add_rejects_end_date_before_start(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    assert _add(url, "--conference-dates", "2026-05-10", "2026-05-01") == 1
+    assert _add(url, "--prior-conference-dates", "2025-05-10", "2025-05-01") == 1
+    assert "ends (2026-05-01) before it starts (2026-05-10)" in capsys.readouterr().err
+    assert query_conferences(db_url=url) == []
+    assert _add(url, "--conference-dates", "2026-05-01", "2026-05-01") == 0
+
+
+def test_update_checks_date_order_against_stored_dates(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    assert _add(url, "--conference-dates", "2026-05-01", "2026-05-05") == 0
+    code = main(["--db", url, "add", "--update", "--conference-name", "Value Check Meeting",
+                 "--conference-dates", "2026-05-09"])
+    assert code == 1
+    assert "before it starts" in capsys.readouterr().err
+    stored = query_conferences(db_url=url)[0]
+    assert stored.upcoming_start_date == date(2026, 5, 1)
+
+
+def test_add_rejects_out_of_range_numbers(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    assert _add(url, "--attendance", "-5") == 1
+    assert _add(url, "--attendance", "0") == 1
+    assert _add(url, "--attendance-year", "3") == 1
+    assert _add(url, "--attendance-year", str(date.today().year + 1)) == 1
+    err = capsys.readouterr().err
+    assert "attendance -5 must be at least 1" in err
+    assert "attendance_year 3 must be between 1900" in err
+    assert query_conferences(db_url=url) == []
+    assert _add(url, "--attendance", "450", "--attendance-year", "2025") == 0
+
+
+def test_add_csv_rejects_non_numeric_attendance(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    path = tmp_path / "rows.csv"
+    path.write_text("conference_name,subcategory,attendance\nValue Check Meeting,radiology,lots\n")
+    assert main(["--db", url, "add", "--csv", str(path)]) == 1
+    assert "attendance 'lots' is not a whole number" in capsys.readouterr().err

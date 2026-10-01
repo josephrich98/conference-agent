@@ -83,12 +83,11 @@ def size_for_attendance(attendance: "int | None") -> "ConferenceSize | None":
 
 
 class RemoteOption(str, Enum):
-    """Whether a conference can be attended remotely."""
+    """Whether a conference can be attended remotely (``None`` when not known)."""
 
     IN_PERSON = "in-person"
     VIRTUAL = "virtual"
     HYBRID = "hybrid"
-    UNKNOWN = "unknown"
 
 
 # Subcategories are stored as a single column (a comma-joined string) but modeled
@@ -389,6 +388,14 @@ class Conference(BaseModel):
         validation_alias=AliasChoices("formats", "format"),
         description="Submission/presentation format(s) offered, any of: abstract, paper, poster, oral",
     )
+
+    @field_validator("remote_option", mode="before")
+    @classmethod
+    def _blank_unknown_remote(cls, value):
+        # An unknown option is stored as no value, not as its own category.
+        if isinstance(value, str) and value.strip().lower() in ("", "unknown"):
+            return None
+        return value
 
     @field_validator("formats", mode="before")
     @classmethod

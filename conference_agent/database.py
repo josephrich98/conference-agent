@@ -442,6 +442,23 @@ def _migrate_registration_date_to_text(engine: Engine) -> None:
                     )
 
 
+def _migrate_unknown_remote_to_null(engine: Engine) -> None:
+    """Clear the retired ``remote_option`` value ``"unknown"`` to NULL in place.
+
+    An unknown attendance option is now stored as no value rather than as its own
+    enum member. Idempotent: a no-op once no row carries the old value.
+    """
+    if not sa_inspect(engine).has_table(ConferenceRow.__tablename__):
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f"UPDATE {ConferenceRow.__tablename__} SET remote_option = NULL "
+                "WHERE remote_option = 'unknown'"
+            )
+        )
+
+
 def _migrate_ids_to_names(engine: Engine) -> int:
     """Re-key every row whose id is not the slug of its name; returns the count.
 
@@ -522,6 +539,7 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
             <= {c["name"] for c in inspector.get_columns(ConferenceRow.__tablename__)}
         )
         _ensure_columns(engine)
+        _migrate_unknown_remote_to_null(engine)
         # Move rows keyed by the legacy acronym id onto their name id.
         _migrate_ids_to_names(engine)
         # Cache before any backfill helper, which calls get_engine reentrantly.

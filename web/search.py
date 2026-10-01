@@ -208,7 +208,7 @@ _FIELD_TYPES = {
     "location": "string",
     "size": "cat: " + ", ".join(t.value for t in ConferenceSize),
     "attendance": "int: count, e.g. 5000 or 5k",
-    "remote": "cat: " + ", ".join(o.value for o in RemoteOption if o is not RemoteOption.UNKNOWN),
+    "remote": "cat: " + ", ".join(o.value for o in RemoteOption),
     "cost": "string",
     "registration": "string",
     "deadline_time": "string",
@@ -643,7 +643,7 @@ def _compile_term(term: Term):
     # Bare keyword: substring across all text columns.
     if term.field is None:
         pattern = f"%{term.value}%"
-        return or_(*[getattr(ConferenceRow, c).ilike(pattern) for c in _BARE_SEARCH_COLUMNS])
+        return or_(*[_ilike(c, pattern) for c in _BARE_SEARCH_COLUMNS])
 
     # Scoped date field.
     if term.field in _DATE_FIELDS:
@@ -665,7 +665,14 @@ def _compile_term(term: Term):
     # Scoped text field (one or more underlying columns).
     pattern = f"%{term.value}%"
     cols = _TEXT_FIELDS[term.field]
-    return or_(*[getattr(ConferenceRow, c).ilike(pattern) for c in cols])
+    return or_(*[_ilike(c, pattern) for c in cols])
+
+
+def _ilike(column: str, pattern: str):
+    # Coalesce so a NULL cell is a plain non-match: a bare ``NULL LIKE ...`` is
+    # NULL, which ``NOT`` would keep NULL and silently drop the row (the browser
+    # search treats a blank cell as not matching, so ``NOT remote:virtual`` keeps it).
+    return func.coalesce(getattr(ConferenceRow, column), "").ilike(pattern)
 
 
 def _compile(node: Node):

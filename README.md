@@ -8,7 +8,9 @@ Conference database for artificial intelligence, medicine, and genomics. Keep up
 ## Install
 
 ```bash
-pip install git+https://github.com/josephrich98/conference-agent
+git clone https://github.com/josephrich98/conference-agent
+cd conference-agent
+pip install .
 ```
 
 The base install is enough to query the database and add or delete entries
@@ -16,19 +18,16 @@ The base install is enough to query the database and add or delete entries
 extra:
 
 ```bash
-pip install "conference_agent[discover] @ git+https://github.com/josephrich98/conference-agent"
+pip install .[discover]
 ```
-
-It adds the Anthropic SDK (used by the `api` backend) and the page-fetching
-helpers. The default `claude-code` backend also requires the `claude` CLI.
 
 ## Usage
 
 ```bash
 conference-agent lookup    # query the database
-conference-agent discover  # run the discovery agent to update conference information
 conference-agent add       # add/update a conference manually
 conference-agent delete    # delete a conference manually
+conference-agent discover  # run the discovery agent to update conference information
 ```
 
 Each entry is indexed by the conference_name column.
@@ -60,54 +59,6 @@ View all unique values of a column:
 conference-agent lookup --columns conference_name
 ```
 
-
-### conference-agent discover
-
-Update the database with Claude code.
-
-For a single conference:
-
-```bash
-conference-agent discover \
-  --conference-name "Radiological Society of North America Annual Meeting"
-```
-
-For all conferences in a category:
-
-```bash
-conference-agent discover \
-  --category "artificial intelligence"
-```
-
-For all conferences in multiple categories:
-
-```bash
-conference-agent discover \
-  --category "artificial intelligence" \
-  --category mathematics
-```
-
-For all conferences in a subcategory:
-
-```bash
-conference-agent discover \
-  --subcategory radiology
-```
-
-For all conferences in a size:
-
-```bash
-conference-agent discover \
-  --size massive
-```
-
-Using Claude API rather than Claude code subscription:
-
-```bash
-conference-agent discover \
-  --conference-name "Radiological Society of North America Annual Meeting" \
-  --backend api
-```
 
 ### conference-agent add
 
@@ -161,27 +112,66 @@ conference-agent add --delete \
   ...
 ```
 
-### conference-agent lookup
+### conference-agent discover
 
-List the unique values of one or more columns (alphabetical by default). With
-no arguments, it prints every value of every column across all conferences:
+Update the database with Claude code.
 
-```bash
-conference-agent lookup                         # all values of every column
-conference-agent lookup --columns subcategory   # all values in one column
-```
-
-Add `--query` to restrict the values to matching conferences. It uses the same
-search as the website: the boolean query first, then a forgiving keyword match
-when that finds nothing.
+For a single conference:
 
 ```bash
-conference-agent lookup --columns acronym conference_month \
-  --query "subcategory:radiology AND size:massive"
+conference-agent discover \
+  --conference-name "Radiological Society of North America Annual Meeting"
 ```
 
-`--sort` takes `alphabetical` (default), `reversealphabetical`, `increasing`, or
-`decreasing` (the last two order numbers, dates, and size by value).
+For all conferences in a category:
+
+```bash
+conference-agent discover \
+  --category "artificial intelligence"
+```
+
+For all conferences in multiple categories:
+
+```bash
+conference-agent discover \
+  --category "artificial intelligence" \
+  --category mathematics
+```
+
+For all conferences in a subcategory:
+
+```bash
+conference-agent discover \
+  --subcategory radiology
+```
+
+For all conferences in a size:
+
+```bash
+conference-agent discover \
+  --size massive
+```
+
+Using Claude API rather than Claude code subscription:
+
+```bash
+conference-agent discover \
+  --conference-name "Radiological Society of North America Annual Meeting" \
+  --backend api
+```
+
+## Local to website database conversion
+
+- *underscores replaced with spaces, and capitalization applied as appropriate*
+- acronym + name + url --> conference ([ACRONYM](URL) — NAME)
+- upcoming_* + prior_* --> one column each, showing the upcoming value and falling back to the prior one
+- upcoming_start_date + upcoming_end_date --> conference dates (START – END)
+- abstract_month, late_abstract_month, paper_month, conference_month (all derived from date columns) --> month names (1 --> January)
+- attendance + attendance_year --> attendance (45,000 (2025))
+- abstract_time/timezone + late_abstract_time/timezone + paper_time/timezone --> deadline time (11:59 PM ET; 12- or 24-hour)
+- added calendar (📅 .ics download) and email (✉️ update subscription) columns
+- hidden: id, notes, attendance_source, last_checked, watch_* (internal bookkeeping)
+- retired series (no future edition, last one over 24 months old) are left out of the website
 
 ## Scheduled updates
 
@@ -223,21 +213,3 @@ series in the 6–24-month window), `weekly` (flagship fields), `monthly` (the
 rest), and `all`. The AWS SAM stack can schedule those via EventBridge Scheduler
 (`EnableScheduledRefresh=true`; see `DEPLOY_AWS.md`), but that stack is torn
 down.
-
-## Data access (for agents and scripts)
-
-The live site is static, so the data is available as one credential-free JSON
-file that any agent or script can fetch with an HTTP GET:
-
-```bash
-curl https://conferenceagent.vercel.app/data/conferences.json
-```
-
-The file holds `generated` (the snapshot date), `columns` (the table's column
-order), `fields` (the queryable fields, aliases, and controlled vocabularies),
-and `conferences` (one object per conference series). Filter it client-side.
-
-For server-side boolean search, CSV export, and a subscribable `.ics` feed, run
-the FastAPI backend locally with `uvicorn web.app:app` (requires
-`pip install -e ".[web]"`). Its endpoints are documented in
-[`DEPLOY.md`](DEPLOY.md#rest-api-fastapi-backend).

@@ -78,7 +78,7 @@ _ROWS = [
     dict(
         id="TINYCONF", acronym="TINY", name="Tiny Workshop on Things",
         subcategory="statistics", category="stats", size="small", attendance=40,
-        remote_option="unknown", cost=None, format=None,
+        remote_option=None, cost=None, format=None,
     ),
     dict(
         id="JSM", acronym="JSM", name="Joint Statistical Meetings",

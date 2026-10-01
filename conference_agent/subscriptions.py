@@ -90,7 +90,7 @@ def watched_snapshot(conf: Conference) -> Dict[str, Optional[str]]:
             value = value.value
         elif hasattr(value, "isoformat"):
             value = value.isoformat()
-        out[attr] = value if value not in ("", "unknown") else None
+        out[attr] = value if value != "" else None
     return out
 
 

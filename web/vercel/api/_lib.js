@@ -112,7 +112,12 @@ export async function allSubscriptions() {
 
 // Record one confirmation send for the address; false when over the daily cap.
 export async function allowConfirmation(email) {
-  const path = `throttle/${b64(email)}`;
+  return allowAction(`throttle/${b64(email)}`, MAX_CONFIRMATIONS_PER_DAY);
+}
+
+// Record one use of a rate-limited action under `path`; false when it has
+// already been used `maxPerDay` times in the last 24 hours.
+export async function allowAction(path, maxPerDay) {
   const now = Date.now();
   let sent = [];
   try {
@@ -120,7 +125,7 @@ export async function allowConfirmation(email) {
     if (res && res.statusCode === 200) sent = JSON.parse(await new Response(res.stream).text());
   } catch (e) { /* missing or unreadable: start fresh */ }
   sent = sent.filter((t) => now - t < 24 * 3600 * 1000);
-  if (sent.length >= MAX_CONFIRMATIONS_PER_DAY) return false;
+  if (sent.length >= maxPerDay) return false;
   sent.push(now);
   await put(path, JSON.stringify(sent), {
     access: "private",
@@ -144,6 +149,17 @@ export async function conferenceById(origin, id) {
     catalog = new Map((payload.conferences || []).map((c) => [c.id, c]));
   }
   return catalog.get(id) || null;
+}
+
+// A conference name's id: mirrors `models.name_id` (lowercase ASCII slug), so
+// case, accents, punctuation, and spacing do not distinguish two names.
+export function nameId(name) {
+  return String(name || "")
+    .normalize("NFKD")
+    .replace(/[^\x00-\x7f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 // --- Browser verification cookie -------------------------------------------

@@ -125,7 +125,14 @@ for the design.
 - `web/vercel/` — the Vercel Functions behind the table's ✉️ subscribe button
   (`api/subscribe.js`, `confirm.js`, `unsubscribe.js`, `subscriptions.js`,
   shared `_lib.js`) and their `package.json`; `build_static.py` copies them into
-  `dist/`
+  `dist/`. `api/propose.js` backs the "Add a conference" form
+  (`web/static/add.html`, served at `/add/`, linked from the header and below
+  the table): the form is generated from `data/add_fields.json`
+  (`cli.add_field_schema`, the same vocabulary as `add --fields json`), and a
+  submission is validated, committed as `submissions/<id>-<date>-<rand>.json`
+  (an `add --json` record) on a new branch, and opened as a pull request;
+  nothing reaches the table until a maintainer merges it and runs
+  `conference-agent add --json` on the file
 - `infra/` — AWS SAM deployment (`template.yaml`: CloudFront over an
   IAM-protected Lambda Function URL + RDS PostgreSQL in a VPC, with optional
   `DomainName`/`AcmCertificateArn` for a custom domain; `samconfig.toml`); built
@@ -234,7 +241,7 @@ dependencies there rather than installing ad hoc.
   The zone table and the display grouping exist in both Python and JS;
   `tests/test_deadline_time.py` pins them together via Node.
 - **Controlled vocabularies.** `ConferenceSize` (`massive`/`large`/`medium`/`small`) and
-  `RemoteOption` (`in-person`/`virtual`/`hybrid`/`unknown`) are enums, not free
+  `RemoteOption` (`in-person`/`virtual`/`hybrid`; an unknown option is NULL) are enums, not free
   text, so the table and queries can filter/color consistently.
 - **Two-level classification: derived category over free-form subcategory.** The
   granular `subcategory` is the one free-form categorical column (the specific
@@ -313,7 +320,13 @@ dependencies there rather than installing ad hoc.
   pre-checked. The chosen values are
   browser-only state held apart from the search box and ANDed with it, so they
   survive an AI search and the boolean grammar (which has no exact-match
-  operator for text) stays unchanged.
+  operator for text) stays unchanged. A "Browse by field" bar above the search box (one
+  card per category with rows, then the chosen category's subcategories as
+  chips, grouped via the snapshot's `subcategory_categories` map) sets those
+  same category / subcategory filters, and the page mirrors them and the
+  search text in the URL (`/?category=<slug>`, `/?subcategory=machine-learning`,
+  `&q=...`; back/forward step through selections), so a field's view is a
+  shareable link. The `/field/<tag>/` pages link to these URLs.
 - **Optional natural-language search over a local LLM.** `web/nl_query.py`
   translates a plain-English request into the boolean query language above using
   a free, local Ollama model (no API key, no external network call). The system
@@ -433,6 +446,12 @@ dependencies there rather than installing ad hoc.
   `SUBSCRIBE_SECRET` (same value as the local secrets file), `SMTP_USER`, and
   `SMTP_PASSWORD` (optionally `SMTP_HOST` / `SMTP_PORT`) in its Production
   environment.
+- **Add-a-conference setup (Vercel).** `api/propose` needs `GITHUB_TOKEN` (a
+  fine-grained token on the repository with Contents and Pull requests
+  read/write) in the Production environment; `GITHUB_REPO` / `GITHUB_BASE`
+  override the default `josephrich98/conference-agent` / `main`. It uses the
+  same Blob store to rate-limit submissions (10 per client address and 100 in
+  total per day).
 
 ## Conventions
 
