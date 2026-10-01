@@ -267,7 +267,7 @@ def field_page(tag: str, rows: list[dict], generated: str) -> tuple[str, str]:
             f'{" - " + _e("; ".join(bits)) if bits else ""}</span></li>'
         )
     body = (
-        f"<h1>{_e(tag.title())} conference deadlines and dates</h1>"
+        f"<h1>{_e(tag.title())} Conference Agent Database</h1>"
         f"<p>{len(rows)} {_e(tag)} conference series with abstract and paper deadlines, "
         "conference dates, registration, and cost.</p>"
         f"<ul>{''.join(items)}</ul>"
@@ -277,7 +277,7 @@ def field_page(tag: str, rows: list[dict], generated: str) -> tuple[str, str]:
         "add deadlines to your calendar, or get email updates.</p>"
         f'<p class="muted">Data last updated {_e(generated)}.</p>'
     )
-    title = f"{tag.title()} conference deadlines and dates | {SITE_NAME}"
+    title = f"{tag.title()} Conference Agent Database | {SITE_NAME}"
     desc = f"Abstract deadlines, paper deadlines, dates, and registration for {len(rows)} {tag} conferences."
     return path, _page(title, desc, path, body)
 

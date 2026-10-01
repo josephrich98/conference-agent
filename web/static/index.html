@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Conference Agent: conference deadlines and dates for AI, medicine, and genomics</title>
+  <title>Conference Agent: Conference Agent Database for AI, medicine, and genomics</title>
   <meta name="description" content="Searchable database of academic conference abstract deadlines, paper deadlines, dates, registration, and cost for artificial intelligence, medicine, and genomics. Add deadlines to your calendar or get email updates.">
   <link rel="canonical" href="https://conferenceagent.vercel.app/">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Conference Agent: conference deadlines and dates">
+  <meta property="og:title" content="Conference Agent: Conference Agent Database">
   <meta property="og:description" content="Conference database for artificial intelligence, medicine, and genomics, with calendar events and email reminders.">
   <meta property="og:url" content="https://conferenceagent.vercel.app/">
   <style>
@@ -1351,7 +1351,7 @@
       const cats = [...(filters.category || [])];
       const named = (subs.length ? subs : cats).filter((v) => v !== BLANK);
       document.title = named.length
-        ? `${named.map(fieldLabel).join(", ")} conference deadlines and dates | Conference Agent`
+        ? `${named.map(fieldLabel).join(", ")} Conference Agent Database | Conference Agent`
         : BASE_TITLE;
     }
 

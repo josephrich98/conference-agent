@@ -3,7 +3,16 @@
 Website: https://conferenceagent.vercel.app
 Database: data/conferences.db
 
-Conference database for artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. 
+Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. 
+
+Features:
+- Keep up to date with conference news such as venue announcements, submission deadline posting, and submission deadline extension
+- Organize conferences by category and subcategory, size, submission deadlines, and more
+- Search with keywords, boolean logic, or AI
+- Sort conferences by those with the nearest submission deadlines, color-coded by timeframe
+- See deadline times in your current timezone
+- View conferences that have a history of extending deadlines
+- Add new conferences or edit existing conference information with a form or command-line
 
 ## Install
 
@@ -168,6 +177,7 @@ conference-agent discover \
 - abstract_month, late_abstract_month, paper_month, conference_month (all derived from date columns) --> month names (1 --> January)
 - attendance + attendance_year --> attendance (45,000 (2025))
 - abstract_time/timezone + late_abstract_time/timezone + paper_time/timezone --> deadline time (11:59 PM ET; 12- or 24-hour)
+- abstract_deadline_extension + late_abstract_deadline_extension + paper_deadline_extension --> no column of their own; embedded as a ⏩ button after the matching deadline date, listing the past extensions (original → extended) on hover, tap, or click
 - added calendar (📅: subscribe to the conference's feed, or download a one-time .ics) and email (✉️: update emails, plus a reminder one week before each deadline) columns
 - subscribable calendar feeds: `/c/<id>/calendar.ics` per conference, `/field/<tag>/calendar.ics` per field, and `/calendar.ics` for everything
 - hidden: id, notes, attendance_source, last_checked, watch_* (internal bookkeeping)
