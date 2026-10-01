@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from conference_agent.database import Base, ConferenceRow, get_engine
 from web.app import _row_to_dict
-from web.search import build_filter
+from web.search import _parse_date_bounds, _parse_month, build_filter
 
 _NODE = shutil.which("node")
 _RUNNER = Path(__file__).parent / "js" / "run_search.js"
@@ -177,12 +177,31 @@ _QUERIES = [
     "abstract_month:<=February",
     "abstract_month>=4",
     "paper_month:may",
+    # today / now: the current date (date fields) or month (month fields)
+    "abstract_due:>=today",
+    "conference_dates:<now",
+    "late_abstract_due:>=TODAY",
+    "conference_month:>=now",
+    "paper_month:Today",
     "conference:RSNA",
     "conference:neurips",
     "name:oncology",  # alias for conference
     "deadline:<2026",  # alias for abstract_due
     "date:2026",       # alias for conference_dates
     "(category:medicine OR category:stats) AND NOT remote:virtual",
+    "size>=large",
+    "size:>large",
+    "size<=medium",
+    "size=medium",
+    "size:<medium",
+    "size>=LARGE AND remote:hybrid",
+    "attendance:*",
+    "NOT attendance:*",
+    "attendance>=5000",
+    "attendance:<1,000",
+    "attendance>2.5k",
+    "attendance=600",
+    "attendance>=1k AND attendance<=10k",
 ]
 
 
@@ -233,3 +252,39 @@ def test_browser_search_matches_server(tmp_path):
         if js != py:
             mismatches.append(f"  {query!r}: js={js} python={py}")
     assert not mismatches, "browser/server query mismatch:\n" + "\n".join(mismatches)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("size>=large", ["ASCO", "ISMBX", "JSM", "MICCAI", "NEURIPS", "RSNA"]),
+        ("size:<medium", ["TINYCONF"]),
+        ("size=medium", ["CSHL-BIODATA", "ESGAR", "SPR"]),
+        ("attendance>=5000", ["ASCO", "JSM", "NEURIPS", "RSNA"]),
+        ("attendance:<1,000", ["CSHL-BIODATA", "ESGAR", "SPR", "TINYCONF"]),
+        ("attendance>2.5k", ["ASCO", "JSM", "NEURIPS", "RSNA"]),
+        ("attendance=2500", ["MICCAI"]),
+    ],
+)
+def test_size_rank_and_attendance_queries(tmp_path, query, expected):
+    # Python-only (runs without node): pins the semantics the parity test
+    # compares, i.e. sizes compare by rank and attendance compares numerically.
+    engine = get_engine(_make_db(tmp_path))
+    with Session(engine) as session:
+        stmt = select(ConferenceRow.id).where(build_filter(query))
+        assert sorted(session.scalars(stmt)) == expected
+
+
+@pytest.mark.parametrize("query", ["size>=huge", "attendance>lots", "attendance>1.5"])
+def test_invalid_size_rank_and_attendance_values_raise(query):
+    from web.search import QueryError
+
+    with pytest.raises(QueryError):
+        build_filter(query)
+
+
+def test_today_and_now_mean_the_current_date_and_month():
+    today = date.today()
+    for word in ("today", "now", "Today", " NOW "):
+        assert _parse_date_bounds(word) == (today, today)
+        assert _parse_month(word) == today.month

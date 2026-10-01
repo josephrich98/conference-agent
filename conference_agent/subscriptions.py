@@ -29,12 +29,14 @@ import hmac
 import json
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import date
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode
 
 from conference_agent.calendar_sync import conferences_to_ics
+from conference_agent.database import NEW_EDITION_GAP_DAYS
 from conference_agent.models import Conference
 
 # (attribute, label) pairs whose change triggers an update email. Prior-edition
@@ -56,6 +58,8 @@ WATCHED_FIELDS: Tuple[Tuple[str, str], ...] = (
 )
 
 Change = Tuple[str, Optional[str], Optional[str]]  # (label, old, new)
+
+_ATTR_FOR_LABEL = {label: attr for attr, label in WATCHED_FIELDS}
 
 
 def sign(secret: str, *parts: str) -> str:
@@ -124,6 +128,30 @@ def fetch_subscriptions(site_url: str, secret: str, timeout: float = 30) -> Dict
     return by_id
 
 
+def new_edition_year(changes: List[Change]) -> Optional[int]:
+    """The new edition's year when *changes* record an edition rollover, else ``None``.
+
+    A rollover is a conference start that moves forward by more than
+    ``database.NEW_EDITION_GAP_DAYS`` -- the same rule ``_roll_editions`` uses to
+    shift the stored upcoming edition into the prior slots.
+    """
+    for label, old, new in changes:
+        if _ATTR_FOR_LABEL.get(label) == "upcoming_start_date" and old and new:
+            old_d, new_d = date.fromisoformat(old), date.fromisoformat(new)
+            if (new_d - old_d).days > NEW_EDITION_GAP_DAYS:
+                return new_d.year
+    return None
+
+
+def _describe_change(change: Change, rollover: bool) -> str:
+    label, old, new = change
+    if old is None:
+        return f"- {label}: {new} (newly announced)"
+    if new is None and rollover and _ATTR_FOR_LABEL[label].startswith("upcoming_"):
+        return f"- {label}: not yet announced (previous edition: {old})"
+    return f"- {label}: {old or '—'} → {new or '—'}"
+
+
 def build_update_email(
     conf: Conference,
     changes: List[Change],
@@ -132,12 +160,30 @@ def build_update_email(
     site_url: str,
     secret: str,
 ) -> EmailMessage:
-    """The update email for one subscriber: changes, the new schedule, the .ics."""
+    """The update email for one subscriber: changes, the new schedule, the .ics.
+
+    An edition rollover (see :func:`new_edition_year`) is announced as such, and
+    the previous edition's dates that the new edition has not published yet are
+    reported as "not yet announced" rather than as a change to a blank value.
+    """
     label = conf.acronym or conf.name
     one = unsubscribe_url(site_url, secret, to_address, conf.id)
     everything = unsubscribe_url(site_url, secret, to_address, "*")
-    lines = [f"{conf.name} ({label}) was updated on Conference Agent.", "", "What changed:"]
-    lines += [f"- {lbl}: {old or '—'} → {new or '—'}" for lbl, old, new in changes]
+    year = new_edition_year(changes)
+    if year:
+        subject = f"{label} {year} dates announced"
+        intro = f"The {year} edition of {conf.name} ({label}) has been announced on Conference Agent."
+    else:
+        subject = f"{label} updated: " + ", ".join(lbl.lower() for lbl, _, _ in changes)
+        intro = f"{conf.name} ({label}) was updated on Conference Agent."
+    lines = [intro, "", "What changed:"]
+    lines += [_describe_change(c, rollover=bool(year)) for c in changes]
+    if year and any(new is None and _ATTR_FOR_LABEL[lbl].startswith("upcoming_") for lbl, _, new in changes):
+        lines += [
+            "",
+            f"Some {year} details have not been published yet. You will get another",
+            "email when they are.",
+        ]
     lines += ["", "Current schedule:"]
     now = watched_snapshot(conf)
     lines += [f"- {lbl}: {now[attr]}" for attr, lbl in WATCHED_FIELDS if now[attr]]
@@ -153,7 +199,7 @@ def build_update_email(
     ]
 
     msg = EmailMessage()
-    msg["Subject"] = f"{label} updated: " + ", ".join(lbl.lower() for lbl, _, _ in changes)
+    msg["Subject"] = subject
     msg["From"] = f"Conference Agent <{from_address}>"
     msg["To"] = to_address
     msg["List-Unsubscribe"] = f"<{one}>"

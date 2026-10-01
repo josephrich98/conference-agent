@@ -135,6 +135,118 @@ function deadlineNote(row, kind) {
   return t ? `\nDeadline time: ${t}` : "";
 }
 
+// Time zones a free-text deadline time may name, tried in order. `offset` is a
+// fixed UTC offset in minutes; `zone` is an IANA zone. Standard/daylight
+// abbreviations for regions that observe DST (EST/EDT, CET/CEST, ...) resolve
+// to the region's wall clock rather than a fixed offset: organizers often keep
+// writing "EST" or "CET" through the summer while meaning local time.
+const DEADLINE_ZONES = [
+  { re: /\bAoE\b|anywhere on earth/i, offset: -12 * 60 },
+  { re: /\b(?:UTC|GMT)\s*([+\-−])\s*(\d{1,2})(?::?(\d{2}))?\b/i, signed: true },
+  { re: /\b(?:UTC|GMT|Z)\b/, offset: 0 },
+  { re: /\bE[SD]?T\b|\beastern\b/i, zone: "America/New_York" },
+  { re: /\bC[SD]?T\b|\bcentral(?! europe)\b/i, zone: "America/Chicago" },
+  { re: /\bM[SD]?T\b|\bmountain\b/i, zone: "America/Denver" },
+  { re: /\bP[SD]?T\b|\bpacific\b/i, zone: "America/Los_Angeles" },
+  { re: /\bAK[SD]?T\b|\balaska\b/i, zone: "America/Anchorage" },
+  { re: /\bHST\b|\bhawaii\b/i, zone: "Pacific/Honolulu" },
+  { re: /\bCES?T\b|\bcentral europe/i, zone: "Europe/Berlin" },
+  { re: /\bWES?T\b/, zone: "Europe/Lisbon" },
+  { re: /\bEES?T\b/, zone: "Europe/Athens" },
+  { re: /\bBST\b|\bUK time\b|\bLondon\b/i, zone: "Europe/London" },
+  { re: /\bIST\b/, zone: "Asia/Kolkata" },
+  { re: /\bSGT\b/, zone: "Asia/Singapore" },
+  { re: /\bJST\b/, zone: "Asia/Tokyo" },
+  { re: /\bKST\b/, zone: "Asia/Seoul" },
+  { re: /\bAE[SD]T\b/, zone: "Australia/Sydney" },
+  { re: /\bBRT\b/, zone: "America/Sao_Paulo" },
+];
+
+// UTC offset (minutes) of an IANA zone at a given instant (ms).
+function zoneOffset(timeZone, ms) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(ms));
+  const p = Object.fromEntries(parts.map((x) => [x.type, Number(x.value)]));
+  return (Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - ms) / 60000;
+}
+
+// Parse a free-text deadline time ("11:59 PM ET", "23:59 AoE", "Noon PT") into
+// {hour, minute, offsetAt(ms)}, or null when it names no time or no zone.
+// Parenthetical asides are ignored unless the zone appears only there
+// ("11:59 PM CDT (UTC-5)", "AoE (12:00 noon UTC the following day)").
+function parseDeadlineTime(text) {
+  const main = text.replace(/\([^)]*\)/g, " ");
+  let zoneSpec = null;
+  for (const source of [main, text]) {
+    for (const z of DEADLINE_ZONES) {
+      const m = source.match(z.re);
+      if (!m) continue;
+      if (z.signed) {
+        const sign = m[1] === "+" ? 1 : -1;
+        zoneSpec = { offset: sign * (Number(m[2]) * 60 + Number(m[3] || 0)) };
+      } else {
+        zoneSpec = z;
+      }
+      break;
+    }
+    if (zoneSpec) break;
+  }
+  if (!zoneSpec) return null;
+
+  let hour = null;
+  let minute = 0;
+  const t = main.match(/\b(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(a\.?m\.?|p\.?m\.?)?(?![\d.])/i);
+  if (t && (t[2] !== undefined || t[3])) {
+    hour = Number(t[1]);
+    minute = Number(t[2] || 0);
+    const ampm = (t[3] || "").toLowerCase().replace(/\./g, "");
+    if (ampm === "pm" && hour < 12) hour += 12;
+    if (ampm === "am" && hour === 12) hour = 0;
+  } else if (/\bnoon\b/i.test(main)) {
+    hour = 12;
+  } else if (/\bmidnight\b|\bend of (?:the )?day\b|\bEOD\b/i.test(main) || /\bAoE\b/i.test(main)) {
+    // A deadline at "midnight" means the end of the stated day; a bare "AoE"
+    // conventionally means 23:59 AoE.
+    hour = 23;
+    minute = 59;
+  }
+  if (hour === null || hour > 23 || minute > 59) return null;
+  const offsetAt = zoneSpec.zone
+    ? (ms) => zoneOffset(zoneSpec.zone, ms)
+    : () => zoneSpec.offset;
+  return { hour, minute, offsetAt };
+}
+
+// The viewer's local equivalent of a deadline time on `dateIso` (YYYY-MM-DD),
+// e.g. "2:59 PM PDT" or "5:00 AM PDT the next day"; null when the text cannot
+// be parsed or the viewer is already in that offset. `timeZone` overrides the
+// viewer's zone (for tests).
+function localDeadlineTime(text, dateIso, timeZone) {
+  if (!text || !dateIso) return null;
+  const parsed = parseDeadlineTime(text);
+  if (!parsed) return null;
+  const [y, mo, d] = dateIso.split("-").map(Number);
+  const wall = Date.UTC(y, mo - 1, d, parsed.hour, parsed.minute);
+  // Wall-clock time in the source zone → instant, re-checked once across a DST edge.
+  let instant = wall - parsed.offsetAt(wall) * 60000;
+  instant = wall - parsed.offsetAt(instant) * 60000;
+
+  const viewerZone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (zoneOffset(viewerZone, instant) === parsed.offsetAt(instant)) return null;
+  const time = new Date(instant).toLocaleTimeString("en-US", {
+    timeZone: viewerZone, hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  });
+  const localDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: viewerZone, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date(instant));
+  const dayDiff = Math.round((Date.parse(localDate) - Date.UTC(y, mo - 1, d)) / 86400000);
+  if (dayDiff === 1) return `${time} the next day`;
+  if (dayDiff === -1) return `${time} the previous day`;
+  return time;
+}
+
 // The upcoming-edition events a row yields (mirrors _edition_events).
 function editionEvents(row) {
   const events = [];
@@ -243,7 +355,7 @@ function downloadIcs(row) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { conferenceToIcs, eventId };
+  module.exports = { conferenceToIcs, eventId, localDeadlineTime };
 } else {
-  window.ConferenceCalendar = { conferenceToIcs, downloadIcs };
+  window.ConferenceCalendar = { conferenceToIcs, downloadIcs, localDeadlineTime };
 }

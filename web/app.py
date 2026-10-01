@@ -17,13 +17,14 @@ import csv
 import io
 import os
 import re
+from datetime import date
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import case, extract, func, select
 from sqlalchemy.orm import Session
 
 from conference_agent.config import DEFAULT_DATABASE_URL
@@ -101,6 +102,10 @@ _SORTABLE = {
     "paper_month",
 }
 
+# Size sorts by magnitude, not alphabetically: ascending is massive -> small.
+# Mirrors ``SIZE_SORT_RANK`` in web/static/search.js.
+_SIZE_SORT_RANK = {"massive": 1, "large": 2, "medium": 3, "small": 4}
+
 # Date sort columns fall back to the prior edition's value, matching what the
 # table actually displays (upcoming ?? prior ?? "—"). Sorting on the bare
 # upcoming_* column alone bucketed every row whose upcoming date is not yet
@@ -113,8 +118,9 @@ _DATE_SORT_FALLBACK = {
     "upcoming_paper_deadline": "prior_paper_deadline",
 }
 
-# The derived-month sorts break ties on the underlying date the month was
-# extracted from (so two conferences in the same month order by who acts first),
+# The derived-month sorts break ties on the day of the month of the underlying
+# date the month was extracted from (so two conferences in the same month order
+# by who acts first, whichever year's edition is shown),
 # rather than on the default alphabetical-name tie-breaker. Each expression
 # mirrors its column_property in ``database.py``.
 _MONTH_SORT_TIEBREAKER = {
@@ -123,6 +129,16 @@ _MONTH_SORT_TIEBREAKER = {
     "paper_month": paper_date_expr,
     "conference_month": conference_date_expr,
 }
+
+
+def _rolling_month(month_col, current: int):
+    """Rank a 1-12 month column so ``current`` sorts first (0) and wraps around.
+
+    The month sorts roll from the current month rather than January, so ascending
+    lists what comes next first (in October: Oct, Nov, ..., Sep). NULL stays NULL.
+    Mirrors ``rollingMonth`` in web/static/search.js.
+    """
+    return (month_col - current + 12) % 12
 
 
 def get_db_url() -> str:
@@ -163,8 +179,16 @@ _MAX_RESULTS = 5000
 
 
 def _run_search(
-    query: str, sort: str, order: str, *, limit: int = _MAX_RESULTS, offset: int = 0
+    query: str,
+    sort: str,
+    order: str,
+    *,
+    limit: int = _MAX_RESULTS,
+    offset: int = 0,
+    month_start: Optional[int] = None,
 ) -> List[ConferenceRow]:
+    """Run a boolean search, sorted. Month sorts begin at ``month_start``
+    (1-12), defaulting to the current month."""
     _ensure_seeded()
     try:
         filt = build_filter(query)
@@ -182,17 +206,28 @@ def _run_search(
     # Sort on the displayed value: the upcoming date, falling back to the prior
     # one. Only rows with neither date are NULL here, so only they sort last.
     sort_col = func.coalesce(primary, getattr(ConferenceRow, fallback)) if fallback else primary
+    if sort == "size":
+        sort_col = case(_SIZE_SORT_RANK, value=ConferenceRow.size)
+    if sort in _MONTH_SORT_TIEBREAKER:
+        sort_col = _rolling_month(primary, month_start or date.today().month)
     descending = order == "desc"
     direction = (lambda c: c.desc()) if descending else (lambda c: c.asc())
 
     # NULLs always last, regardless of direction.
     order_by = [sort_col.is_(None), direction(sort_col)]
-    # Tie-breakers: the derived-month sorts break ties on their underlying date
-    # (following the sort direction); every sort then breaks any remaining ties
+    # Tie-breakers: the derived-month sorts break ties on the day of the month of
+    # their underlying date (following the sort direction), so the order is
+    # seasonal and ignores which year's edition is shown; the size sort breaks ties on
+    # attendance; every sort then breaks any remaining ties
     # alphabetically by acronym (falling back to name) for a stable order.
     tiebreak = _MONTH_SORT_TIEBREAKER.get(sort)
     if tiebreak is not None:
-        order_by.append(direction(tiebreak))
+        order_by.append(direction(extract("day", tiebreak)))
+    if sort == "size":
+        # Within a size bucket, order by the attendance figure the bucket comes
+        # from, following the size direction (ascending size runs largest first).
+        size_tiebreak = (lambda c: c.asc()) if descending else (lambda c: c.desc())
+        order_by += [ConferenceRow.attendance.is_(None), size_tiebreak(ConferenceRow.attendance)]
     if sort != "acronym":
         order_by.append(func.coalesce(ConferenceRow.acronym, ConferenceRow.name).asc())
     stmt = stmt.order_by(*order_by)
@@ -290,8 +325,11 @@ def api_search(
     format: str = Query("json", pattern="^(json|csv)$"),
     limit: int = Query(_MAX_RESULTS, ge=1, le=_MAX_RESULTS),
     offset: int = Query(0, ge=0),
+    month_start: Optional[int] = Query(
+        None, ge=1, le=12, description="Month the month sorts begin at (default: this month)."
+    ),
 ):
-    rows = _run_search(q, sort, order, limit=limit, offset=offset)
+    rows = _run_search(q, sort, order, limit=limit, offset=offset, month_start=month_start)
 
     if format == "csv":
         return _csv_response(rows)

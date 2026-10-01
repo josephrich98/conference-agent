@@ -695,7 +695,7 @@ _EDITION_SUFFIXES = (
     "registration",
 )
 # Two start dates further apart than this belong to different editions.
-_NEW_EDITION_GAP_DAYS = 180
+NEW_EDITION_GAP_DAYS = 180
 
 
 def _roll_editions(row: ConferenceRow, conf: Conference) -> None:
@@ -710,12 +710,12 @@ def _roll_editions(row: ConferenceRow, conf: Conference) -> None:
     stored prior one, clear the stored prior slots.
     """
     old_up, new_up = row.upcoming_start_date, conf.upcoming_start_date
-    if old_up and new_up and (new_up - old_up).days > _NEW_EDITION_GAP_DAYS:
+    if old_up and new_up and (new_up - old_up).days > NEW_EDITION_GAP_DAYS:
         for suffix in _EDITION_SUFFIXES:
             setattr(row, f"prior_{suffix}", getattr(row, f"upcoming_{suffix}"))
             setattr(row, f"upcoming_{suffix}", None)
     old_prior, new_prior = row.prior_start_date, conf.prior_start_date
-    if old_prior and new_prior and abs((new_prior - old_prior).days) > _NEW_EDITION_GAP_DAYS:
+    if old_prior and new_prior and abs((new_prior - old_prior).days) > NEW_EDITION_GAP_DAYS:
         for suffix in _EDITION_SUFFIXES:
             setattr(row, f"prior_{suffix}", None)
 

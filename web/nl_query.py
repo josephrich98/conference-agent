@@ -79,7 +79,7 @@ The query language (mirrors the table's columns):
 values: subcategory:"machine learning".
 - Boolean operators: AND, OR, NOT, with parentheses for grouping. Adjacent terms \
 are implicitly AND-ed.
-- Date fields accept YYYY, YYYY-MM, or YYYY-MM-DD with operators > >= < <= = \
+- Date fields accept YYYY, YYYY-MM, YYYY-MM-DD, or today (the current date) with operators > >= < <= = \
 attached after the colon: abstract_due:>=2026-06, conference_dates:2027.
 - Month fields take 1-12 or a month name: conference_month:november, \
 abstract_month:>=6.
@@ -93,8 +93,10 @@ Guidance:
 learning", genomics, ...). Use `category` only for the broad buckets listed for \
 it (medicine, computer science, artificial intelligence, ...).
 - Map size words to the `size` vocabulary: huge/massive/very large→massive, big/large→large, mid-size→medium, \
-small→small.
-- Map attendance/format/remote words to their controlled vocabularies.
+small→small. "At least large" / "large or bigger" → size>=large (sizes compare by rank: \
+small < medium < large < massive).
+- An explicit attendee count uses attendance: "over 5,000 attendees" → attendance>5000.
+- Map format/remote words to their controlled vocabularies.
 - "deadline" alone means abstract_due. "no/without X" means NOT X:*.
 - A "late", "late-breaking", or "poster-only" deadline means late_abstract_due \
 (or late_abstract_month) -- the second, later abstract deadline some series \

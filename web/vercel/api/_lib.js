@@ -25,7 +25,7 @@ const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const CONFIRM_TTL_SECONDS = 3 * 24 * 3600;
 // Confirmation emails per address per day, so the form cannot be used to flood
 // an inbox.
-const MAX_CONFIRMATIONS_PER_DAY = 3;
+const MAX_CONFIRMATIONS_PER_DAY = 25;
 const VERIFIED_COOKIE = "ca_verified";
 
 export function normalizeEmail(email) {

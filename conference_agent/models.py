@@ -45,7 +45,7 @@ class ConferenceSize(str, Enum):
 # >= MEDIUM is "medium"; fewer is "small"; an unknown attendance yields no size.
 MASSIVE_ATTENDANCE_THRESHOLD = 10_000
 LARGE_ATTENDANCE_THRESHOLD = 1_000
-MEDIUM_ATTENDANCE_THRESHOLD = 100
+MEDIUM_ATTENDANCE_THRESHOLD = 250
 
 
 def size_for_attendance(attendance: "int | None") -> "ConferenceSize | None":

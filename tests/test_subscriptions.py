@@ -104,7 +104,7 @@ def test_update_email_has_changes_ics_and_unsubscribe_links():
     )
     assert msg["Subject"] == "RSNA updated: paper deadline"
     body = msg.get_body(("plain",)).get_content()
-    assert "- Paper deadline: — → 2026-09-01" in body
+    assert "- Paper deadline: 2026-09-01 (newly announced)" in body
     (attachment,) = list(msg.iter_attachments())
     assert attachment.get_filename() == "RSNA.ics"
     assert attachment.get_content_type() == "text/calendar"
@@ -116,3 +116,32 @@ def test_update_email_has_changes_ics_and_unsubscribe_links():
     assert q["sig"] == subs.sign(SECRET, "unsubscribe", "a@x.org", "RSNA")
     assert subs.unsubscribe_url(SITE, SECRET, "a@x.org", "*") in body
     assert msg["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
+
+
+def test_rollover_email_announces_the_new_edition():
+    conf = _conf(
+        upcoming_abstract_deadline=None,
+        upcoming_start_date=date(2027, 11, 28),
+        upcoming_end_date=date(2027, 12, 2),
+    )
+    changes = [
+        ("Abstract deadline", "2026-04-08", None),
+        ("Conference start", "2026-11-29", "2027-11-28"),
+        ("Conference end", "2026-12-03", "2027-12-02"),
+    ]
+    msg = subs.build_update_email(conf, changes, "a@x.org", "bot@example.test", SITE, SECRET)
+    assert msg["Subject"] == "RSNA 2027 dates announced"
+    body = msg.get_body(("plain",)).get_content()
+    assert "The 2027 edition of Radiological Society of North America (RSNA)" in body
+    assert "- Abstract deadline: not yet announced (previous edition: 2026-04-08)" in body
+    assert "- Conference start: 2026-11-29 → 2027-11-28" in body
+    assert "You will get another" in body
+
+
+def test_rescheduled_dates_are_not_a_rollover():
+    changes = [("Conference start", "2026-11-29", "2026-12-06")]
+    assert subs.new_edition_year(changes) is None
+    msg = subs.build_update_email(
+        _conf(upcoming_start_date=date(2026, 12, 6)), changes, "a@x.org", "bot@example.test", SITE, SECRET
+    )
+    assert msg["Subject"] == "RSNA updated: conference start"

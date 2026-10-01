@@ -48,7 +48,7 @@
 The query language (mirrors the table's columns):
 - Scoped match: field:value (case-insensitive substring). Quote multi-word values: subcategory:"machine learning".
 - Boolean operators: AND, OR, NOT, with parentheses for grouping. Adjacent terms are implicitly AND-ed.
-- Date fields accept YYYY, YYYY-MM, or YYYY-MM-DD with operators > >= < <= = attached after the colon: abstract_due:>=2026-06, conference_dates:2027.
+- Date fields accept YYYY, YYYY-MM, YYYY-MM-DD, or today (the current date) with operators > >= < <= = attached after the colon: abstract_due:>=2026-06, conference_dates:2027.
 - Month fields take 1-12 or a month name: conference_month:november, abstract_month:>=6.
 - Presence test: field:* means the field is set; NOT field:* means it is unset.
 
@@ -57,8 +57,9 @@ ${fieldReference(fields)}
 
 Guidance:
 - Use \`subcategory\` for a specific field (radiology, oncology, "machine learning", genomics, ...). Use \`category\` only for the broad buckets listed for it (medicine, computer science, artificial intelligence, ...).
-- Map size words to the \`size\` vocabulary: huge/massive/very large→massive, big/large→large, mid-size→medium, small→small.
-- Map attendance/format/remote words to their controlled vocabularies.
+- Map size words to the \`size\` vocabulary: huge/massive/very large→massive, big/large→large, mid-size→medium, small→small. "At least large" / "large or bigger" → size>=large (sizes compare by rank: small < medium < large < massive).
+- An explicit attendee count uses attendance: "over 5,000 attendees" → attendance>5000.
+- Map format/remote words to their controlled vocabularies.
 - "deadline" alone means abstract_due. "no/without X" means NOT X:*.
 - A "late", "late-breaking", or "poster-only" deadline means late_abstract_due (or late_abstract_month) — the second, later abstract deadline some series publish. A plain deadline request means abstract_due.
 - Time of year WITHOUT a specific year — "in November", "in the fall", "any year", a month range like "September through January" — uses a MONTH field (conference_month / abstract_month / late_abstract_month / paper_month), never a date field. Use a date field (conference_dates / abstract_due / late_abstract_due / paper_due) ONLY when a specific year is named ("in 2027", "after June 2026"). Never invent a year that the request did not state.

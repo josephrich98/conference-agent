@@ -217,7 +217,7 @@ dependencies there rather than installing ad hoc.
   `subcategory` in place on first open by `database._migrate_category_to_subcategory`.
 - **Deterministic, sourced size (not a subjective reputation label).** Size is a
   computed property, never a stored hand-set value: `models.size_for_attendance`
-  buckets the `attendance` integer (≥10,000 → massive, ≥1,000 → large, ≥100 →
+  buckets the `attendance` integer (≥10,000 → massive, ≥1,000 → large, ≥250 →
   medium, else small;
   blank when attendance is unknown — thresholds live in `models.py`). The stored `size` column is only ever written
   by that function, so it can never drift from the figure. Each attendance figure
@@ -280,7 +280,7 @@ dependencies there rather than installing ad hoc.
   prefetch links). Confirming writes `subs/<base64url(email)>/<id>` to a
   **private** Vercel Blob store and sets an HttpOnly `ca_verified` cookie, so
   later subscriptions for that address from the same browser apply without
-  another email. Confirmation emails are capped at 3 per address per day. The
+  another email. Confirmation emails are capped at 25 per address per day. The
   sending half runs locally: after each cron refresh (and redeploy),
   `scripts/notify_subscribers.py` reads the list from the bearer-protected
   `/api/subscriptions`, and for each series whose watched fields

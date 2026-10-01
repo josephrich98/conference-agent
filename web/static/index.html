@@ -169,6 +169,11 @@
     }
     table.results th .arrow { color: var(--accent); font-size: 11px; }
     table.results tr:last-child td { border-bottom: none; }
+    /* Free-text columns that otherwise wrap into tall, narrow cells. */
+    table.results td[data-col="conference"] { min-width: 160px; }
+    table.results td[data-col="location"] { min-width: 150px; }
+    table.results td[data-col="cost"] { min-width: 170px; }
+    table.results td[data-col="registration"] { min-width: 220px; }
     .conf-name { font-weight: 600; }
     .conf-name a { color: var(--accent); text-decoration: none; }
     .conf-name a:hover { text-decoration: underline; }
@@ -200,6 +205,8 @@
     .nobreak { white-space: nowrap; }
     /* Free text that may carry one "kind: time" entry per line. */
     .prelines { white-space: pre-line; }
+    .dl-time + .dl-time { margin-top: 4px; }
+    .dl-local { font-size: 0.9em; }
     .cal-cell { white-space: nowrap; }
     .cal-btn {
       display: inline-block;
@@ -291,6 +298,8 @@
       cursor: pointer;
     }
     #filter-pop label:hover { background: var(--accent-weak); }
+    #filter-pop .fp-opt { margin-top: 6px; color: var(--muted); }
+    #filter-pop .fp-opt[hidden] { display: none; }
     #filter-pop .fp-all {
       margin-top: 6px;
       border-bottom: 1px solid var(--border);
@@ -387,6 +396,7 @@
   <div id="filter-pop" hidden role="dialog" aria-label="Filter by value">
     <div class="fp-head">Show rows where <b id="fp-title"></b> is</div>
     <input id="fp-search" type="text" autocomplete="off" spellcheck="false" placeholder="Search values" aria-label="Search values" />
+    <label class="fp-opt" id="fp-jan-row" hidden title="Month sorts otherwise begin at the current month"><input type="checkbox" id="fp-jan" /><span>Sort starting in January</span></label>
     <label class="fp-all"><input type="checkbox" id="fp-all" /><span id="fp-all-label">Select all</span></label>
     <div id="fp-list"></div>
     <div class="fp-foot">
@@ -436,8 +446,7 @@
       { key: "location", field: "location", label: "Location", sort: "location" },
       { key: "size", field: "size", label: "Size", sort: "size",
         facet: { values: (r) => (r.size ? [r.size] : []), rank: (v) => SIZE_RANK[v] || 9 } },
-      { key: "attendance", label: "Attendance", sort: "attendance",
-        note: "Most recent annual attendance (year); sortable, not searchable" },
+      { key: "attendance", field: "attendance", label: "Attendance", sort: "attendance" },
       // "unknown" renders as a dash, so it is filtered as blank too.
       { key: "remote_option", field: "remote", label: "Remote", sort: "remote_option",
         facet: { values: (r) => (r.remote_option && r.remote_option !== "unknown" ? [r.remote_option] : []) } },
@@ -534,6 +543,13 @@
 
     const NOW = new Date();
     const TODAY = ymd(NOW);
+
+    // Month sorts begin at this month and wrap around the year unless the viewer
+    // ticks "Start in January" in a month column's ▾ menu (remembered per browser).
+    const MONTH_JAN_KEY = "conference-agent.month-sort-from-january";
+    let monthFromJanuary = false;
+    try { monthFromJanuary = localStorage.getItem(MONTH_JAN_KEY) === "1"; } catch (e) { /* storage blocked */ }
+    const monthStart = () => (monthFromJanuary ? 1 : NOW.getMonth() + 1);
     const THREE_MONTHS_AGO = ymd(new Date(NOW.getFullYear(), NOW.getMonth() - 3, NOW.getDate()));
     const THREE_MONTHS_AHEAD = ymd(new Date(NOW.getFullYear(), NOW.getMonth() + 3, NOW.getDate()));
 
@@ -593,6 +609,31 @@
       return value ? escapeHtml(value) : '<span class="muted">—</span>';
     }
 
+    // The deadline-time text, one entry per line, each followed by the viewer's
+    // local equivalent in parentheses ("11:59 PM ET" → "(8:59 PM PDT)"). A
+    // labeled entry ("paper: 23:59 AoE") is converted on that deadline's date;
+    // an unlabeled one on the first known deadline (DST depends on the date).
+    function deadlineTimeCell(r) {
+      if (!r.deadline_time || !r.deadline_time.trim()) return '<span class="muted">—</span>';
+      const dates = {
+        abstract: r.upcoming_abstract_deadline || r.prior_abstract_deadline,
+        "late abstract": r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline,
+        paper: r.upcoming_paper_deadline || r.prior_paper_deadline,
+      };
+      dates["late-abstract"] = dates["late_abstract"] = dates["late abstract"];
+      const fallback = dates.abstract || dates["late abstract"] || dates.paper
+        || NOW.toISOString().slice(0, 10);
+      return r.deadline_time.split(/[\n;]/).map((e) => e.trim()).filter(Boolean).map((entry) => {
+        const m = entry.match(/^\s*([A-Za-z][A-Za-z _-]*?)\s*:\s*(.+)$/);
+        const label = m && m[1].trim().toLowerCase();
+        const date = (label && dates[label]) || fallback;
+        const local = ConferenceCalendar.localDeadlineTime(m ? m[2] : entry, date);
+        return `<div class="dl-time">${escapeHtml(entry)}`
+          + (local ? `<div class="muted dl-local">(${escapeHtml(local)})</div>` : "")
+          + "</div>";
+      }).join("");
+    }
+
     // Some stored URLs are bare domains (e.g. "rsna.org/annual-meeting"); without
     // a scheme the browser treats the href as a relative path and the link 404s.
     // Default to https:// when no scheme is present.
@@ -611,6 +652,13 @@
           arrow = ` <span class="arrow">${state.order === "asc" ? "▲" : "▼"}</span>`;
         }
         th.innerHTML = col.label + arrow;
+        if (col.sort && col.sort.endsWith("_month")) {
+          // Month sorts roll from the current month (see sortRows in search.js).
+          const m = NOW.toLocaleString("en-US", { month: "short" });
+          th.title = monthFromJanuary
+            ? "Sorts January to December (change in the ▾ menu)"
+            : `Sorts from ${m} (this month) onward, wrapping around the year (change in the ▾ menu)`;
+        }
         if (col.facet) {
           const on = col.key in filters;
           const fb = document.createElement("button");
@@ -709,7 +757,7 @@
           <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline)}</td>
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline)}</td>
           <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
-          <td data-col="deadline_time" class="prelines">${textOrPrior(r.deadline_time, null)}</td>
+          <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month, r.upcoming_start_date || r.prior_start_date)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
@@ -750,7 +798,7 @@
       try {
         const predicate = ConferenceSearch.buildPredicate(q);
         const filtered = predicate ? pool.filter(predicate) : pool;
-        rows = ConferenceSearch.sortRows(filtered, state.sort, state.order);
+        rows = ConferenceSearch.sortRows(filtered, state.sort, state.order, monthStart());
         status = `${plural(rows.length)}.`;
       } catch (e) {
         queryError = e.message; // QueryError, like the API's 400 detail
@@ -762,7 +810,7 @@
         const hits = ConferenceSearch.keywordSearch(q, pool).map((h) => h.row);
         if (hits.length) {
           byRelevance = state.relevance;
-          rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order);
+          rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order, monthStart());
           const why = queryError ? `Not a valid boolean query (${queryError})` : "No exact matches";
           status = `${why} — showing ${plural(rows.length)} matching some of your keywords` +
             (byRelevance ? ", most relevant first" : "") +
@@ -845,6 +893,8 @@
       });
 
       fp = { col, btn, items };
+      $("fp-jan-row").hidden = !(col.sort && col.sort.endsWith("_month"));
+      $("fp-jan").checked = monthFromJanuary;
       $("fp-title").textContent = col.label;
       $("fp-search").value = "";
       $("fp-clear").hidden = !kept;
@@ -900,6 +950,12 @@
       const key = fp.col.key;
       if (on.length === fp.items.length) delete filters[key];
       else filters[key] = new Set(on.map((it) => it.v));
+      // A month column's "Sort starting in January" box: a sort setting shared by
+      // every month column, applied with the filter on OK.
+      if (!$("fp-jan-row").hidden) {
+        monthFromJanuary = $("fp-jan").checked;
+        try { localStorage.setItem(MONTH_JAN_KEY, monthFromJanuary ? "1" : "0"); } catch (e) { /* storage blocked */ }
+      }
       search();
     }
 
@@ -1084,10 +1140,13 @@
         ['subcategory:"machine learning" AND conference_dates:2027', "machine learning conferences held in 2027"],
         ['subcategory:"machine learning" AND abstract_due:>=2026-10-01 AND abstract_due:<2027-01-01', "abstracts due in Q4 2026"],
         ['subcategory:"machine learning" AND paper_due:>=2026-10', "paper deadline in October 2026 or later"],
+        ['abstract_due:>=today', "abstract deadline today or later (today / now = the current date)"],
         ['subcategory:"machine learning" AND conference_month:>=jun AND conference_month:<=aug', "summer meetings, any year"],
       ]],
       ["Chaining with boolean logic", [
         ['subcategory:"machine learning" AND size:massive', "massive machine learning conferences"],
+        ['subcategory:radiology AND size>=large', "radiology conferences that are large or massive (sizes compare by rank)"],
+        ['subcategory:genomics AND attendance>=1000 AND attendance<5k', "genomics conferences with 1,000 to 4,999 attendees"],
         ['subcategory:"machine learning" OR subcategory:"computer vision"', "either field"],
         ['subcategory:"machine learning" NOT remote:in-person', "machine learning with a virtual or hybrid option"],
         ['subcategory:"machine learning" AND category:medicine', "machine learning applied to medicine (e.g. MICCAI)"],
@@ -1099,7 +1158,7 @@
     function renderFields(fields) {
       try {
         // One row per table column, in table order, so the help mirrors the
-        // table; columns with no search field (attendance, the buttons) show "—".
+        // table; columns with no search field (the buttons) show "—".
         const byField = new Map(fields.map((f) => [f.field, f]));
         const listed = new Set();
         const row = (label, field, type, description) =>
@@ -1133,8 +1192,8 @@
           `<table>` +
             `<tr><td><span class="size massive">massive</span></td><td class="muted">10,000+ attendees</td></tr>` +
             `<tr><td><span class="size large">large</span></td><td class="muted">1,000–9,999 attendees</td></tr>` +
-            `<tr><td><span class="size medium">medium</span></td><td class="muted">100–999 attendees</td></tr>` +
-            `<tr><td><span class="size small">small</span></td><td class="muted">under 100 attendees</td></tr>` +
+            `<tr><td><span class="size medium">medium</span></td><td class="muted">250–999 attendees</td></tr>` +
+            `<tr><td><span class="size small">small</span></td><td class="muted">under 250 attendees</td></tr>` +
           `</table>` +
           `<p class="muted" style="margin:10px 0 4px">Date color coding (relative to today; month columns follow the date they derive from):</p>` +
           `<table>` +

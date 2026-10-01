@@ -25,21 +25,36 @@ and parentheses for grouping::
     (virtual OR hybrid) AND size:large
     subcategory:radiology NOT cost:*
 
-Date comparisons on date fields accept ``YYYY``, ``YYYY-MM``, or ``YYYY-MM-DD``
-and the operators ``> >= < <= =`` (``=>`` / ``=<`` are accepted as typos for
+Date comparisons on date fields accept ``YYYY``, ``YYYY-MM``, ``YYYY-MM-DD``, or
+``today`` / ``now`` (the current date), and the operators ``> >= < <= =`` (``=>`` / ``=<`` are accepted as typos for
 ``>=`` / ``<=``). The operator may follow a colon or attach directly to the
 field::
 
     conference_dates:>=2026-06-01   # conference on/after that date
     abstract_due:<2026              # abstract deadline before 2026
     conference_dates:2026           # conference during 2026
+    abstract_due:>=today            # abstract deadline still ahead
     abstract_month>=6               # colon optional before a comparison operator
 
 Month fields (``conference_month``, ``abstract_month``, ``paper_month``) accept
-an integer ``1-12`` or a month name / 3-letter abbreviation (case-insensitive)::
+an integer ``1-12``, a month name / 3-letter abbreviation (case-insensitive), or
+``today`` / ``now`` for the current month::
 
     abstract_month:>=June           # abstract deadline in June or later
     conference_month:nov            # conference in November
+
+Size compares by rank (small < medium < large < massive) when given an
+operator; without one it is the usual substring match::
+
+    size>=large                     # large or massive
+    size:<medium                    # small
+
+``attendance`` is the annual attendance figure; it accepts the same operators
+(defaulting to ``=``), and values may use thousands separators or a ``k``
+suffix::
+
+    attendance>=5000                # at least 5,000 attendees
+    attendance:<1.5k                # under 1,500
 
 Presence test (field is set / not set)::
 
@@ -49,7 +64,7 @@ Presence test (field is set / not set)::
 The query fields mirror the table's column headers exactly: ``conference``,
 ``category`` (one of the ten top-level buckets), ``subcategory`` (the specific
 field), ``format`` (any of abstract / paper / poster / oral),
-``location``, ``size``, ``remote``, ``cost``, ``registration`` (free text — a
+``location``, ``size``, ``attendance``, ``remote``, ``cost``, ``registration`` (free text — a
 substring match), ``deadline_time`` (free text — the time of day and zone
 submissions close, e.g. ``deadline_time:AoE``), ``abstract_due``, ``late_abstract_due`` (the second, later
 abstract deadline some series publish — a poster-only deadline or a
@@ -71,7 +86,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional, Tuple, Union
 
-from sqlalchemy import and_, func, not_, or_
+from sqlalchemy import and_, case, func, not_, or_
 
 from conference_agent.database import ConferenceRow
 from conference_agent.models import CATEGORIES, CONFERENCE_FORMATS, ConferenceSize, RemoteOption
@@ -136,6 +151,15 @@ _INT_FIELDS = {
     "paper_month": "paper_month",
 }
 
+# Public numeric field -> underlying column. Same operators as the month fields;
+# values are counts (``5000``, ``5,000``, or ``5k``).
+_NUMBER_FIELDS = {
+    "attendance": "attendance",
+}
+
+# Size buckets ranked by magnitude, for comparisons such as ``size>=large``.
+_SIZE_RANK = {"small": 1, "medium": 2, "large": 3, "massive": 4}
+
 # Data type descriptor shown next to each field in the help panel. Categorical
 # fields list their controlled vocabulary (derived from the enums so the help
 # stays in sync); everything else is free text or a date.
@@ -146,6 +170,7 @@ _FIELD_TYPES = {
     "format": "cat: " + ", ".join(CONFERENCE_FORMATS),
     "location": "string",
     "size": "cat: " + ", ".join(t.value for t in ConferenceSize),
+    "attendance": "int: count, e.g. 5000 or 5k",
     "remote": "cat: " + ", ".join(o.value for o in RemoteOption if o is not RemoteOption.UNKNOWN),
     "cost": "string",
     "registration": "string",
@@ -211,7 +236,12 @@ _ALIASES = {
 def _resolve_field(name: str) -> str:
     key = name.lower()
     key = _ALIASES.get(key, key)
-    if key not in _TEXT_FIELDS and key not in _DATE_FIELDS and key not in _INT_FIELDS:
+    if (
+        key not in _TEXT_FIELDS
+        and key not in _DATE_FIELDS
+        and key not in _INT_FIELDS
+        and key not in _NUMBER_FIELDS
+    ):
         raise QueryError(f"Unknown field: {name!r}")
     return key
 
@@ -222,7 +252,9 @@ _FIELD_DESCRIPTIONS = {
     "subcategory": "specific field(s) the conference covers; one or more per series",
     "format": "submission types accepted (abstract, paper, poster, oral)",
     "location": "city and country of the upcoming (or most recent) meeting",
-    "size": "bucket from annual attendance: massive 10,000+, large 1,000-9,999, medium 100-999, small under 100",
+    "size": "bucket from annual attendance: massive 10,000+, large 1,000-9,999, medium 250-999, small under 250; "
+    "compare by rank, e.g. size>=large",
+    "attendance": "most recent annual attendance, e.g. attendance>=5000",
     "remote": "whether the meeting is in-person, virtual, or hybrid",
     "cost": "registration fee or fee range",
     "registration": "registration windows, e.g. early bird and regular periods",
@@ -240,7 +272,7 @@ _FIELD_DESCRIPTIONS = {
 
 def field_help() -> dict:
     """Return the queryable fields, data types, and descriptions (for the UI help panel)."""
-    order = list(_TEXT_FIELDS) + list(_DATE_FIELDS) + list(_INT_FIELDS)
+    order = list(_TEXT_FIELDS) + list(_NUMBER_FIELDS) + list(_DATE_FIELDS) + list(_INT_FIELDS)
     return {
         "fields": [
             {"field": f, "type": _FIELD_TYPES[f], "description": _FIELD_DESCRIPTIONS[f]}
@@ -421,8 +453,18 @@ class _Parser:
 # --- Compiler (AST → SQLAlchemy) -------------------------------------------
 
 
+# Values that stand for the current date (date fields) or month (month fields).
+_NOW_WORDS = ("today", "now")
+
+
 def _parse_date_bounds(value: str) -> Tuple[date, date]:
-    """Return (lower, upper) inclusive date bounds for a partial date string."""
+    """Return (lower, upper) inclusive date bounds for a partial date string.
+
+    ``today`` / ``now`` (case-insensitive) mean the current date.
+    """
+    if value.strip().lower() in _NOW_WORDS:
+        today = date.today()
+        return today, today
     parts = value.split("-")
     try:
         if len(parts) == 1:  # YYYY
@@ -493,8 +535,11 @@ _MONTH_NAMES = {
 
 
 def _parse_month(value: str) -> int:
-    """Parse a month field value: an integer 1-12 or a (abbreviated) month name."""
+    """Parse a month field value: an integer 1-12, a (abbreviated) month name, or
+    ``today`` / ``now`` for the current month."""
     token = value.strip().lower()
+    if token in _NOW_WORDS:
+        return date.today().month
     if token.isdigit():
         num = int(token)
         if 1 <= num <= 12:
@@ -507,8 +552,24 @@ def _parse_month(value: str) -> int:
 
 def _compile_int_term(term: Term):
     expr = getattr(ConferenceRow, _INT_FIELDS[term.field])
-    value = _parse_month(term.value)
-    op = term.op or "="
+    return _compare(expr, term.op, _parse_month(term.value))
+
+
+_COUNT_RE = re.compile(r"^(\d+(?:\.\d+)?)(k?)$")
+
+
+def _parse_count(value: str) -> int:
+    """Parse a count: an integer, optionally with thousands separators or a ``k`` suffix."""
+    m = _COUNT_RE.match(value.strip().lower().replace(",", ""))
+    if not m or (not m.group(2) and "." in m.group(1)):
+        raise QueryError(f"Invalid number: {value!r} (e.g. 5000, 5,000, or 5k)")
+    number = float(m.group(1)) * (1000 if m.group(2) else 1)
+    return int(round(number))
+
+
+def _compare(expr, op: Optional[str], value):
+    """``expr <op> value`` (default ``=``), false when ``expr`` is NULL."""
+    op = op or "="
     ops = {
         "=": expr == value,
         ">": expr > value,
@@ -521,6 +582,15 @@ def _compile_int_term(term: Term):
     return and_(expr.isnot(None), ops[op])
 
 
+def _compile_size_rank_term(term: Term):
+    rank = _SIZE_RANK.get(term.value.strip().lower())
+    if rank is None:
+        raise QueryError(
+            f"Invalid size: {term.value!r} (use {', '.join(_SIZE_RANK)})"
+        )
+    return _compare(case(_SIZE_RANK, value=ConferenceRow.size), term.op, rank)
+
+
 def _compile_term(term: Term):
     # Presence test: field:* — the column shows a value.
     if term.presence:
@@ -528,6 +598,8 @@ def _compile_term(term: Term):
             return _date_expr(term.field).isnot(None)
         if term.field in _INT_FIELDS:
             return getattr(ConferenceRow, _INT_FIELDS[term.field]).isnot(None)
+        if term.field in _NUMBER_FIELDS:
+            return getattr(ConferenceRow, _NUMBER_FIELDS[term.field]).isnot(None)
         cols = _TEXT_FIELDS[term.field]
         return or_(*[getattr(ConferenceRow, c).isnot(None) for c in cols])
 
@@ -543,6 +615,15 @@ def _compile_term(term: Term):
     # Scoped integer field (month).
     if term.field in _INT_FIELDS:
         return _compile_int_term(term)
+
+    # Scoped numeric field (attendance).
+    if term.field in _NUMBER_FIELDS:
+        expr = getattr(ConferenceRow, _NUMBER_FIELDS[term.field])
+        return _compare(expr, term.op, _parse_count(term.value))
+
+    # Size with a comparison operator compares by rank (size>=large).
+    if term.field == "size" and term.op:
+        return _compile_size_rank_term(term)
 
     # Scoped text field (one or more underlying columns).
     pattern = f"%{term.value}%"

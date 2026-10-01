@@ -52,6 +52,14 @@ const INT_FIELDS = {
   paper_month: "paper_month",
 };
 
+// Public numeric field -> underlying column (values are counts: 5000, 5,000, 5k).
+const NUMBER_FIELDS = {
+  attendance: "attendance",
+};
+
+// Size buckets ranked by magnitude, for comparisons such as `size>=large`.
+const SIZE_QUERY_RANK = { small: 1, medium: 2, large: 3, massive: 4 };
+
 // Columns scanned by a bare (unscoped) keyword.
 const BARE_SEARCH_COLUMNS = [
   "acronym",
@@ -100,7 +108,10 @@ class QueryError extends Error {}
 function resolveField(name) {
   let key = name.toLowerCase();
   key = ALIASES[key] || key;
-  if (!(key in TEXT_FIELDS) && !(key in DATE_FIELDS) && !(key in INT_FIELDS)) {
+  if (
+    !(key in TEXT_FIELDS) && !(key in DATE_FIELDS) && !(key in INT_FIELDS) &&
+    !(key in NUMBER_FIELDS)
+  ) {
     throw new QueryError(`Unknown field: ${JSON.stringify(name)}`);
   }
   return key;
@@ -261,7 +272,19 @@ function ilike(value, needle) {
 
 // Inclusive [lower, upper] ISO-date bounds for a partial date string. ISO dates
 // compare lexicographically, so bounds are returned as "YYYY-MM-DD" strings.
+// Values that stand for the current date (date fields) or month (month fields).
+const NOW_WORDS = new Set(["today", "now"]);
+
 function parseDateBounds(value) {
+  if (NOW_WORDS.has(value.trim().toLowerCase())) {
+    const d = new Date();
+    const today = [
+      String(d.getFullYear()).padStart(4, "0"),
+      String(d.getMonth() + 1).padStart(2, "0"),
+      String(d.getDate()).padStart(2, "0"),
+    ].join("-");
+    return [today, today];
+  }
   const parts = value.split("-");
   const bad = () => new QueryError(`Invalid date: ${JSON.stringify(value)}`);
   const isNum = (s) => /^\d+$/.test(s);
@@ -319,6 +342,7 @@ const MONTH_NAMES = (() => {
 
 function parseMonth(value) {
   const token = value.trim().toLowerCase();
+  if (NOW_WORDS.has(token)) return new Date().getMonth() + 1;
   if (/^\d+$/.test(token)) {
     const num = parseInt(token, 10);
     if (num >= 1 && num <= 12) return num;
@@ -347,15 +371,14 @@ function compileDateTerm(term) {
   };
 }
 
-function compileIntTerm(term) {
-  const col = INT_FIELDS[term.field];
-  const value = parseMonth(term.value);
-  const op = term.op || "=";
+// `getValue(row) <op> value` (default `=`), false when the row's value is absent.
+function compareTerm(op, value, getValue) {
+  op = op || "=";
   if (!["=", ">", ">=", "<", "<="].includes(op)) {
     throw new QueryError(`Unsupported operator: ${op}`);
   }
   return (row) => {
-    const v = row[col];
+    const v = getValue(row);
     if (!isPresent(v)) return false;
     switch (op) {
       case "=": return v === value;
@@ -367,12 +390,45 @@ function compileIntTerm(term) {
   };
 }
 
+function compileIntTerm(term) {
+  const col = INT_FIELDS[term.field];
+  return compareTerm(term.op, parseMonth(term.value), (row) => row[col]);
+}
+
+/** Parse a count: an integer, optionally with thousands separators or a `k` suffix. */
+function parseCount(value) {
+  const m = /^(\d+(?:\.\d+)?)(k?)$/.exec(value.trim().toLowerCase().replace(/,/g, ""));
+  if (!m || (!m[2] && m[1].includes("."))) {
+    throw new QueryError(`Invalid number: ${JSON.stringify(value)} (e.g. 5000, 5,000, or 5k)`);
+  }
+  return Math.round(parseFloat(m[1]) * (m[2] ? 1000 : 1));
+}
+
+function compileNumberTerm(term) {
+  const col = NUMBER_FIELDS[term.field];
+  return compareTerm(term.op, parseCount(term.value), (row) => row[col]);
+}
+
+function compileSizeRankTerm(term) {
+  const rank = SIZE_QUERY_RANK[term.value.trim().toLowerCase()];
+  if (rank === undefined) {
+    throw new QueryError(
+      `Invalid size: ${JSON.stringify(term.value)} (use ${Object.keys(SIZE_QUERY_RANK).join(", ")})`,
+    );
+  }
+  return compareTerm(term.op, rank, (row) => SIZE_QUERY_RANK[row.size] ?? null);
+}
+
 function compileTerm(term) {
   // Presence test: field:*
   if (term.presence) {
     if (term.field in DATE_FIELDS) return (row) => isPresent(dateValue(row, term.field));
     if (term.field in INT_FIELDS) {
       const col = INT_FIELDS[term.field];
+      return (row) => isPresent(row[col]);
+    }
+    if (term.field in NUMBER_FIELDS) {
+      const col = NUMBER_FIELDS[term.field];
       return (row) => isPresent(row[col]);
     }
     const cols = TEXT_FIELDS[term.field];
@@ -386,6 +442,8 @@ function compileTerm(term) {
 
   if (term.field in DATE_FIELDS) return compileDateTerm(term);
   if (term.field in INT_FIELDS) return compileIntTerm(term);
+  if (term.field in NUMBER_FIELDS) return compileNumberTerm(term);
+  if (term.field === "size" && term.op) return compileSizeRankTerm(term);
 
   // Scoped text field.
   const cols = TEXT_FIELDS[term.field];
@@ -436,8 +494,9 @@ const DATE_SORT_FALLBACK = {
   upcoming_paper_deadline: "prior_paper_deadline",
 };
 
-// The derived-month sorts break ties on the underlying displayed date (upcoming,
-// falling back to prior) — mirroring the SQL column_property tie-breakers.
+// The derived-month sorts break ties on the day of the month of the underlying
+// displayed date (upcoming, falling back to prior), so the order is seasonal and
+// ignores which year's edition is shown — mirroring the API's tie-breakers.
 const MONTH_SORT_TIEBREAKER = {
   abstract_month: ["upcoming_abstract_deadline", "prior_abstract_deadline"],
   late_abstract_month: [
@@ -450,10 +509,22 @@ const MONTH_SORT_TIEBREAKER = {
 
 const NUMERIC_SORT = new Set([
   "attendance", "conference_month", "abstract_month", "late_abstract_month",
-  "paper_month",
+  "paper_month", "size",
 ]);
 
+// Size sorts by magnitude, not alphabetically: ascending is massive -> small.
+// Mirrors ``_SIZE_SORT_RANK`` in web/app.py.
+const SIZE_SORT_RANK = { massive: 1, large: 2, medium: 3, small: 4 };
+
+// The derived-month sorts roll from the current month rather than January, so
+// ascending lists what comes next first (in October: Oct, Nov, ..., Sep).
+// Mirrors ``_rolling_month`` in web/app.py.
+function rollingMonth(month, current) {
+  return isPresent(month) ? (Number(month) - current + 12) % 12 : null;
+}
+
 function coalesce(row, col, fallbackCol) {
+  if (col === "size") return SIZE_SORT_RANK[row.size] ?? null;
   const v = row[col];
   if (isPresent(v)) return v;
   return fallbackCol ? row[fallbackCol] ?? null : null;
@@ -472,24 +543,39 @@ function cmpNullsLast(a, b, descending, numeric) {
   return descending ? -base : base;
 }
 
-/** Sort rows like the server did: displayed value, NULLs last, then tie-breakers. */
-function sortRows(rows, sort, order) {
+/**
+ * Sort rows like the server did: displayed value, NULLs last, then tie-breakers.
+ * Month sorts begin at `monthStart` (1-12; defaults to this month, local time).
+ */
+function sortRows(rows, sort, order, monthStart = new Date().getMonth() + 1) {
   if (!SORTABLE.has(sort)) sort = "upcoming_start_date";
   const descending = order === "desc";
   const fallback = DATE_SORT_FALLBACK[sort];
   const numeric = NUMERIC_SORT.has(sort);
   const tiebreak = MONTH_SORT_TIEBREAKER[sort];
+  const key = tiebreak
+    ? (row) => rollingMonth(row[sort], monthStart)
+    : (row) => coalesce(row, sort, fallback);
 
   return rows.slice().sort((ra, rb) => {
-    const a = coalesce(ra, sort, fallback);
-    const b = coalesce(rb, sort, fallback);
+    const a = key(ra);
+    const b = key(rb);
     let c = cmpNullsLast(a, b, descending, numeric);
     if (c !== 0) return c;
 
     if (tiebreak) {
-      const ta = coalesce(ra, tiebreak[0], tiebreak[1]);
-      const tb = coalesce(rb, tiebreak[0], tiebreak[1]);
-      c = cmpNullsLast(ta, tb, descending, false);
+      const day = (row) => {
+        const d = coalesce(row, tiebreak[0], tiebreak[1]);
+        return isPresent(d) ? Number(String(d).slice(8, 10)) : null;
+      };
+      c = cmpNullsLast(day(ra), day(rb), descending, true);
+      if (c !== 0) return c;
+    }
+
+    // Within a size bucket, order by the attendance figure the bucket comes
+    // from, following the size direction (ascending size runs largest first).
+    if (sort === "size") {
+      c = cmpNullsLast(ra.attendance, rb.attendance, !descending, true);
       if (c !== 0) return c;
     }
 
@@ -659,7 +745,7 @@ function keywordIndex(row) {
 // query that fell through to keyword search is dropped rather than searched for.
 const KNOWN_FIELD_NAMES = new Set([
   ...Object.keys(TEXT_FIELDS), ...Object.keys(DATE_FIELDS),
-  ...Object.keys(INT_FIELDS), ...Object.keys(ALIASES),
+  ...Object.keys(INT_FIELDS), ...Object.keys(NUMBER_FIELDS), ...Object.keys(ALIASES),
 ]);
 
 /** Split a query into keyword terms: quoted phrases stay whole, filler words drop. */
