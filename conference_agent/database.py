@@ -4,7 +4,7 @@ Provides the ORM model, engine wiring, and idempotent upsert/query helpers. The
 same ORM runs against SQLite (local) or any SQLAlchemy backend with only a
 connection-string change.
 
-Idempotency: rows are keyed on ``Conference.id`` (the upper-cased acronym), so
+Idempotency: rows are keyed on ``Conference.id`` (the slug of the name), so
 re-running discovery updates the existing series row in place rather than
 inserting a duplicate. This is what lets a daily refresh roll a newly announced
 edition's dates into the "upcoming" columns without creating a second RSNA row.
@@ -34,12 +34,21 @@ from conference_agent.config import (
     SEED_CONFERENCES,
     best_seed_url,
     curated_seed_url,
+    seed_acronym_for_name,
+    seed_subcategories,
     seed_subcategories_for,
+)
+from conference_agent.deadline_time import (
+    KINDS,
+    normalize_time,
+    normalize_timezone,
+    parse_legacy_deadline_time,
 )
 from conference_agent.models import (
     Conference,
     RemoteOption,
     categories_for_subcategories,
+    name_id,
     normalize_formats,
     normalize_subcategories,
     size_for_attendance,
@@ -55,7 +64,8 @@ class ConferenceRow(Base):
 
     __tablename__ = "conferences"
 
-    # Natural primary key: the upper-cased acronym (Conference.id).
+    # Natural primary key: the slug of the name (Conference.id / models.name_id).
+    # Series are indexed by name; two may share an acronym.
     id: Mapped[str] = mapped_column(String, primary_key=True)
     acronym: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -104,9 +114,19 @@ class ConferenceRow(Base):
     # model splits it back into a list. Indexed for that filtering; NULL when unknown.
     format: Mapped[Optional[str]] = mapped_column(String, index=True)
     cost: Mapped[Optional[str]] = mapped_column(Text)
-    # Time of day (+ zone) submissions close, free text (see
-    # ``Conference.deadline_time``). Per series, not per deadline; the deadline
-    # columns themselves stay pure dates.
+    # Time of day (24-hour HH:MM) and zone each deadline kind closes at -- the
+    # stored source of truth (see ``Conference.abstract_time`` etc.). Per series,
+    # not per edition; the deadline columns themselves stay pure dates.
+    abstract_time: Mapped[Optional[str]] = mapped_column(String)
+    abstract_timezone: Mapped[Optional[str]] = mapped_column(String)
+    late_abstract_time: Mapped[Optional[str]] = mapped_column(String)
+    late_abstract_timezone: Mapped[Optional[str]] = mapped_column(String)
+    paper_time: Mapped[Optional[str]] = mapped_column(String)
+    paper_timezone: Mapped[Optional[str]] = mapped_column(String)
+    # The user-facing "Deadline time" text, *derived* from the six columns above
+    # (``Conference.deadline_time``) -- like ``size`` / ``category`` it is stored
+    # denormalized so search and the table can use it as a column, and is only ever
+    # written by the derivation, never accepted as input.
     deadline_time: Mapped[Optional[str]] = mapped_column(Text)
     # Attendance is the objective input; ``size`` is the bucket derived from it
     # (see ``models.size_for_attendance``). ``size`` is stored denormalized so the
@@ -179,6 +199,22 @@ _MONTH_COLUMNS = frozenset(
 )
 
 
+class IdAliasRow(Base):
+    """A former id of a series and the id it moved to.
+
+    Ids are derived from names, so an id changes when a series is renamed (and
+    every id changed once, when rows moved from acronym ids to name ids). Calendar
+    UIDs, stored email subscriptions, the subscriber snapshot, and published
+    ``/c/<id>/`` URLs may still carry a former id; :func:`resolve_id` follows
+    these rows (possibly a chain) to the current one.
+    """
+
+    __tablename__ = "id_aliases"
+
+    old_id: Mapped[str] = mapped_column(String, primary_key=True)
+    new_id: Mapped[str] = mapped_column(String, nullable=False)
+
+
 # --- Conversion helpers ----------------------------------------------------
 
 _DATE_FIELDS = (
@@ -193,6 +229,9 @@ _DATE_FIELDS = (
     "upcoming_start_date",
     "upcoming_end_date",
 )
+# The six structured deadline-time columns (a time and a zone per deadline kind).
+# ``deadline_time`` is derived from them, so it is not in this tuple.
+_TIME_FIELDS = tuple(f"{k}_{part}" for k in KINDS for part in ("time", "timezone"))
 # ``subcategory`` is the stored granular column; ``category`` is derived from it
 # (written separately, like ``size``), so it is not in this round-trip tuple.
 # ``prior_registration`` / ``upcoming_registration`` are free text (not dates), so
@@ -207,7 +246,7 @@ _TEXT_FIELDS = (
     "notes",
     "prior_registration",
     "upcoming_registration",
-    "deadline_time",
+    *_TIME_FIELDS,
 )
 
 
@@ -224,13 +263,14 @@ def _row_to_model(row: ConferenceRow) -> Conference:
         "notes": row.notes,
         "prior_registration": row.prior_registration,
         "upcoming_registration": row.upcoming_registration,
-        "deadline_time": row.deadline_time,
         "remote_option": RemoteOption(row.remote_option) if row.remote_option else None,
         "attendance": row.attendance,
         "attendance_year": row.attendance_year,
         "attendance_source": row.attendance_source,
     }
     for field in _DATE_FIELDS:
+        data[field] = getattr(row, field)
+    for field in _TIME_FIELDS:
         data[field] = getattr(row, field)
     return Conference(**data)
 
@@ -276,6 +316,9 @@ def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     # Category is derived from the subcategories, never taken as input -- so it
     # always matches. NULL when no subcategory maps to a category.
     row.category = conf.category or None
+    # The display text is derived from the structured times (and which deadline
+    # dates exist), never taken as input -- so it always matches.
+    row.deadline_time = conf.deadline_time
     row.url = _normalize_url(row.url)
     row.remote_option = conf.remote_option.value if conf.remote_option else None
     # Store the joined formats, collapsing an empty list to NULL so the presence
@@ -399,6 +442,47 @@ def _migrate_registration_date_to_text(engine: Engine) -> None:
                     )
 
 
+def _migrate_ids_to_names(engine: Engine) -> int:
+    """Re-key every row whose id is not the slug of its name; returns the count.
+
+    Rows were once keyed by the upper-cased acronym. Each moved row records its
+    former id in ``id_aliases``. Two rows whose names share a slug cannot both
+    move, so that raises rather than merging them silently.
+    """
+    with Session(engine) as session:
+        rows = list(session.scalars(select(ConferenceRow)))
+        targets: dict[str, str] = {}
+        for row in rows:
+            new_id = name_id(row.name)
+            if not new_id:
+                raise RuntimeError(f"conference {row.id} has a name with no id: {row.name!r}")
+            if new_id in targets:
+                raise RuntimeError(
+                    f"conferences {targets[new_id]} and {row.id} have the same name "
+                    f"({row.name!r}); rename or delete one before opening the database"
+                )
+            targets[new_id] = row.id
+        moves = [(row.id, name_id(row.name)) for row in rows if row.id != name_id(row.name)]
+        if not moves:
+            return 0
+        table = ConferenceRow.__tablename__
+        # Two passes through a temporary id, so a move onto an id another row is
+        # leaving in the same migration cannot collide.
+        for old_id, _ in moves:
+            session.execute(
+                text(f"UPDATE {table} SET id = :tmp WHERE id = :old"),  # nosec B608
+                {"tmp": f"~migrating~{old_id}", "old": old_id},
+            )
+        for old_id, new_id in moves:
+            session.execute(
+                text(f"UPDATE {table} SET id = :new WHERE id = :tmp"),  # nosec B608
+                {"new": new_id, "tmp": f"~migrating~{old_id}"},
+            )
+            session.merge(IdAliasRow(old_id=old_id, new_id=new_id))
+        session.commit()
+    return len(moves)
+
+
 def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
     """Return a cached SQLAlchemy engine for ``db_url``, ensuring tables exist.
 
@@ -431,13 +515,24 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
             _MONTH_COLUMNS
             <= {c["name"] for c in inspector.get_columns(ConferenceRow.__tablename__)}
         )
+        # Likewise detect a database predating the structured deadline-time
+        # columns, whose free-text ``deadline_time`` must be parsed into them.
+        times_missing = inspector.has_table(ConferenceRow.__tablename__) and not (
+            set(_TIME_FIELDS)
+            <= {c["name"] for c in inspector.get_columns(ConferenceRow.__tablename__)}
+        )
         _ensure_columns(engine)
+        # Move rows keyed by the legacy acronym id onto their name id.
+        _migrate_ids_to_names(engine)
         # Cache before any backfill helper, which calls get_engine reentrantly.
         _ENGINES[db_url] = engine
         if migrated:
             # The freshly added ``category`` column is empty after a rename; derive
             # it from the (renamed) subcategory tags so search/sort work at once.
             recompute_categories(db_url)
+        if times_missing:
+            # Parse the legacy free-text deadline times into the new columns.
+            backfill_deadline_times(db_url)
         if months_missing:
             # The freshly added month columns are empty; derive them from the
             # existing dates so they match what the table shows immediately.
@@ -463,26 +558,32 @@ def upsert_conferences(
     written = 0
     with Session(engine) as session:
         for conf in conferences:
-            row = session.get(ConferenceRow, conf.id)
+            row = match_row(session, conf.name, conf.acronym, conf.subcategories)
             if row is None:
-                row = ConferenceRow(id=conf.id)
+                row = ConferenceRow(id=conf.id, name=conf.name)
                 session.add(row)
+            # The stored name is the index: a run that reports it under another
+            # spelling updates the row but never renames it (see ``match_row``).
+            name = row.name
             _apply_model_to_row(row, conf)
-            floor = curated_seed_url(conf.acronym)
+            row.name = name
+            seed = seed_acronym_for_name(name)
+            floor = curated_seed_url(seed)
             if floor:
                 row.url = floor
             # Subcategory floor: a seeded series' tags are curated and
             # authoritative, so a discovery run cannot overwrite them with model
             # free-text. The derived category is re-applied to match.
-            seed_subs = seed_subcategories_for(conf.acronym)
+            seed_subs = seed_subcategories_for(seed)
             if seed_subs:
                 row.subcategory = ", ".join(seed_subs)
                 row.category = ", ".join(categories_for_subcategories(seed_subs)) or None
             # Format floor: some conferences have hardcoded formats that override
             # discovery, ensuring consistency across refreshes.
-            hardcoded_fmts = HARDCODED_FORMATS.get(conf.acronym.upper())
+            hardcoded_fmts = HARDCODED_FORMATS.get((seed or "").upper())
             if hardcoded_fmts:
                 row.format = ", ".join(hardcoded_fmts)
+            session.flush()
             written += 1
         session.commit()
     return written
@@ -514,7 +615,6 @@ _MERGEABLE_TEXT_FIELDS = (
     "notes",
     "prior_registration",
     "upcoming_registration",
-    "deadline_time",
 )
 
 # Integer fields a researched record may carry. Parsed from int/numeric strings;
@@ -537,13 +637,23 @@ def _record_subcategory(record: dict):
     return None
 
 
+def _dated_kinds(row: "ConferenceRow") -> List[str]:
+    """The deadline kinds a row has any date for (prior or upcoming)."""
+    return [
+        k
+        for k in KINDS
+        if getattr(row, f"upcoming_{k}_deadline") or getattr(row, f"prior_{k}_deadline")
+    ]
+
+
 def merge_records(
     records: Iterable[dict],
     db_url: str = DEFAULT_DATABASE_URL,
 ) -> int:
     """Merge partial researched records into existing rows without clobbering.
 
-    Each record is a plain dict keyed by ``id`` (the upper-cased acronym). Only
+    Each record names its row by ``id`` (exactly, or a former id via
+    ``id_aliases``) or else by ``name`` / ``acronym`` (see :func:`match_row`). Only
     keys that are present *and* non-null/non-empty overwrite the stored value, so
     a record that carries just newly found dates leaves the row's name, url,
     subcategory, and attendance untouched. This is the offline counterpart to
@@ -557,23 +667,31 @@ def merge_records(
     ``attendance`` and category is derived from ``subcategory`` after merging, so
     neither can disagree with what it is computed from. The granular tag arrives
     under ``subcategory`` / ``subcategories`` (the legacy ``category`` /
-    ``categories`` keys are still accepted as aliases). Records whose id matches no
-    existing row are inserted only when they also supply ``name`` and a
-    subcategory (otherwise skipped). Returns the number of rows written.
+    ``categories`` keys are still accepted as aliases). A record that matches no
+    existing row is inserted (under the id of its name) only when it supplies a
+    ``name`` and a subcategory (otherwise skipped). An existing row's name is never changed here -- it is the index;
+    see :func:`rename_conference`. Returns the number of rows written.
     """
     engine = get_engine(db_url)
     written = 0
     with Session(engine) as session:
         for record in records:
-            acronym = (record.get("id") or record.get("acronym") or "").strip()
-            if not acronym:
+            explicit_id = str(record.get("id") or "").strip()
+            name = " ".join(str(record.get("name") or "").split())
+            acronym = str(record.get("acronym") or "").strip()
+            if explicit_id:
+                row = resolve_row(session, explicit_id)
+            elif name:
+                row = match_row(
+                    session, name, acronym,
+                    normalize_subcategories(_record_subcategory(record) or ""),
+                )
+            else:
                 continue
-            row_id = acronym.upper()
-            row = session.get(ConferenceRow, row_id)
             if row is None:
-                if not (record.get("name") and _record_subcategory(record)):
+                if not (name and name_id(name) and _record_subcategory(record)):
                     continue
-                row = ConferenceRow(id=row_id, acronym=acronym)
+                row = ConferenceRow(id=name_id(name), acronym=acronym or name, name=name)
                 session.add(row)
 
             changed = False
@@ -582,6 +700,8 @@ def merge_records(
                     setattr(row, field, _coerce_date(record[field]))
                     changed = True
             for field in _MERGEABLE_TEXT_FIELDS:
+                if field == "name":
+                    continue  # the index; set on insert above, never merged
                 value = record.get(field)
                 if value not in (None, ""):
                     setattr(row, field, str(value).strip())
@@ -594,6 +714,25 @@ def merge_records(
                         changed = True
                     except ValueError:
                         pass
+            # Deadline times: six structured fields (a time and a zone per kind),
+            # normalized to 24-hour HH:MM and canonical zone codes; an unreadable
+            # value is ignored. The legacy free-text ``deadline_time`` is still
+            # accepted (older exports) and fills whichever structured fields the
+            # record did not set itself.
+            time_values = {f: record.get(f) for f in _TIME_FIELDS}
+            legacy = record.get("deadline_time")
+            if legacy not in (None, ""):
+                dated = _dated_kinds(row)
+                for key, value in parse_legacy_deadline_time(str(legacy), dated).items():
+                    if time_values.get(key) in (None, ""):
+                        time_values[key] = value
+            for field, value in time_values.items():
+                if value in (None, ""):
+                    continue
+                norm = (normalize_time if field.endswith("_time") else normalize_timezone)(value)
+                if norm and getattr(row, field) != norm:
+                    setattr(row, field, norm)
+                    changed = True
             # Subcategory may be a list or a delimited string; store the
             # normalized, comma-joined form so multi-tag records merge cleanly.
             subcategory = _record_subcategory(record)
@@ -633,14 +772,15 @@ def merge_records(
             # Flagship link floor: a curated deep link wins over any URL a refresh
             # merged in, mirroring upsert_conferences so neither write path can
             # regress a verified link to a weaker homepage.
-            floor = curated_seed_url(acronym)
+            seed = seed_acronym_for_name(row.name)
+            floor = curated_seed_url(seed)
             if floor and row.url != floor:
                 row.url = floor
                 changed = True
             # Subcategory floor: a seeded series' tags are curated and
             # authoritative, so they win over any tag the record carried (mirrors
             # the url floor and upsert_conferences). Non-seed rows keep their own.
-            seed_subs = seed_subcategories_for(acronym)
+            seed_subs = seed_subcategories_for(seed)
             if seed_subs:
                 joined = ", ".join(seed_subs)
                 if row.subcategory != joined:
@@ -655,7 +795,7 @@ def merge_records(
                 changed = True
             # Format floor: some conferences have hardcoded formats that override
             # merge/discovery, ensuring consistency across refreshes.
-            hardcoded_fmts = HARDCODED_FORMATS.get(row_id)
+            hardcoded_fmts = HARDCODED_FORMATS.get((seed or "").upper())
             if hardcoded_fmts:
                 hardcoded_format_str = ", ".join(hardcoded_fmts)
                 if row.format != hardcoded_format_str:
@@ -665,6 +805,12 @@ def merge_records(
             # never taken from the record -- so, like size and category above, they
             # are re-derived here rather than left carrying the month of a date the
             # merge has since replaced.
+            # The display text is derived from the structured times and the dates,
+            # so re-derive it after both may have changed.
+            deadline_text = _row_to_model(row).deadline_time
+            if deadline_text != row.deadline_time:
+                row.deadline_time = deadline_text
+                changed = True
             months = _derived_months(row)
             if months != (
                 row.conference_month,
@@ -679,6 +825,8 @@ def merge_records(
                     row.paper_month,
                 ) = months
                 changed = True
+            # Flush so a later record in the batch can match this row.
+            session.flush()
             if changed:
                 written += 1
         session.commit()
@@ -723,7 +871,7 @@ def _roll_editions(row: ConferenceRow, conf: Conference) -> None:
 def _conference_to_record(conf: Conference) -> dict:
     """A :class:`Conference` as a :func:`merge_records` record (blank fields omitted)."""
     record: dict = {"id": conf.id, "acronym": conf.acronym, "name": conf.name}
-    for field in (*_DATE_FIELDS, *_MERGEABLE_TEXT_FIELDS, *_MERGEABLE_INT_FIELDS):
+    for field in (*_DATE_FIELDS, *_MERGEABLE_TEXT_FIELDS, *_MERGEABLE_INT_FIELDS, *_TIME_FIELDS):
         value = getattr(conf, field)
         if value not in (None, ""):
             record[field] = value
@@ -754,11 +902,13 @@ def apply_refreshed_conferences(
     records = []
     with Session(engine) as session:
         for conf in conferences:
-            row = session.get(ConferenceRow, conf.id)
+            row = match_row(session, conf.name, conf.acronym, conf.subcategories)
             if row is None:
                 continue
             _roll_editions(row, conf)
-            records.append(_conference_to_record(conf))
+            record = _conference_to_record(conf)
+            record["id"] = row.id
+            records.append(record)
         session.commit()
     return merge_records(records, db_url=db_url)
 
@@ -786,13 +936,16 @@ def seed_conferences(db_url: str = DEFAULT_DATABASE_URL, overwrite: bool = False
                 subcategory=subcategory,
                 url=best_seed_url(acronym),
             )
-            row = session.get(ConferenceRow, conf.id)
+            row = match_row(session, conf.name, conf.acronym, conf.subcategories)
             if row is None:
-                row = ConferenceRow(id=conf.id)
+                row = ConferenceRow(id=conf.id, name=conf.name)
                 session.add(row)
             elif not overwrite:
                 continue
+            name = row.name
             _apply_model_to_row(row, conf)
+            row.name = name
+            session.flush()
             written += 1
         session.commit()
     return written
@@ -812,6 +965,15 @@ def distinct_subcategories(db_url: str = DEFAULT_DATABASE_URL) -> set[str]:
         for joined in session.scalars(select(ConferenceRow.subcategory)):
             subs.update(normalize_subcategories(joined))
     return subs
+
+
+def discovery_subcategories(db_url: str = DEFAULT_DATABASE_URL) -> list[str]:
+    """Every field a whole-table discovery run surveys, sorted.
+
+    The subcategories present in the table, plus the seed fields (so a field
+    whose rows were all deleted, or a fresh database, is still covered).
+    """
+    return sorted(distinct_subcategories(db_url) | set(seed_subcategories()))
 
 
 def recompute_sizes(db_url: str = DEFAULT_DATABASE_URL) -> int:
@@ -893,11 +1055,69 @@ def recompute_months(db_url: str = DEFAULT_DATABASE_URL) -> int:
     return changed
 
 
+def backfill_deadline_times(db_url: str = DEFAULT_DATABASE_URL) -> int:
+    """Parse legacy free-text ``deadline_time`` into the structured columns.
+
+    One-time migration, run when a database predating the six time/zone columns is
+    first opened. Only rows with a stored ``deadline_time`` and no structured value
+    yet are touched, so it is idempotent and never overwrites a structured value.
+    An unlabeled time is assigned to each deadline kind the row has a date for. A
+    text that parses to nothing (e.g. a bare "EOD") is left as it was. The display
+    text is then re-derived, which also normalizes it ("11:59 PM EST" ->
+    "11:59 PM ET"). Returns the number of rows converted.
+    """
+    engine = get_engine(db_url)
+    converted = 0
+    with Session(engine) as session:
+        for row in session.scalars(select(ConferenceRow)):
+            if not row.deadline_time or any(getattr(row, f) for f in _TIME_FIELDS):
+                continue
+            parsed = parse_legacy_deadline_time(row.deadline_time, _dated_kinds(row))
+            if not parsed:
+                continue
+            for field, value in parsed.items():
+                setattr(row, field, value)
+            row.deadline_time = _row_to_model(row).deadline_time
+            converted += 1
+        session.commit()
+    return converted
+
+
+def recompute_deadline_times(db_url: str = DEFAULT_DATABASE_URL) -> int:
+    """Re-derive every row's stored ``deadline_time`` text from its structured times.
+
+    The text depends on the six time/zone columns and on which deadline dates the
+    row has, so an out-of-band edit to either leaves it stale until rewritten.
+    Idempotent. Returns the number of rows whose stored text changed.
+    """
+    engine = get_engine(db_url)
+    changed = 0
+    with Session(engine) as session:
+        for row in session.scalars(select(ConferenceRow)):
+            text_now = _row_to_model(row).deadline_time
+            if text_now != row.deadline_time:
+                row.deadline_time = text_now
+                changed += 1
+        session.commit()
+    return changed
+
+
+def attendance_hint_key(conf: Conference) -> str:
+    """The key :func:`known_attendance_sources` files a series' hint under."""
+    return f"{conf.acronym} — {conf.name}" if conf.acronym != conf.name else conf.name
+
+
+def attendance_hints_for(targets: Iterable[Conference], hints: dict) -> dict:
+    """The entries of *hints* (from :func:`known_attendance_sources`) for *targets*."""
+    keys = {attendance_hint_key(t) for t in targets}
+    return {k: v for k, v in hints.items() if k in keys}
+
+
 def known_attendance_sources(
     db_url: str = DEFAULT_DATABASE_URL,
     subcategories: "Optional[Iterable[str]]" = None,
 ) -> dict:
-    """Map acronym id -> ``{"source": url, "year": int|None}`` for rows that carry a
+    """Map ``"ACRONYM — Name"`` -> ``{"source": url, "year": int|None}`` for rows that carry a
     stored attendance source, optionally restricted to the given subcategories.
 
     Discovery feeds this back into the research prompt on a refresh so the model
@@ -915,8 +1135,9 @@ def known_attendance_sources(
         rows = query_conferences(db_url=db_url)
     out: dict = {}
     for c in rows:
-        if c.attendance_source and c.id not in out:
-            out[c.id] = {"source": c.attendance_source, "year": c.attendance_year}
+        label = attendance_hint_key(c)
+        if c.attendance_source and label not in out:
+            out[label] = {"source": c.attendance_source, "year": c.attendance_year}
     return out
 
 
@@ -944,3 +1165,147 @@ def query_conferences(
     stmt = stmt.order_by(ConferenceRow.upcoming_start_date.is_(None), ConferenceRow.upcoming_start_date)
     with Session(engine) as session:
         return [_row_to_model(row) for row in session.scalars(stmt)]
+
+
+def delete_conferences(ids: Iterable[str], db_url: str = DEFAULT_DATABASE_URL) -> int:
+    """Delete the rows with the given ids; returns the number removed.
+
+    Only the manual ``conference-agent delete`` path calls this -- retired series
+    are otherwise never deleted (see ``refresh.is_retired``). A deleted seed series
+    returns on the next ``seed`` run, and discovery may find any series again.
+    """
+    engine = get_engine(db_url)
+    removed = 0
+    with Session(engine) as session:
+        for row_id in ids:
+            row = session.get(ConferenceRow, row_id)
+            if row is not None:
+                session.delete(row)
+                removed += 1
+        session.commit()
+    return removed
+
+
+def resolve_row(session: Session, row_id: str) -> "ConferenceRow | None":
+    """The row with id *row_id*, following ``id_aliases`` from a former id."""
+    seen: set[str] = set()
+    while row_id and row_id not in seen:
+        row = session.get(ConferenceRow, row_id)
+        if row is not None:
+            return row
+        seen.add(row_id)
+        alias = session.get(IdAliasRow, row_id)
+        row_id = alias.new_id if alias else None
+    return None
+
+
+def match_row(
+    session: Session,
+    name: str,
+    acronym: "str | None" = None,
+    subcategories: "Iterable[str] | None" = None,
+) -> "ConferenceRow | None":
+    """The stored series a discovered or researched conference refers to.
+
+    Names are the index, so a name match (by id, or a former id after a rename)
+    wins. Discovery does not always reproduce a stored name verbatim (it has
+    reported "RECOMB" both as "Research in Computational Molecular Biology" and
+    with an "International Conference on" prefix), so with no name match a
+    record still updates the one row with the same acronym *and* an overlapping
+    subcategory. A same-acronym series in an unrelated field matches nothing
+    and becomes its own row.
+    """
+    row = resolve_row(session, name_id(name)) if name else None
+    if row is not None or not acronym:
+        return row
+    wanted = set(subcategories or ())
+    if not wanted:
+        return None
+    candidates = [
+        r
+        for r in session.scalars(
+            select(ConferenceRow).where(func.upper(ConferenceRow.acronym) == acronym.strip().upper())
+        )
+        if wanted & set(normalize_subcategories(r.subcategory or ""))
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def release_ids(ids: Iterable[str], db_url: str = DEFAULT_DATABASE_URL) -> None:
+    """Forget that *ids* were ever former ids, so new series can take them.
+
+    Adding a series under a name a renamed series used to have makes that name's
+    id current again; without this, the alias would route it to the renamed row.
+    """
+    engine = get_engine(db_url)
+    with Session(engine) as session:
+        for row_id in ids:
+            alias = session.get(IdAliasRow, row_id)
+            if alias is not None:
+                session.delete(alias)
+        session.commit()
+
+
+def resolve_ids(ids: Iterable[str], db_url: str = DEFAULT_DATABASE_URL) -> dict:
+    """Map each id (current or former) to the current id, dropping unknown ones."""
+    engine = get_engine(db_url)
+    out: dict = {}
+    with Session(engine) as session:
+        for row_id in ids:
+            row = resolve_row(session, row_id)
+            if row is not None:
+                out[row_id] = row.id
+    return out
+
+
+def former_ids(db_url: str = DEFAULT_DATABASE_URL) -> dict:
+    """Every former id that still leads to a row, mapped to that row's current id."""
+    engine = get_engine(db_url)
+    with Session(engine) as session:
+        old_ids = list(session.scalars(select(IdAliasRow.old_id)))
+    return resolve_ids(old_ids, db_url=db_url)
+
+
+def set_acronym(row_id: str, acronym: str, db_url: str = DEFAULT_DATABASE_URL) -> None:
+    """Change a series' acronym. The id follows the name, so it is unaffected."""
+    engine = get_engine(db_url)
+    with Session(engine) as session:
+        row = session.get(ConferenceRow, row_id)
+        if row is None:
+            raise ValueError(f"no conference with id {row_id}")
+        row.acronym = acronym.strip()
+        session.commit()
+
+
+def rename_conference(row_id: str, new_name: str, db_url: str = DEFAULT_DATABASE_URL) -> str:
+    """Rename a series, moving it to its new name's id; returns the new id.
+
+    The former id is kept in ``id_aliases`` so links, calendar UIDs, and
+    subscriptions that carry it still resolve. Raises ``ValueError`` when the new
+    name is empty or already names another series.
+    """
+    new_name = " ".join(new_name.split())
+    new_id = name_id(new_name)
+    if not new_id:
+        raise ValueError("the new name must contain at least one ASCII letter or digit")
+    engine = get_engine(db_url)
+    with Session(engine) as session:
+        row = session.get(ConferenceRow, row_id)
+        if row is None:
+            raise ValueError(f"no conference with id {row_id}")
+        if new_id != row_id:
+            if session.get(ConferenceRow, new_id) is not None:
+                raise ValueError(f"'{new_name}' already names another conference")
+            session.execute(
+                text(f"UPDATE {ConferenceRow.__tablename__} SET id = :new, name = :name WHERE id = :old"),  # nosec B608
+                {"new": new_id, "name": new_name, "old": row_id},
+            )
+            session.merge(IdAliasRow(old_id=row_id, new_id=new_id))
+            # The new id is current again if it was ever a former one.
+            alias = session.get(IdAliasRow, new_id)
+            if alias is not None:
+                session.delete(alias)
+        else:
+            row.name = new_name
+        session.commit()
+    return new_id

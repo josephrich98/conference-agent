@@ -1,4 +1,4 @@
-"""Offline tests for the ``conference-agent add`` CLI subcommand.
+"""Offline tests for the ``conference-agent add`` / ``delete`` CLI subcommands.
 
 Drive ``cli.main`` against a temporary SQLite file so the flag, CSV, merge,
 overwrite, and category-warning paths are exercised end-to-end without network
@@ -16,8 +16,11 @@ def _db_url(tmp_path):
 
 
 def _by_id(url):
-    """Return the stored conferences keyed by their id (upper-cased acronym)."""
-    return {c.id: c for c in query_conferences(db_url=url)}
+    """Return the stored conferences keyed by their acronym (distinct in these tests).
+
+    The real id is the slug of the name; keying by acronym keeps the tests short.
+    """
+    return {c.acronym: c for c in query_conferences(db_url=url)}
 
 
 def test_add_new_conference_via_flags(tmp_path):
@@ -28,8 +31,10 @@ def test_add_new_conference_via_flags(tmp_path):
             "--db",
             url,
             "add",
-            "--conference",
-            "ZZT - Test Imaging Conference",
+            "--conference-acronym",
+            "ZZT",
+            "--conference-name",
+            "Test Imaging Conference",
             "--subcategory",
             "radiology",
             "machine learning",
@@ -107,11 +112,40 @@ def test_add_late_abstract_and_prior_fields_via_flags(tmp_path):
     assert (conf.abstract_month, conf.late_abstract_month) == (8, 10)
 
 
+def test_add_name_only_keys_on_the_name(tmp_path):
+    """A series with no acronym is stored with acronym == name (shown as the name)."""
+    url = _db_url(tmp_path)
+    code = main(
+        ["--db", url, "add", "--conference-name", "ZZWeek", "--subcategory", "radiology"]
+    )
+    assert code == 0
+    conf = _by_id(url)["ZZWeek"]
+    assert conf.acronym == conf.name == "ZZWeek"
+    assert conf.id == "zzweek"
+
+
+def test_add_legacy_combined_conference_still_parses(tmp_path):
+    """The old 'ACRONYM - Name' value is accepted; explicit fields win over it."""
+    url = _db_url(tmp_path)
+    code = main(
+        [
+            "--db", url, "add",
+            "--conference", "ZZL - Legacy Name",
+            "--conference-name", "Explicit Name",
+            "--subcategory", "radiology",
+        ]
+    )
+    assert code == 0
+    conf = _by_id(url)["ZZL"]
+    assert conf.name == "Explicit Name"
+
+
 def test_add_from_json_file(tmp_path):
     url = _db_url(tmp_path)
     path = tmp_path / "records.json"
     path.write_text(
-        '[{"conference": "ZZJ - JSON Conference", "subcategory": "genomics",'
+        '[{"conference_acronym": "ZZJ", "conference_name": "JSON Conference",'
+        ' "subcategory": "genomics",'
         ' "abstract_due": "2026-04-09", "late_abstract_due": "2026-05-07",'
         ' "location": "Boston, MA"}]',
         encoding="utf-8",
@@ -157,7 +191,7 @@ def test_add_late_abstract_from_csv_column(tmp_path):
 
 
 def test_fields_command_lists_every_add_flag(tmp_path):
-    """`fields` is the input contract agents read — it must cover every flag."""
+    """`add --fields` is the input contract agents read — it must cover every flag."""
 
     from conference_agent.cli import _COMPOSITE_FIELDS, _SCALAR_FIELDS, build_parser
 
@@ -176,17 +210,22 @@ def test_fields_command_lists_every_add_flag(tmp_path):
     # Every documented field is a real flag...
     assert documented <= flags
     # ...and every value-carrying flag is documented (bar the input/mode switches).
-    modes = {"--csv", "--json", "--overwrite", "--yes", "--help", "--db"}
+    # --conference is the hidden legacy "ACRONYM - Name" shorthand.
+    modes = {
+        "--csv", "--json", "--fields", "--update", "--delete", "--overwrite", "--yes",
+        "--help", "--db", "--conference",
+    }
     assert flags - modes == documented
 
 
 def test_fields_json_is_machine_readable(capsys):
     import json as _json
 
-    assert main(["fields", "--json"]) == 0
+    assert main(["add", "--fields", "json"]) == 0
     payload = _json.loads(capsys.readouterr().out)
     names = {f["name"] for f in payload["fields"]}
-    assert {"conference", "abstract_due", "late_abstract_due"} <= names
+    assert {"conference_acronym", "conference_name", "abstract_due", "late_abstract_due"} <= names
+    assert "conference" not in names
     late = next(f for f in payload["fields"] if f["name"] == "late_abstract_due")
     assert late["stored_as"] == "upcoming_late_abstract_deadline"
     assert late["flag"] == "--late-abstract-due"
@@ -273,26 +312,16 @@ def test_conference_dates_rejects_more_than_two(tmp_path, capsys):
     assert "at most two dates" in capsys.readouterr().err
 
 
-def test_bare_acronym_updates_existing_and_preserves_fields(tmp_path):
+def test_update_by_name_preserves_unsupplied_fields(tmp_path):
     url = _db_url(tmp_path)
-    main(
-        [
-            "--db",
-            url,
-            "add",
-            "--conference",
-            "ZZT - Test Imaging Conference",
-            "--subcategory",
-            "radiology",
-            "--conference-dates",
-            "2026-11-29",
-        ]
+    _seed_zzt(url)
+    code = main(
+        ["--db", url, "add", "--update", "--conference-name", "test imaging  conference",
+         "--abstract-due", "2026-04-08"]
     )
-    # A bare acronym (no name) updates the existing row; other fields persist.
-    # --yes skips the "matches an existing entry" confirmation prompt.
-    code = main(["--db", url, "add", "--yes", "--conference", "ZZT", "--abstract-due", "2026-04-08"])
     assert code == 0
     conf = _by_id(url)["ZZT"]
+    # The name matches case- and whitespace-insensitively; the stored spelling stays.
     assert conf.name == "Test Imaging Conference"
     assert conf.subcategories == ["radiology"]
     assert conf.upcoming_start_date == date(2026, 11, 29)
@@ -324,7 +353,7 @@ def test_add_overwrite_clears_unsupplied_fields(tmp_path):
         ]
     )
     code = main(
-        ["--db", url, "add", "--yes", "--overwrite", "--conference", "ZZT - Test Imaging Conference", "--subcategory", "radiology"]
+        ["--db", url, "add", "--update", "--overwrite", "--conference-name", "Test Imaging Conference", "--subcategory", "radiology"]
     )
     assert code == 0
     conf = _by_id(url)["ZZT"]
@@ -380,34 +409,40 @@ def test_add_from_csv_with_table_facing_columns(tmp_path):
 def test_add_csv_row_without_identity_errors(tmp_path, capsys):
     url = _db_url(tmp_path)
     csv_path = tmp_path / "confs.csv"
-    csv_path.write_text("conference,category\n,radiology\n", encoding="utf-8")
+    csv_path.write_text("conference_acronym,category\nZZT,radiology\n", encoding="utf-8")
     code = main(["--db", url, "add", "--csv", str(csv_path)])
     assert code == 1
-    assert "no 'conference'" in capsys.readouterr().err
+    assert "no 'conference_name'" in capsys.readouterr().err
 
 
 def test_add_requires_conference_without_csv(tmp_path, capsys):
     url = _db_url(tmp_path)
     code = main(["--db", url, "add", "--subcategory", "radiology"])
     assert code == 1
-    assert "--conference is required" in capsys.readouterr().err
+    assert "--conference-name is required" in capsys.readouterr().err
 
 
-def test_add_new_without_name_is_not_inserted(tmp_path, capsys):
+def test_add_acronym_without_name_errors(tmp_path, capsys):
     url = _db_url(tmp_path)
-    # A bare acronym for a brand-new id has no name, so it cannot be inserted.
-    code = main(["--db", url, "add", "--conference", "GHOST", "--conference-dates", "2027-01-01"])
-    assert code == 0
-    assert _by_id(url) == {}
-    assert "require at least name and a subcategory" in capsys.readouterr().err
-
-
-def test_add_overwrite_without_name_errors(tmp_path, capsys):
-    url = _db_url(tmp_path)
-    code = main(["--db", url, "add", "--overwrite", "--conference", "ZZT", "--subcategory", "radiology"])
+    code = main(["--db", url, "add", "--conference-acronym", "GHOST", "--subcategory", "radiology"])
     assert code == 1
-    assert "cannot build conference" in capsys.readouterr().err
+    assert "--conference-name is required" in capsys.readouterr().err
     assert _by_id(url) == {}
+
+
+def test_add_new_without_subcategory_errors(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    code = main(["--db", url, "add", "--conference-name", "Ghost Conference"])
+    assert code == 1
+    assert "needs at least one --subcategory" in capsys.readouterr().err
+    assert _by_id(url) == {}
+
+
+def test_overwrite_requires_update(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    code = main(["--db", url, "add", "--overwrite", "--conference-name", "X", "--subcategory", "radiology"])
+    assert code == 1
+    assert "--overwrite applies only with --update" in capsys.readouterr().err
 
 
 def test_add_rejects_invalid_enum_value(tmp_path):
@@ -448,36 +483,129 @@ def _seed_zzt(url):
     )
 
 
-def test_add_matching_entry_prompts_and_accepts(tmp_path, monkeypatch):
+def test_add_existing_name_fails(tmp_path, capsys):
     url = _db_url(tmp_path)
     _seed_zzt(url)
-    prompts = []
-
-    def fake_input(prompt=""):
-        prompts.append(prompt)
-        return "y"
-
-    monkeypatch.setattr("builtins.input", fake_input)
-    # A bare acronym that matches the table is confirmed, so the update applies.
-    code = main(["--db", url, "add", "--conference", "ZZT", "--abstract-due", "2026-04-08"])
-    assert code == 0
-    assert prompts and "already exists" in prompts[0]
-    assert _by_id(url)["ZZT"].upcoming_abstract_deadline == date(2026, 4, 8)
-
-
-def test_add_matching_entry_prompts_and_declines(tmp_path, monkeypatch, capsys):
-    url = _db_url(tmp_path)
-    _seed_zzt(url)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
-    # Declining the prompt leaves the existing entry unchanged.
-    code = main(["--db", url, "add", "--conference", "ZZT - Test Imaging Conference", "--abstract-due", "2026-04-08"])
-    assert code == 0
-    captured = capsys.readouterr()
-    assert "left unchanged" in (captured.out + captured.err)
+    code = main(
+        ["--db", url, "add", "--conference-name", "Test Imaging Conference",
+         "--subcategory", "radiology", "--abstract-due", "2026-04-08"]
+    )
+    assert code == 1
+    assert "already exists" in capsys.readouterr().err
     assert _by_id(url)["ZZT"].upcoming_abstract_deadline is None
 
 
-def test_add_yes_flag_skips_prompt(tmp_path, monkeypatch):
+def test_add_shared_acronym_with_a_new_name_is_a_new_series(tmp_path):
+    """Entries are indexed by name: two series may share an acronym."""
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    code = main(
+        ["--db", url, "add", "--conference-acronym", "ZZT", "--conference-name", "Other",
+         "--subcategory", "radiology"]
+    )
+    assert code == 0
+    names = {c.id: c.name for c in query_conferences(db_url=url)}
+    assert names == {"test-imaging-conference": "Test Imaging Conference", "other": "Other"}
+
+
+def test_add_name_matching_ignores_case_and_punctuation(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    code = main(
+        ["--db", url, "add", "--conference-name", "test-imaging CONFERENCE",
+         "--subcategory", "radiology"]
+    )
+    assert code == 1
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_add_batch_with_one_conflict_writes_nothing(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    path = tmp_path / "records.json"
+    path.write_text(
+        '[{"conference_acronym": "ZZN", "conference_name": "New One", "subcategory": "genomics"},'
+        ' {"conference_name": "Test Imaging Conference", "subcategory": "radiology"}]',
+        encoding="utf-8",
+    )
+    assert main(["--db", url, "add", "--json", str(path)]) == 1
+    assert set(_by_id(url)) == {"ZZT"}
+
+
+def test_update_missing_name_fails(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    code = main(["--db", url, "add", "--update", "--conference-name", "Nope", "--abstract-due", "2026-04-08"])
+    assert code == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_update_can_rename_acronym(tmp_path):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    code = main(
+        ["--db", url, "add", "--update", "--conference-name", "Test Imaging Conference",
+         "--conference-acronym", "ZZX"]
+    )
+    assert code == 0
+    [conf] = query_conferences(db_url=url)
+    assert conf.acronym == "ZZX"
+    assert conf.id == "test-imaging-conference"  # the id follows the name only
+    assert conf.upcoming_start_date == date(2026, 11, 29)
+
+
+def test_update_new_conference_name_renames_and_keeps_old_id_resolving(tmp_path):
+    from conference_agent.database import former_ids, resolve_ids
+
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    code = main(
+        ["--db", url, "add", "--update", "--conference-name", "Test Imaging Conference",
+         "--new-conference-name", "Renamed Imaging Conference", "--abstract-due", "2026-04-08"]
+    )
+    assert code == 0
+    [conf] = query_conferences(db_url=url)
+    assert (conf.id, conf.name) == ("renamed-imaging-conference", "Renamed Imaging Conference")
+    assert conf.upcoming_abstract_deadline == date(2026, 4, 8)
+    assert conf.upcoming_start_date == date(2026, 11, 29)
+    assert former_ids(url) == {"test-imaging-conference": "renamed-imaging-conference"}
+    assert resolve_ids(["test-imaging-conference"], url) == {
+        "test-imaging-conference": "renamed-imaging-conference"
+    }
+
+    # The old name is free again: adding it makes a new series, not an update.
+    code = main(
+        ["--db", url, "add", "--conference-name", "Test Imaging Conference",
+         "--subcategory", "radiology"]
+    )
+    assert code == 0
+    assert len(query_conferences(db_url=url)) == 2
+    assert former_ids(url) == {}
+
+
+def test_update_rename_onto_an_existing_name_fails(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    main(["--db", url, "add", "--conference-name", "Other", "--subcategory", "radiology"])
+    code = main(
+        ["--db", url, "add", "--update", "--conference-name", "Test Imaging Conference",
+         "--new-conference-name", "other"]
+    )
+    assert code == 1
+    assert "already in use" in capsys.readouterr().err
+    assert {c.name for c in query_conferences(db_url=url)} == {"Test Imaging Conference", "Other"}
+
+
+def test_new_conference_name_without_update_fails(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    code = main(
+        ["--db", url, "add", "--conference-name", "X", "--subcategory", "radiology",
+         "--new-conference-name", "Y"]
+    )
+    assert code == 1
+    assert "applies only with --update" in capsys.readouterr().err
+
+
+def test_delete_subcommand_with_yes(tmp_path, monkeypatch):
     url = _db_url(tmp_path)
     _seed_zzt(url)
 
@@ -485,16 +613,41 @@ def test_add_yes_flag_skips_prompt(tmp_path, monkeypatch):
         raise AssertionError("input() should not be called when --yes is passed")
 
     monkeypatch.setattr("builtins.input", boom)
-    code = main(["--db", url, "add", "--yes", "--conference", "ZZT", "--abstract-due", "2026-04-08"])
+    code = main(["--db", url, "delete", "--yes", "--conference-name", "Test Imaging Conference"])
     assert code == 0
-    assert _by_id(url)["ZZT"].upcoming_abstract_deadline == date(2026, 4, 8)
+    assert _by_id(url) == {}
+
+
+def test_add_delete_prompts_and_declines(tmp_path, monkeypatch):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    code = main(["--db", url, "add", "--delete", "--conference-name", "Test Imaging Conference"])
+    assert code == 1
+    assert set(_by_id(url)) == {"ZZT"}
+
+
+def test_add_delete_prompts_and_accepts(tmp_path, monkeypatch):
+    url = _db_url(tmp_path)
+    _seed_zzt(url)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    code = main(["--db", url, "add", "--delete", "--conference-name", "Test Imaging Conference"])
+    assert code == 0
+    assert _by_id(url) == {}
+
+
+def test_delete_missing_name_fails(tmp_path, capsys):
+    url = _db_url(tmp_path)
+    code = main(["--db", url, "delete", "--yes", "--conference-name", "Nope"])
+    assert code == 1
+    assert "does not exist" in capsys.readouterr().err
 
 
 def test_add_new_conference_not_prompted(tmp_path, monkeypatch):
     url = _db_url(tmp_path)
 
     def boom(prompt=""):
-        raise AssertionError("a brand-new conference must not trigger the match prompt")
+        raise AssertionError("adding a brand-new conference must not prompt")
 
     monkeypatch.setattr("builtins.input", boom)
     code = main(["--db", url, "add", "--conference", "ZZT - Test Imaging Conference", "--subcategory", "radiology"])

@@ -20,7 +20,9 @@ import nodemailer from "nodemailer";
 // Deliberately simple: one @, no spaces, a dot in the domain, a 2+ char TLD.
 // Mirrored in index.html (the prompt validates before posting).
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Ids are slugs of conference names (some over 100 characters); subscriptions
+// stored before that change carry the former acronym ids, which also match.
+const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 export const CONFIRM_TTL_SECONDS = 3 * 24 * 3600;
 // Confirmation emails per address per day, so the form cannot be used to flood

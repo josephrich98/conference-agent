@@ -18,6 +18,12 @@ The snapshot entry for a series only advances once its emails are sent (or it
 has no subscribers), so a failed send is retried on the next run. The first run
 has no snapshot and only records one.
 
+Ids are slugs of conference names, so a series' id changes when it is renamed
+(and every id changed once, when rows moved off acronym ids). Stored
+subscriptions and snapshot entries keep the id they were written under; the
+``resolve`` hook (``database.resolve_ids``) maps each to the current id, and an
+unsubscribe link names the id the subscription is actually stored under.
+
 Tokens are HMAC-SHA256 (hex) keyed by ``SUBSCRIBE_SECRET`` over the
 newline-joined parts, identical to ``sign`` in ``web/vercel/api/_lib.js``.
 """
@@ -159,15 +165,18 @@ def build_update_email(
     from_address: str,
     site_url: str,
     secret: str,
+    subscription_id: Optional[str] = None,
 ) -> EmailMessage:
     """The update email for one subscriber: changes, the new schedule, the .ics.
 
     An edition rollover (see :func:`new_edition_year`) is announced as such, and
     the previous edition's dates that the new edition has not published yet are
     reported as "not yet announced" rather than as a change to a blank value.
+    ``subscription_id`` is the id the subscription is stored under, when it
+    predates the series' current id; the unsubscribe link must name it.
     """
     label = conf.acronym or conf.name
-    one = unsubscribe_url(site_url, secret, to_address, conf.id)
+    one = unsubscribe_url(site_url, secret, to_address, subscription_id or conf.id)
     everything = unsubscribe_url(site_url, secret, to_address, "*")
     year = new_edition_year(changes)
     if year:
@@ -231,15 +240,29 @@ def notify_subscribers(
     send: Callable[[EmailMessage], None],
     fetch: Callable[[], Dict[str, List[str]]],
     log: Callable[[str], None] = print,
+    resolve: Optional[Callable[[Iterable[str]], Dict[str, str]]] = None,
 ) -> NotifyReport:
     """Email subscribers of every series whose watched fields changed.
 
     ``fetch`` returns subscriber addresses by conference id and ``send`` delivers
-    one message; both are injected so the flow is testable offline.
+    one message; both are injected so the flow is testable offline. ``resolve``
+    maps stored ids (current or former) to current ones, omitting unknown ids;
+    without it, ids are taken as current.
     """
     report = NotifyReport()
     current = {c.id: (c, watched_snapshot(c)) for c in conferences}
     state = load_state(state_path)
+    if state is not None and resolve is not None:
+        # Carry entries recorded under a former id over to the current one; an
+        # entry already under the current id wins.
+        moved = resolve(list(state))
+        remapped: Dict[str, dict] = {}
+        for old_id, snap in state.items():
+            remapped.setdefault(moved.get(old_id, old_id), snap)
+        for cid in current:
+            if cid in state:
+                remapped[cid] = state[cid]
+        state = remapped
     if state is None:
         save_state(state_path, {cid: snap for cid, (_, snap) in current.items()})
         report.initialized = True
@@ -251,16 +274,29 @@ def notify_subscribers(
         for cid, (_, snap) in current.items()
         if cid in state and (changes := diff_snapshots(state[cid], snap))
     }
-    subscribers = fetch() if report.changed else {}
+    stored = fetch() if report.changed else {}
+    moved = resolve(list(stored)) if resolve is not None else {k: k for k in stored}
+    # Current id -> {email: the id that subscription is stored under}.
+    subscribers: Dict[str, Dict[str, str]] = {}
+    for stored_id, emails in stored.items():
+        cid = moved.get(stored_id)
+        for email in emails:
+            if cid is not None:
+                subscribers.setdefault(cid, {}).setdefault(email, stored_id)
 
     for cid, (conf, snap) in current.items():
         if cid not in report.changed:
             state[cid] = snap  # new series, or unchanged
             continue
         ok = True
-        for email in sorted(set(subscribers.get(cid, []))):
+        for email, stored_id in sorted(subscribers.get(cid, {}).items()):
             try:
-                send(build_update_email(conf, report.changed[cid], email, from_address, site_url, secret))
+                send(
+                    build_update_email(
+                        conf, report.changed[cid], email, from_address, site_url, secret,
+                        subscription_id=stored_id,
+                    )
+                )
                 report.sent.append((cid, email))
             except Exception as exc:  # keep going; this series retries next run
                 ok = False

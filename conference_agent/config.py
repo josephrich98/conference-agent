@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from conference_agent.models import normalize_subcategories
+from conference_agent.models import name_id, normalize_subcategories
 
 # --- Discovery agent -------------------------------------------------------
 
@@ -123,7 +123,7 @@ SEED_CONFERENCES = [
     # "Medical Conferences by Specialty" (see SEED_CONFERENCE_SOURCES); the
     # discovery agent finds the rest of each field.
     # Anesthesiology
-    ("ASA", "American Society of Anesthesiologists Annual Meeting", "anesthesiology"),
+    ("ASA", "American Society of Anesthesiologists Annual Meeting (ANESTHESIOLOGY)", "anesthesiology"),
     ("IARS", "International Anesthesia Research Society Annual Meeting", "anesthesiology"),
     ("ESAIC", "Euroanaesthesia (European Society of Anaesthesiology and Intensive Care)", "anesthesiology"),
     ("WARC", "Western Anesthesia Residents' Conference", "anesthesiology"),
@@ -152,13 +152,13 @@ SEED_CONFERENCES = [
     ("WONCA", "World Organization of Family Doctors World Conference", "family medicine"),
     # Gastroenterology
     ("DDW", "Digestive Disease Week", "gastroenterology"),
-    ("ACG", "American College of Gastroenterology Annual Scientific Meeting", "gastroenterology"),
+    ("ACG", "American College of Gastroenterology Annual Scientific Meeting & Postgraduate Course", "gastroenterology"),
     ("UEGW", "United European Gastroenterology Week", "gastroenterology"),
     ("AASLD", "American Association for the Study of Liver Diseases (The Liver Meeting)", "gastroenterology"),
-    ("EASL", "European Association for the Study of the Liver (International Liver Congress)", "gastroenterology"),
+    ("EASL", "European Association for the Study of the Liver Congress (EASL Congress)", "gastroenterology"),
     # Internal medicine
     ("ACP", "American College of Physicians Internal Medicine Meeting", "internal medicine"),
-    ("SHM", "Society of Hospital Medicine Annual Conference", "internal medicine"),
+    ("SHM", "Society of Hospital Medicine Annual Conference (SHM Converge)", "internal medicine"),
     ("EFIM", "European Federation of Internal Medicine Congress", "internal medicine"),
     # Neurology
     ("AAN", "American Academy of Neurology Annual Meeting", "neurology"),
@@ -166,7 +166,7 @@ SEED_CONFERENCES = [
     ("EAN", "European Academy of Neurology Congress", "neurology"),
     ("AES", "American Epilepsy Society Annual Meeting", "neurology"),
     ("ISC", "International Stroke Conference", "neurology"),
-    ("MDS", "International Parkinson and Movement Disorder Society Congress", "neurology"),
+    ("MDS", "International Congress of Parkinson's Disease and Movement Disorders", "neurology"),
     # Obstetrics & gynecology
     ("ACOG", "American College of Obstetricians and Gynecologists Annual Meeting", "obstetrics and gynecology"),
     ("SMFM", "Society for Maternal-Fetal Medicine Annual Pregnancy Meeting", "obstetrics and gynecology"),
@@ -189,14 +189,14 @@ SEED_CONFERENCES = [
     # Pediatrics
     ("AAP", "American Academy of Pediatrics National Conference & Exhibition", "pediatrics"),
     ("PAS", "Pediatric Academic Societies Annual Meeting", "pediatrics"),
-    ("EAP", "European Academy of Pediatrics Congress", "pediatrics"),
+    ("EAP", "European Academy of Paediatrics Congress & MasterCourse", "pediatrics"),
     # Psychiatry
     ("APA", "American Psychiatric Association Annual Meeting", "psychiatry"),
     ("EPA", "European Congress of Psychiatry", "psychiatry"),
     ("ACNP", "American College of Neuropsychopharmacology Annual Meeting", "psychiatry"),
     # Pulmonology / critical care
     ("ATS", "American Thoracic Society International Conference", "pulmonology"),
-    ("CHEST", "American College of Chest Physicians Annual Meeting (CHEST)", "pulmonology"),
+    ("CHEST", "American College of Chest Physicians Annual Meeting", "pulmonology"),
     ("ERS", "European Respiratory Society International Congress", "pulmonology"),
     # Surgery
     ("ACS", "American College of Surgeons Clinical Congress", "surgery"),
@@ -223,7 +223,7 @@ SEED_CONFERENCES = [
     ("EHA", "European Hematology Association Congress", "hematology"),
     ("ISTH", "International Society on Thrombosis and Haemostasis Congress", "hematology"),
     # Infectious disease
-    ("IDWeek", "IDWeek (Infectious Diseases Society of America and partners)", "infectious disease"),
+    ("IDWeek", "IDWeek", "infectious disease"),
     ("CROI", "Conference on Retroviruses and Opportunistic Infections", "infectious disease"),
     ("ECCMID", "ESCMID Global (European Congress of Clinical Microbiology & Infectious Diseases)", "infectious disease"),
     # Medical physics (imaging-adjacent)
@@ -235,7 +235,7 @@ SEED_CONFERENCES = [
     # Neurosurgery
     ("AANS", "American Association of Neurological Surgeons Annual Scientific Meeting", "neurosurgery"),
     ("CNS", "Congress of Neurological Surgeons Annual Meeting", "neurosurgery"),
-    ("WFNS", "World Federation of Neurosurgical Societies World Congress", "neurosurgery"),
+    ("WFNS", "World Congress of Neurosurgery (World Federation of Neurosurgical Societies)", "neurosurgery"),
     # Otolaryngology (ENT)
     ("AAOHNS", "American Academy of Otolaryngology-Head and Neck Surgery Annual Meeting", "otolaryngology"),
     ("COSM", "Combined Otolaryngology Spring Meetings", "otolaryngology"),
@@ -251,7 +251,7 @@ SEED_CONFERENCES = [
     ("AAPMR", "American Academy of Physical Medicine and Rehabilitation Annual Assembly", "physical medicine and rehabilitation"),
     ("ISPRM", "International Society of Physical and Rehabilitation Medicine World Congress", "physical medicine and rehabilitation"),
     # Plastic surgery
-    ("ASPS", "American Society of Plastic Surgeons (Plastic Surgery The Meeting)", "plastic surgery"),
+    ("ASPS", "American Society of Plastic Surgeons – Plastic Surgery The Meeting (PSTM)", "plastic surgery"),
     ("AAPS", "American Association of Plastic Surgeons Annual Meeting", "plastic surgery"),
     ("IPRAS", "International Confederation for Plastic Reconstructive and Aesthetic Surgery World Congress", "plastic surgery"),
     # Public health / preventive medicine
@@ -274,7 +274,7 @@ SEED_CONFERENCES = [
     ("AGBT", "Advances in Genome Biology and Technology General Meeting", "genomics"),
     ("ACMG", "American College of Medical Genetics and Genomics Annual Clinical Genetics Meeting", "genomics"),
     ("ISMB", "Intelligent Systems for Molecular Biology", "genomics"),
-    ("RECOMB", "Research in Computational Molecular Biology", "genomics"),
+    ("RECOMB", "International Conference on Research in Computational Molecular Biology", "genomics"),
     ("ECCB", "European Conference on Computational Biology", "genomics"),
     ("PSB", "Pacific Symposium on Biocomputing", "genomics"),
     ("APBC", "Asia Pacific Bioinformatics Conference", "genomics"),
@@ -282,7 +282,7 @@ SEED_CONFERENCES = [
     ("BOSC", "Bioinformatics Open Source Conference", "genomics"),
     ("GCC", "Galaxy Community Conference", "genomics"),
     ("JOBIM", "Journees Ouvertes en Biologie, Informatique et Mathematiques", "genomics"),
-    ("GIW", "Genome Informatics Workshop (GIW/ISCB-Asia)", "genomics"),
+    ("GIW", "Genome Informatics Workshop (GIW / ISCB-Asia)", "genomics"),
     ("RECOMB-SEQ", "RECOMB Satellite Workshop on Massively Parallel Sequencing", "genomics"),
     ("RECOMB-CG", "RECOMB Satellite Workshop on Comparative Genomics", "genomics"),
     ("RECOMB-GENETICS", "RECOMB Satellite Workshop on Computational Genetics", "genomics"),
@@ -298,22 +298,22 @@ SEED_CONFERENCES = [
     # fields; the remainder (genomics, genetics, computational/molecular biology)
     # under "genomics".
     ("CSHL-BOG", "CSHL Biology of Genomes", "genomics"),
-    ("CSHL-GENINFO", "CSHL Genome Informatics", "genomics"),
+    ("CSHL-GENINFO", "Genome Informatics", "genomics"),
     ("CSHL-PROBGEN", "CSHL Probabilistic Modeling in Genomics", "genomics"),
     ("CSHL-BIODATA", "CSHL Biological Data Science", ("genomics", "machine learning")),
     ("CSHL-NETBIO", "CSHL Network Biology", "genomics"),
     ("CSHL-CRISPR", "CSHL Genome Engineering: CRISPR Frontiers", "genomics"),
     ("CSHL-EPIG", "CSHL Epigenetics & Chromatin", "genomics"),
-    ("CSHL-TE", "CSHL Transposable Elements", "genomics"),
+    ("CSHL-TE", "Transposable Elements", "genomics"),
     ("CSHL-TELO", "CSHL Telomeres & Telomerase", "genomics"),
-    ("CSHL-GERM", "CSHL Germ Cells", "genomics"),
+    ("CSHL-GERM", "Germ Cells", "genomics"),
     ("CSHL-TRANSCTRL", "CSHL Translational Control", "genomics"),
     ("CSHL-NAT", "CSHL Nucleic Acid Therapies", "genomics"),
     ("CSHL-UBIQ", "CSHL Ubiquitin and Ubiquitin-Like Modifiers", "genomics"),
     ("CSHL-SINGLEBIO", "CSHL Single Biomolecules", "genomics"),
     ("CSHL-CELLFUSION", "CSHL Cell & Membrane Fusion", "genomics"),
     ("CSHL-CELLMODEL", "CSHL Cell Modeling in Space and Time", "genomics"),
-    ("CSHL-MICROBIOME", "CSHL Microbiome", "genomics"),
+    ("CSHL-MICROBIOME", "Microbiome (Cold Spring Harbor Laboratory)", "genomics"),
     ("CSHL-RETRO", "CSHL Retroviruses", "genomics"),
     ("CSHL-SYSIMM", "CSHL Systems Immunology", "genomics"),
     ("CSHL-METAB", "CSHL Mechanisms of Metabolic Signaling", "genomics"),
@@ -345,8 +345,8 @@ SEED_CONFERENCES = [
     ("ACL", "Annual Meeting of the Association for Computational Linguistics", "natural language processing"),
     ("EMNLP", "Conference on Empirical Methods in Natural Language Processing", "natural language processing"),
     ("EACL", "Conference of the European Chapter of the Association for Computational Linguistics", "natural language processing"),
-    ("NAACL", "Annual Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics", "natural language processing"),
-    ("IJCNLP-AACL", "International Joint Conference on Natural Language Processing and Asia-Pacific Chapter of the ACL", "natural language processing"),
+    ("NAACL", "Annual Conference of the Nations of the Americas Chapter of the ACL", "natural language processing"),
+    ("IJCNLP-AACL", "International Joint Conference on Natural Language Processing & Asia-Pacific Chapter of the Association for Computational Linguistics", "natural language processing"),
     ("COLM", "Conference on Language Modeling", ("natural language processing", "machine learning")),
     # Computer vision
     ("CVPR", "IEEE/CVF Conference on Computer Vision and Pattern Recognition", ("computer vision", "machine learning")),
@@ -393,7 +393,7 @@ SEED_CONFERENCES = [
     ("ICORS", "International Conference on Robust Statistics", "statistics"),
 
     # --- Computer science --------------------------------------------------
-    ("SIGGRAPH", "ACM SIGGRAPH Conference", "computer graphics"),
+    ("SIGGRAPH", "ACM SIGGRAPH Conference on Computer Graphics and Interactive Techniques", "computer graphics"),
     ("WSC", "Winter Simulation Conference", "simulation"),
     ("ICSE", "International Conference on Software Engineering", "software engineering"),
     ("POPL", "ACM SIGPLAN Symposium on Principles of Programming Languages", "programming languages"),
@@ -405,7 +405,7 @@ SEED_CONFERENCES = [
     ("ICM", "International Congress of Mathematicians", "mathematics"),
     ("JMM", "Joint Mathematics Meetings", "mathematics"),
     ("MATHFEST", "MAA MathFest", "mathematics"),
-    ("SIAM", "SIAM Annual Meeting", "applied mathematics"),
+    ("SIAM", "SIAM Annual Meeting (Society for Industrial and Applied Mathematics)", "applied mathematics"),
 ]
 
 
@@ -770,6 +770,20 @@ def seed_subcategories_for(acronym: str) -> "list[str] | None":
         return None
     subs = _SEED_SUBCATEGORIES_BY_UPPER.get(acronym.upper())
     return list(subs) if subs else None
+
+
+# Seed acronym by name id. Series are indexed by name and two may share an
+# acronym, so the per-seed curation above (links, subcategories, formats), which
+# is keyed by the seed acronym, applies only to the series whose name is the
+# seed's: look the acronym up here from the name, never from a row's acronym.
+_SEED_ACRONYM_BY_NAME_ID: dict[str, str] = {
+    name_id(name): acronym for acronym, name, _ in SEED_CONFERENCES
+}
+
+
+def seed_acronym_for_name(name: str) -> "str | None":
+    """The seed acronym of the series named *name*, or ``None`` if not a seed."""
+    return _SEED_ACRONYM_BY_NAME_ID.get(name_id(name)) if name else None
 
 
 def seed_subcategories() -> list[str]:

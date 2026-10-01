@@ -18,6 +18,7 @@ from conference_agent.refresh import (
     due_subcategories,
     edition_anchor,
     is_due_for_check,
+    is_retired,
     mark_subcategories_checked,
     plan_watch,
     run_watch,
@@ -49,6 +50,18 @@ def test_past_two_years_is_not_due():
     # Edition over two years ago -> assume dead or infrequent, stop checking.
     row = _row(prior_start_date=date(2024, 5, 17))
     assert is_due_for_check(row, TODAY) is False
+
+
+def test_retired_only_past_the_check_window():
+    # Retired once the last edition is over two years old with nothing newer.
+    assert is_retired(_row(prior_start_date=date(2024, 5, 17)), TODAY) is True
+    assert is_retired(_row(prior_start_date=date(2025, 5, 17)), TODAY) is False
+    # A future edition on record, or no dates at all (fresh seed), never retires.
+    assert is_retired(
+        _row(prior_start_date=date(2024, 5, 17), upcoming_start_date=date(2026, 9, 1)),
+        TODAY,
+    ) is False
+    assert is_retired(_row(), TODAY) is False
 
 
 def test_biennial_gap_is_still_due():
@@ -233,15 +246,15 @@ def test_plan_watch_selects_tiers_and_respects_biweekly_interval(tmp_path):
         return _check("fp")
 
     decisions = plan_watch(url, TODAY, check)
-    assert [(d.id, d.tier) for d in decisions] == [("D", "daily"), ("S", "stale")]
+    assert [(d.id, d.tier) for d in decisions] == [("d", "daily"), ("s", "stale")]
     assert sorted(fetched) == ["https://d.org", "https://s.org"]
 
     # After a run records the checks, the stale series waits two weeks; the
     # daily one is checked again tomorrow.
     run_watch(url, today=TODAY, check=check, refresh=lambda targets, attendance_hints=None: [], log=lambda m: None)
     tomorrow = TODAY + timedelta(days=1)
-    assert [d.id for d in plan_watch(url, tomorrow, check)] == ["D"]
-    assert {d.id for d in plan_watch(url, TODAY + timedelta(days=14), check)} == {"D", "S"}
+    assert [d.id for d in plan_watch(url, tomorrow, check)] == ["d"]
+    assert {d.id for d in plan_watch(url, TODAY + timedelta(days=14), check)} == {"d", "s"}
 
 
 def test_run_watch_merges_results_and_records_state(tmp_path):
@@ -250,23 +263,23 @@ def test_run_watch_merges_results_and_records_state(tmp_path):
     extended = TODAY + timedelta(days=12)
 
     def refresh(targets, attendance_hints=None):
-        assert {t.id for t in targets} == {"D", "S"}
+        assert {t.id for t in targets} == {"d", "s"}
         # D's deadline was extended; the result omits attendance, which must survive.
         return [Conference(acronym="D", name="D", subcategory="radiology",
                            upcoming_abstract_deadline=extended)]
 
     report = run_watch(url, today=TODAY, check=lambda u: _check("fp1"), refresh=refresh, log=lambda m: None)
-    assert report.researched == ["D", "S"]
-    assert report.changes["D"] == [
+    assert report.researched == ["d", "s"]
+    assert report.changes["d"] == [
         f"upcoming_abstract_deadline: {TODAY + timedelta(days=5)} -> {extended}"
     ]
     rows = _rows(url)
-    assert rows["D"].upcoming_abstract_deadline == extended
-    assert rows["D"].attendance == 5000
-    assert (rows["D"].last_checked, rows["D"].watch_checked, rows["D"].watch_fingerprint) == (
+    assert rows["d"].upcoming_abstract_deadline == extended
+    assert rows["d"].attendance == 5000
+    assert (rows["d"].last_checked, rows["d"].watch_checked, rows["d"].watch_fingerprint) == (
         TODAY, TODAY, "fp1"
     )
-    assert rows["D"].watch_url == "https://d.org"
+    assert rows["d"].watch_url == "https://d.org"
 
     # Next day, same page -> no research.
     nxt = run_watch(url, today=TODAY + timedelta(days=1), check=lambda u: _check("fp1"),
@@ -282,11 +295,11 @@ def test_run_watch_leaves_failed_batches_for_the_next_run(tmp_path):
         raise RuntimeError("agent down")
 
     report = run_watch(url, today=TODAY, check=lambda u: _check("fp1"), refresh=boom, log=lambda m: None)
-    assert report.failed == ["D", "S"]
+    assert report.failed == ["d", "s"]
     rows = _rows(url)
     # Nothing recorded, so tomorrow's run re-plans both with the same evidence.
-    assert rows["D"].watch_checked is None and rows["D"].last_checked is None
-    assert rows["S"].watch_fingerprint is None
+    assert rows["d"].watch_checked is None and rows["d"].last_checked is None
+    assert rows["s"].watch_fingerprint is None
 
 
 def test_run_watch_defers_past_the_cap(tmp_path, monkeypatch):
@@ -298,8 +311,8 @@ def test_run_watch_defers_past_the_cap(tmp_path, monkeypatch):
     report = run_watch(url, today=TODAY, check=lambda u: _check("fp1"),
                        refresh=lambda targets, attendance_hints=None: [], log=lambda m: None)
     # The daily-tier series goes first; the stale one waits, unstamped.
-    assert (report.researched, report.deferred) == (["D"], ["S"])
-    assert _rows(url)["S"].watch_checked is None
+    assert (report.researched, report.deferred) == (["d"], ["s"])
+    assert _rows(url)["s"].watch_checked is None
 
 
 def test_run_watch_dry_run_writes_nothing(tmp_path):
@@ -311,5 +324,26 @@ def test_run_watch_dry_run_writes_nothing(tmp_path):
 
     report = run_watch(url, today=TODAY, check=lambda u: _check("fp1"), refresh=refresh,
                        dry_run=True, log=lambda m: None)
-    assert [d.id for d in report.decisions if d.run_agent] == ["D", "S"]
+    assert [d.id for d in report.decisions if d.run_agent] == ["d", "s"]
     assert all(r.watch_checked is None for r in _rows(url).values())
+
+
+def test_run_watch_passes_each_targets_attendance_hint(tmp_path):
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [Conference(acronym="HNT", name="Hint Test Meeting", subcategory="radiology",
+                    url="https://hnt.org", upcoming_abstract_deadline=TODAY + timedelta(days=5),
+                    attendance=5000, attendance_year=2025,
+                    attendance_source="https://hnt.org/2025-stats")],
+        db_url=url,
+    )
+    passed = []
+
+    def refresh(targets, attendance_hints=None):
+        passed.append(attendance_hints)
+        return []
+
+    run_watch(url, today=TODAY, check=lambda u: _check("fp"), refresh=refresh, log=lambda m: None)
+    assert passed == [
+        {"HNT — Hint Test Meeting": {"source": "https://hnt.org/2025-stats", "year": 2025}}
+    ]

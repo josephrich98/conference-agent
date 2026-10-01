@@ -30,6 +30,7 @@ from conference_agent.models import (
     Conference,
     ConferenceSize,
     RemoteOption,
+    name_id,
     normalize_subcategories,
 )
 
@@ -62,7 +63,7 @@ def test_to_conference_maps_dates_and_enums():
         )
     )
     assert conf is not None
-    assert conf.id == "RSNA"
+    assert conf.id == "rsna-annual-meeting"
     assert conf.subcategory == "radiology"  # normalized to lowercase
     assert conf.category == "medicine"  # derived from the subcategory
     assert conf.upcoming_start_date == date(2026, 11, 29)
@@ -149,12 +150,15 @@ def test_seed_list_is_well_formed():
     from conference_agent.models import SUBCATEGORY_TO_CATEGORY
 
     assert SEED_CONFERENCES
+    # Series are indexed by name, so no two seeds may share a name id.
+    ids = [Conference(acronym=a, name=n, subcategory=s).id for a, n, s in SEED_CONFERENCES]
+    assert len(set(ids)) == len(ids)
     for acronym, name, subcategory in SEED_CONFERENCES:
         subs = normalize_subcategories(subcategory)
         assert acronym.strip() and name.strip() and subs
         # Seeds must satisfy the same identity/validation rules as discovered rows.
         conf = Conference(acronym=acronym, name=name, subcategory=subcategory)
-        assert conf.id == acronym.upper()
+        assert conf.id == name_id(name)
         assert conf.subcategories == subs
         # Every seed subcategory must be mapped so its broad category derives.
         for sub in subs:
@@ -367,11 +371,34 @@ def test_refresh_conferences_targets_named_series_only(monkeypatch):
         ],
     )
     found = discover.refresh_conferences([target])
-    assert [c.id for c in found] == ["RSNA"]
+    # The re-worded "RSNA" record matches the target by acronym and comes back
+    # under the stored name, so it merges into the same row.
+    assert [c.id for c in found] == [target.id]
+    assert found[0].name == target.name
     assert "Re-check ONLY" in seen["prompt"]
     assert "https://www.rsna.org/annual-meeting" in seen["prompt"]
     assert "abstract 2026-05-06" in seen["prompt"]
     assert "- RSNA — Radiological Society of North America" in seen["system"]
+
+
+def test_refresh_conferences_shared_acronym_matches_by_name_only(monkeypatch):
+    from conference_agent.models import Conference
+
+    a = Conference(acronym="ISMB", name="Intelligent Systems for Molecular Biology", subcategory="bioinformatics")
+    b = Conference(acronym="ISMB", name="International Society for Magnetic Bodies", subcategory="physics")
+    monkeypatch.setattr(discover, "_research_text_via_cli", lambda *args: "notes")
+    monkeypatch.setattr(
+        discover,
+        "_extract_via_cli",
+        lambda text, model: [
+            # Two targets share the acronym, so a re-worded name matches neither.
+            Conference(acronym="ISMB", name="ISMB 2027", subcategory="bioinformatics"),
+            Conference(acronym="ISMB", name="International Society for Magnetic Bodies",
+                       subcategory="physics", upcoming_start_date=date(2027, 1, 1)),
+        ],
+    )
+    found = discover.refresh_conferences([a, b])
+    assert [c.id for c in found] == [b.id]
 
 
 def test_refresh_conferences_empty_targets_skip_the_agent(monkeypatch):
@@ -379,21 +406,27 @@ def test_refresh_conferences_empty_targets_skip_the_agent(monkeypatch):
     assert discover.refresh_conferences([]) == []
 
 
-def test_to_conference_carries_deadline_time_and_registration():
+def test_to_conference_carries_structured_deadline_times_and_registration():
     # These fields are requested by the research prompt; extraction must carry
     # them through (they were once missing from the schema and silently dropped).
     conf = _to_conference(
         _extracted(
             acronym="iclr",
             name="ICLR",
-            deadline_time="23:59 AoE",
+            abstract_time="11:59 PM",
+            abstract_timezone="Eastern Time",
+            paper_time="23:59",
+            paper_timezone="AoE",
             upcoming_registration="Early bird: Jan 5 - Mar 1",
             prior_registration="Opened Feb 2026",
         )
     )
-    assert conf.deadline_time == "23:59 AoE"
+    # Normalized on the way in: 24-hour time, canonical zone code.
+    assert (conf.abstract_time, conf.abstract_timezone) == ("23:59", "ET")
+    assert (conf.paper_time, conf.paper_timezone) == ("23:59", "AoE")
+    assert conf.deadline_time == "abstract: 11:59 PM ET\npaper: 11:59 PM AoE"
     assert conf.upcoming_registration == "Early bird: Jan 5 - Mar 1"
     assert conf.prior_registration == "Opened Feb 2026"
     # Unstated -> None, so a fill-only refresh merge never blanks a stored value.
     blank = _to_conference(_extracted(acronym="abc", name="Some Conf"))
-    assert blank.deadline_time is None and blank.upcoming_registration is None
+    assert blank.deadline_time is None and blank.abstract_time is None and blank.upcoming_registration is None

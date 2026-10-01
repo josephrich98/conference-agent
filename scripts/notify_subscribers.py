@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from conference_agent.config import DEFAULT_DATABASE_URL, SITE_URL, SMTP_USER, SUBSCRIBE_SECRET
-from conference_agent.database import query_conferences
+from conference_agent.database import query_conferences, resolve_ids
 from conference_agent.notify import send_message, smtp_configured
 from conference_agent.subscriptions import fetch_subscriptions, notify_subscribers
 
@@ -49,6 +49,7 @@ def main() -> int:
         from_address=SMTP_USER,
         send=send_message,
         fetch=lambda: fetch_subscriptions(args.site, SUBSCRIBE_SECRET),
+        resolve=lambda ids: resolve_ids(ids, db_url=args.db),
     )
     for cid, changes in report.changed.items():
         print(f"  {cid}: " + "; ".join(f"{lbl} {old or '—'} -> {new or '—'}" for lbl, old, new in changes))

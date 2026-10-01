@@ -39,46 +39,26 @@ from conference_agent.database import (
     seed_conferences,
 )
 from web.nl_query import LLMUnavailable, TranslationError, translate
-from web.search import QueryError, build_filter, field_help
+from web.search import RESULT_COLUMNS, QueryError, build_filter, field_help
 
 app = FastAPI(title="Conference Agent", description="Curated conference table + calendar sync.")
 
 _STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
-# Columns returned and exported, in display order.
-_RESULT_COLUMNS = [
-    "id",
-    "acronym",
-    "name",
-    "category",
-    "subcategory",
-    "format",
-    "location",
-    "size",
-    "attendance",
-    "attendance_year",
-    "remote_option",
-    "cost",
-    "url",
-    "abstract_month",
-    "upcoming_abstract_deadline",
-    "late_abstract_month",
-    "upcoming_late_abstract_deadline",
-    "paper_month",
-    "upcoming_paper_deadline",
-    "deadline_time",
-    "conference_month",
-    "upcoming_start_date",
-    "upcoming_end_date",
-    "upcoming_registration",
-    "prior_abstract_deadline",
-    "prior_late_abstract_deadline",
-    "prior_paper_deadline",
-    "prior_start_date",
-    "prior_end_date",
-    "prior_registration",
-    "notes",
+# Columns returned and exported, in display order (defined beside the search so
+# the CLI's `lookup` can use it without the web dependencies).
+_RESULT_COLUMNS = RESULT_COLUMNS
+
+# The structured deadline times (a 24-hour time and a zone per deadline kind).
+# Carried in each serialized row for the browser -- it colors a date the moment its
+# time passes and can show the time in 24-hour form -- but deliberately not in
+# ``_RESULT_COLUMNS``: they are not table columns, and the CSV / API column list
+# stays the user-facing ``deadline_time`` text derived from them.
+_TIME_COLUMNS = [
+    f"{kind}_{part}"
+    for kind in ("abstract", "late_abstract", "paper")
+    for part in ("time", "timezone")
 ]
 
 # Columns that may be used for sorting.
@@ -131,14 +111,17 @@ _MONTH_SORT_TIEBREAKER = {
 }
 
 
-def _rolling_month(month_col, current: int):
-    """Rank a 1-12 month column so ``current`` sorts first (0) and wraps around.
+def _rolling_month(month_col, day_col, month: int, day: int = 1):
+    """Rank a 1-12 month column (plus the day of its underlying date) so the
+    start ``month``/``day`` sorts first (0) and the year wraps around.
 
-    The month sorts roll from the current month rather than January, so ascending
-    lists what comes next first (in October: Oct, Nov, ..., Sep). NULL stays NULL.
-    Mirrors ``rollingMonth`` in web/static/search.js.
+    The month sorts roll from today rather than January 1, so ascending lists
+    what comes next first (on Oct 15: Oct 15-31, Nov, ..., Sep, Oct 1-14). A
+    month without a day counts as the 1st. NULL months stay NULL. Mirrors
+    ``rollingMonth`` in web/static/search.js.
     """
-    return (month_col - current + 12) % 12
+    day_col = func.coalesce(day_col, 1)
+    return (month_col * 31 + day_col - (month * 31 + day) + 372) % 372
 
 
 def get_db_url() -> str:
@@ -164,7 +147,7 @@ def _ensure_seeded() -> None:
 def _row_to_dict(row: ConferenceRow) -> dict:
     """Serialize a row to a JSON-friendly dict (dates as ISO strings)."""
     out: dict = {}
-    for col in _RESULT_COLUMNS:
+    for col in (*_RESULT_COLUMNS, *_TIME_COLUMNS):
         value = getattr(row, col)
         if hasattr(value, "isoformat"):
             value = value.isoformat()
@@ -186,9 +169,10 @@ def _run_search(
     limit: int = _MAX_RESULTS,
     offset: int = 0,
     month_start: Optional[int] = None,
+    day_start: Optional[int] = None,
 ) -> List[ConferenceRow]:
     """Run a boolean search, sorted. Month sorts begin at ``month_start``
-    (1-12), defaulting to the current month."""
+    (1-12) and ``day_start`` (1-31, default 1), defaulting to today."""
     _ensure_seeded()
     try:
         filt = build_filter(query)
@@ -209,20 +193,25 @@ def _run_search(
     if sort == "size":
         sort_col = case(_SIZE_SORT_RANK, value=ConferenceRow.size)
     if sort in _MONTH_SORT_TIEBREAKER:
-        sort_col = _rolling_month(primary, month_start or date.today().month)
+        if month_start is None:
+            today = date.today()
+            month_start, day_start = today.month, today.day
+        sort_col = _rolling_month(
+            primary,
+            extract("day", _MONTH_SORT_TIEBREAKER[sort]),
+            month_start,
+            day_start or 1,
+        )
     descending = order == "desc"
     direction = (lambda c: c.desc()) if descending else (lambda c: c.asc())
 
     # NULLs always last, regardless of direction.
     order_by = [sort_col.is_(None), direction(sort_col)]
-    # Tie-breakers: the derived-month sorts break ties on the day of the month of
-    # their underlying date (following the sort direction), so the order is
-    # seasonal and ignores which year's edition is shown; the size sort breaks ties on
-    # attendance; every sort then breaks any remaining ties
-    # alphabetically by acronym (falling back to name) for a stable order.
-    tiebreak = _MONTH_SORT_TIEBREAKER.get(sort)
-    if tiebreak is not None:
-        order_by.append(direction(extract("day", tiebreak)))
+    # Tie-breakers: the derived-month sorts already rank on month and day of their
+    # underlying date, so the order is seasonal and ignores which year's edition
+    # is shown; the size sort breaks ties on attendance; every sort then breaks
+    # any remaining ties alphabetically by acronym (falling back to name) for a
+    # stable order.
     if sort == "size":
         # Within a size bucket, order by the attendance figure the bucket comes
         # from, following the size direction (ascending size runs largest first).
@@ -326,10 +315,15 @@ def api_search(
     limit: int = Query(_MAX_RESULTS, ge=1, le=_MAX_RESULTS),
     offset: int = Query(0, ge=0),
     month_start: Optional[int] = Query(
-        None, ge=1, le=12, description="Month the month sorts begin at (default: this month)."
+        None, ge=1, le=12, description="Month the month sorts begin at (default: today)."
+    ),
+    day_start: Optional[int] = Query(
+        None, ge=1, le=31, description="Day of month_start the month sorts begin at (default 1)."
     ),
 ):
-    rows = _run_search(q, sort, order, limit=limit, offset=offset, month_start=month_start)
+    rows = _run_search(
+        q, sort, order, limit=limit, offset=offset, month_start=month_start, day_start=day_start
+    )
 
     if format == "csv":
         return _csv_response(rows)
@@ -377,7 +371,11 @@ def api_calendar_ics(
     engine = get_engine(get_db_url())
 
     if ids:
-        wanted = [i.strip().upper() for i in ids.split(",") if i.strip()]
+        from conference_agent.database import resolve_ids
+
+        # Former ids (an old acronym id, or a name before a rename) still work.
+        requested = [i.strip() for i in ids.split(",") if i.strip()]
+        wanted = list(resolve_ids(requested, db_url=get_db_url()).values())
         stmt = select(ConferenceRow).where(ConferenceRow.id.in_(wanted))
         with Session(engine) as session:
             rows = list(session.scalars(stmt))

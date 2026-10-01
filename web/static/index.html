@@ -249,11 +249,11 @@
     #notify-pop .np-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
     #notify-pop .np-foot button { padding: 6px 12px; font-size: 13px; }
     #notify-pop .np-foot button:disabled { opacity: 0.6; cursor: default; }
-    /* Per-column value filter: the ▾ in a categorical header opens a checkbox list. */
+    /* Per-column value filter: the ■ in a categorical header opens a checkbox list. */
     table.results th .filt {
       border: none;
       background: none;
-      color: var(--muted);
+      color: #9aa0a6;
       font-size: 11px;
       margin-left: 4px;
       padding: 1px 4px;
@@ -280,6 +280,18 @@
       font-size: 13px;
     }
     #filter-pop[hidden] { display: none; }
+    #time-pop {
+      position: absolute;
+      z-index: 20;
+      padding: 6px 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      font-size: 13px;
+    }
+    #time-pop[hidden] { display: none; }
+    #time-pop label { display: flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
     #filter-pop .fp-head { padding: 2px 4px 8px; color: var(--muted); }
     #filter-pop .fp-head b { color: var(--text); }
     #fp-search {
@@ -393,10 +405,14 @@
 
   <div id="toast"></div>
 
+  <div id="time-pop" hidden role="dialog" aria-label="Deadline time display">
+    <label><input type="checkbox" id="tp-military" /><span>Military time (24-hour)</span></label>
+  </div>
+
   <div id="filter-pop" hidden role="dialog" aria-label="Filter by value">
     <div class="fp-head">Show rows where <b id="fp-title"></b> is</div>
     <input id="fp-search" type="text" autocomplete="off" spellcheck="false" placeholder="Search values" aria-label="Search values" />
-    <label class="fp-opt" id="fp-jan-row" hidden title="Month sorts otherwise begin at the current month"><input type="checkbox" id="fp-jan" /><span>Sort starting in January</span></label>
+    <label class="fp-opt" id="fp-jan-row" hidden title="Month sorts otherwise begin at today"><input type="checkbox" id="fp-jan" /><span>Sort starting in January</span></label>
     <label class="fp-all"><input type="checkbox" id="fp-all" /><span id="fp-all-label">Select all</span></label>
     <div id="fp-list"></div>
     <div class="fp-foot">
@@ -425,7 +441,7 @@
   <script src="nl_query.js"></script>
   <script defer src="/_vercel/insights/script.js"></script>   <!-- Vercel Web Analytics -->
   <script>
-    // Value-filter specs for the categorical columns (the header ▾). `values(r)`
+    // Value-filter specs for the categorical columns (the header ■). `values(r)`
     // gives the values a row holds (none means blank); `label` and `rank`
     // optionally set how a value is shown and ordered in the list (default:
     // alphabetical). Multi-valued columns are comma-separated lists.
@@ -536,35 +552,41 @@
     // coalesced upcoming-else-prior date its neighboring column shows), so the
     // urgency signal survives when the full date columns are hidden. The color is
     // judged by the source date, never by the month number alone.
-    function monthCell(n, refDate) {
+    function monthCell(n, refDate, spec) {
       if (!(n >= 1 && n <= 12)) return '<span class="muted">—</span>';
-      return dateSpan(MONTHS[n], refDate);
+      return dateSpan(MONTHS[n], refDate, spec);
     }
 
     const NOW = new Date();
-    const TODAY = ymd(NOW);
 
-    // Month sorts begin at this month and wrap around the year unless the viewer
-    // ticks "Start in January" in a month column's ▾ menu (remembered per browser).
+    // Month sorts begin today and wrap around the year unless the viewer
+    // ticks "Start in January" in a month column's ■ menu (remembered per browser).
     const MONTH_JAN_KEY = "conference-agent.month-sort-from-january";
     let monthFromJanuary = false;
     try { monthFromJanuary = localStorage.getItem(MONTH_JAN_KEY) === "1"; } catch (e) { /* storage blocked */ }
     const monthStart = () => (monthFromJanuary ? 1 : NOW.getMonth() + 1);
-    const THREE_MONTHS_AGO = ymd(new Date(NOW.getFullYear(), NOW.getMonth() - 3, NOW.getDate()));
-    const THREE_MONTHS_AHEAD = ymd(new Date(NOW.getFullYear(), NOW.getMonth() + 3, NOW.getDate()));
+    const dayStart = () => (monthFromJanuary ? 1 : NOW.getDate());
 
-    // CSS class for a date relative to a three-month window around today:
-    //   orange  — more than three months in the past (long gone)
-    //   red     — within the last three months (recently passed)
-    //   green   — from today through three months ahead (coming up soon)
+    // CSS class for a date relative to a three-month window around now. `at` is
+    // the instant (ms) the date has passed: the end of its deadline time, or of the
+    // day in AoE when it has none (see ConferenceCalendar.deadlineInstant). So a
+    // deadline turns from green to red the moment its time passes, not at midnight.
+    //   orange  — passed, more than three months ago (long gone)
+    //   red     — passed within the last three months (recently missed)
+    //   green   — not yet passed, within three months ahead (coming up soon)
     //   ""      — more than three months out, left uncolored
-    function dateClass(date) {
+    function dateClass(date, at, now = Date.now()) {
       if (!date) return "";
-      if (date < THREE_MONTHS_AGO) return "date-old";
-      if (date < TODAY) return "date-recent";
-      if (date <= THREE_MONTHS_AHEAD) return "date-soon";
-      return "";
+      const today = new Date(now);
+      const ago = ymd(new Date(today.getFullYear(), today.getMonth() - 3, today.getDate()));
+      const ahead = ymd(new Date(today.getFullYear(), today.getMonth() + 3, today.getDate()));
+      if (at <= now) return date < ago ? "date-old" : "date-recent";
+      return date <= ahead ? "date-soon" : "";
     }
+
+    // The (time, zone) a deadline kind closes at, or {} for dates that have none
+    // (the conference dates), which default to the end of the day in AoE.
+    const specFor = (r, kind) => ({ time: r[`${kind}_time`], tz: r[`${kind}_timezone`] });
 
     function dateRange(start, end) {
       if (!start) return '<span class="muted">—</span>';
@@ -575,16 +597,47 @@
     // Wrap a rendered date value, coloring it by how its (start) date sits
     // relative to today (see dateClass). The coloring is judged purely by the date
     // itself, not by which edition it came from.
-    function dateSpan(inner, refDate) {
-      const dc = dateClass(refDate);
+    // The span carries its date and the instant it passes so recolorDates() can
+    // re-judge it as time moves, without re-rendering or redeploying anything.
+    function dateSpan(inner, refDate, spec = {}) {
+      if (!refDate) return `<span>${inner}</span>`;
+      const at = ConferenceCalendar.deadlineInstant(refDate, spec.time, spec.tz);
+      const dc = dateClass(refDate, at);
       const cls = dc ? ` class="${dc}"` : "";
-      return `<span${cls}>${inner}</span>`;
+      return `<span${cls} data-date="${refDate}" data-at="${at}">${inner}</span>`;
     }
 
-    function dateOrPrior(upcoming, prior) {
+    function dateOrPrior(upcoming, prior, spec) {
       const value = upcoming || prior;
-      if (value) return dateSpan(value, value);
+      if (value) return dateSpan(value, value, spec);
       return '<span class="muted">—</span>';
+    }
+
+    // Re-judge every colored date against the current time. Run when a deadline
+    // passes (see scheduleRecolor), at local midnight (the three-month window moves
+    // a day), and when the tab becomes visible again after sleeping in the background.
+    let recolorTimer = null;
+    function recolorDates() {
+      const now = Date.now();
+      for (const el of document.querySelectorAll("[data-at]")) {
+        el.className = dateClass(el.dataset.date, Number(el.dataset.at), now);
+      }
+      scheduleRecolor();
+    }
+
+    // Wake at the next moment a color can change: the soonest deadline still to
+    // pass, or the next local midnight. Re-armed after every render and recolor.
+    function scheduleRecolor() {
+      clearTimeout(recolorTimer);
+      const now = Date.now();
+      const midnight = new Date(now);
+      midnight.setHours(24, 0, 0, 0);
+      let next = midnight.getTime();
+      for (const el of document.querySelectorAll("[data-at]")) {
+        const at = Number(el.dataset.at);
+        if (at > now && at < next) next = at;
+      }
+      recolorTimer = setTimeout(recolorDates, Math.max(next - now, 0) + 500);
     }
 
     function rangeOrPrior(upStart, upEnd, prStart, prEnd) {
@@ -609,26 +662,35 @@
       return value ? escapeHtml(value) : '<span class="muted">—</span>';
     }
 
-    // The deadline-time text, one entry per line, each followed by the viewer's
-    // local equivalent in parentheses ("11:59 PM ET" → "(8:59 PM PDT)"). A
-    // labeled entry ("paper: 23:59 AoE") is converted on that deadline's date;
-    // an unlabeled one on the first known deadline (DST depends on the date).
+    // 24-hour ("military") display of the Deadline time column, chosen in the
+    // header's ⚙ box (remembered per browser). Display only: the stored times are
+    // always 24-hour, and search and the calendar notes are unaffected.
+    const MILITARY_KEY = "conference-agent.military-time";
+    let militaryTime = false;
+    try { militaryTime = localStorage.getItem(MILITARY_KEY) === "1"; } catch (e) { /* storage blocked */ }
+
+    // The deadline times, one entry per line ("8:00 PM ET", or labeled
+    // "abstract: ..." / "paper: ..." lines when the deadlines differ; identical
+    // times show once), each followed by the viewer's local equivalent in
+    // parentheses ("(5:00 PM PDT)"). A labeled entry is converted on that
+    // deadline's date; an unlabeled one on the first known deadline (DST depends
+    // on the date).
     function deadlineTimeCell(r) {
-      if (!r.deadline_time || !r.deadline_time.trim()) return '<span class="muted">—</span>';
+      const entries = ConferenceCalendar.deadlineEntries(r);
+      if (!entries.length) return '<span class="muted">—</span>';
       const dates = {
         abstract: r.upcoming_abstract_deadline || r.prior_abstract_deadline,
-        "late abstract": r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline,
+        late_abstract: r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline,
         paper: r.upcoming_paper_deadline || r.prior_paper_deadline,
       };
-      dates["late-abstract"] = dates["late_abstract"] = dates["late abstract"];
-      const fallback = dates.abstract || dates["late abstract"] || dates.paper
+      const fallback = dates.abstract || dates.late_abstract || dates.paper
         || NOW.toISOString().slice(0, 10);
-      return r.deadline_time.split(/[\n;]/).map((e) => e.trim()).filter(Boolean).map((entry) => {
-        const m = entry.match(/^\s*([A-Za-z][A-Za-z _-]*?)\s*:\s*(.+)$/);
-        const label = m && m[1].trim().toLowerCase();
-        const date = (label && dates[label]) || fallback;
-        const local = ConferenceCalendar.localDeadlineTime(m ? m[2] : entry, date);
-        return `<div class="dl-time">${escapeHtml(entry)}`
+      return entries.map((e) => {
+        const label = e.kind ? `${e.kind.replace("_", " ")}: ` : "";
+        const text = ConferenceCalendar.formatDeadlineSpec(e.time, e.tz, militaryTime);
+        const local = ConferenceCalendar.localDeadlineTime(
+          e.time, e.tz, (e.kind && dates[e.kind]) || fallback, undefined, militaryTime);
+        return `<div class="dl-time">${escapeHtml(label + text)}`
           + (local ? `<div class="muted dl-local">(${escapeHtml(local)})</div>` : "")
           + "</div>";
       }).join("");
@@ -653,17 +715,17 @@
         }
         th.innerHTML = col.label + arrow;
         if (col.sort && col.sort.endsWith("_month")) {
-          // Month sorts roll from the current month (see sortRows in search.js).
-          const m = NOW.toLocaleString("en-US", { month: "short" });
+          // Month sorts roll from today (see sortRows in search.js).
+          const m = NOW.toLocaleString("en-US", { month: "short", day: "numeric" });
           th.title = monthFromJanuary
-            ? "Sorts January to December (change in the ▾ menu)"
-            : `Sorts from ${m} (this month) onward, wrapping around the year (change in the ▾ menu)`;
+            ? "Sorts January to December (change in the ■ menu)"
+            : `Sorts from ${m} (today) onward, wrapping around the year (change in the ■ menu)`;
         }
         if (col.facet) {
           const on = col.key in filters;
           const fb = document.createElement("button");
           fb.className = `filt${on ? " on" : ""}`;
-          fb.textContent = "▾";
+          fb.textContent = "■";
           fb.title = on ? "Filtered: change" : "Filter by value";
           fb.setAttribute("aria-label", `Filter ${col.label} by value`);
           fb.addEventListener("click", (e) => {
@@ -673,6 +735,22 @@
             else openFilter(col, fb);
           });
           th.appendChild(fb);
+        }
+        if (col.key === "deadline_time") {
+          // Not a value filter: a small box with the 12/24-hour display choice.
+          const tb = document.createElement("button");
+          tb.className = "filt";
+          tb.textContent = "⚙";
+          tb.title = "Time display";
+          tb.setAttribute("aria-label", "Deadline time display options");
+          tb.addEventListener("click", (e) => {
+            e.stopPropagation(); // not a sort click
+            $("columns-panel").hidden = true;
+            closeFilter();
+            if (tp) closeTimePop();
+            else openTimePop(tb);
+          });
+          th.appendChild(tb);
         }
         if (col.sort) {
           th.addEventListener("click", () => {
@@ -751,12 +829,12 @@
           <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
           <td data-col="remote_option">${(r.remote_option && r.remote_option !== "unknown") ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
-          <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline)}</td>
-          <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline)}</td>
-          <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month, r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline)}</td>
-          <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline)}</td>
-          <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline)}</td>
-          <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline)}</td>
+          <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
+          <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
+          <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month, r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline, specFor(r, "late_abstract"))}</td>
+          <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline, specFor(r, "late_abstract"))}</td>
+          <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline, specFor(r, "paper"))}</td>
+          <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline, specFor(r, "paper"))}</td>
           <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month, r.upcoming_start_date || r.prior_start_date)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
@@ -778,6 +856,7 @@
         }
         body.appendChild(tr);
       }
+      scheduleRecolor();
     }
 
     // Run the active query over the in-memory catalog. The exact boolean search
@@ -798,7 +877,7 @@
       try {
         const predicate = ConferenceSearch.buildPredicate(q);
         const filtered = predicate ? pool.filter(predicate) : pool;
-        rows = ConferenceSearch.sortRows(filtered, state.sort, state.order, monthStart());
+        rows = ConferenceSearch.sortRows(filtered, state.sort, state.order, monthStart(), dayStart());
         status = `${plural(rows.length)}.`;
       } catch (e) {
         queryError = e.message; // QueryError, like the API's 400 detail
@@ -810,7 +889,7 @@
         const hits = ConferenceSearch.keywordSearch(q, pool).map((h) => h.row);
         if (hits.length) {
           byRelevance = state.relevance;
-          rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order, monthStart());
+          rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order, monthStart(), dayStart());
           const why = queryError ? `Not a valid boolean query (${queryError})` : "No exact matches";
           status = `${why} — showing ${plural(rows.length)} matching some of your keywords` +
             (byRelevance ? ", most relevant first" : "") +
@@ -835,7 +914,7 @@
     }
 
     // ---------------------------------------------------------- column filters
-    // Excel-style value lists behind each categorical header's ▾. The chosen
+    // Excel-style value lists behind each categorical header's ■. The chosen
     // values are held here, not in the search box, and ANDed with whatever the
     // box holds (a boolean query, keywords, or an AI-translated query), so an AI
     // search keeps the filters and the boolean grammar is unchanged. A row
@@ -904,7 +983,7 @@
       $("fp-search").focus({ preventScroll: true });
     }
 
-    // Under the header's ▾; re-run when the page or table scrolls sideways.
+    // Under the header's ■; re-run when the page or table scrolls sideways.
     function placeFilter() {
       const pop = $("filter-pop");
       const b = fp.btn.getBoundingClientRect();
@@ -940,6 +1019,26 @@
     function closeFilter() {
       fp = null;
       $("filter-pop").hidden = true;
+    }
+
+    // The Deadline time column's display box: one checkbox, "Military time".
+    let tp = null; // the header button the open box hangs from
+    function openTimePop(btn) {
+      tp = btn;
+      $("tp-military").checked = militaryTime;
+      $("time-pop").hidden = false;
+      placeTimePop();
+    }
+    function placeTimePop() {
+      const pop = $("time-pop");
+      const b = tp.getBoundingClientRect();
+      const maxLeft = window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8;
+      pop.style.left = `${Math.max(window.scrollX + 8, Math.min(window.scrollX + b.left, maxLeft))}px`;
+      pop.style.top = `${window.scrollY + b.bottom + 4}px`;
+    }
+    function closeTimePop() {
+      tp = null;
+      $("time-pop").hidden = true;
     }
 
     // Keep the checked values. With a search typed, only the checked values
@@ -1201,7 +1300,8 @@
             `<tr><td><span>(plain)</span></td><td class="muted">upcoming more than 3 months out</td></tr>` +
             `<tr><td><span class="date-recent">red</span></td><td class="muted">past within the last 3 months</td></tr>` +
             `<tr><td><span class="date-old">orange</span></td><td class="muted">past more than 3 months ago</td></tr>` +
-          `</table>`;
+          `</table>` +
+          `<p class="muted" style="margin:6px 0 0">A deadline turns red the moment its time passes (its Deadline time, or the end of the day in AoE when none is given).</p>`;
       } catch (e) { /* non-fatal */ }
     }
 
@@ -1286,6 +1386,7 @@
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".columns-menu")) $("columns-panel").hidden = true;
       if (fp && !e.target.closest("#filter-pop")) closeFilter();
+      if (tp && !e.target.closest("#time-pop")) closeTimePop();
       if (np && !e.target.closest("#notify-pop")) closeNotify();
     });
     $("notify-pop").addEventListener("submit", submitNotify);
@@ -1310,13 +1411,23 @@
     $("fp-ok").addEventListener("click", applyFilter);
     $("fp-cancel").addEventListener("click", closeFilter);
     $("fp-clear").addEventListener("click", () => clearFilter(fp.col.key));
+    $("tp-military").addEventListener("change", (e) => {
+      militaryTime = e.target.checked;
+      try { localStorage.setItem(MILITARY_KEY, militaryTime ? "1" : "0"); } catch (err) { /* storage blocked */ }
+      search(); // re-render the rows in the chosen format; the box stays open
+      // The header is rebuilt, so re-anchor the open box to the new ⚙ button.
+      tp = [...document.querySelectorAll('th .filt[aria-label^="Deadline time"]')][0] || null;
+      if (tp) placeTimePop(); else closeTimePop();
+    });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) recolorDates(); });
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       if (fp) closeFilter();
+      if (tp) closeTimePop();
       if (np) closeNotify();
     });
-    window.addEventListener("resize", () => { if (fp) placeFilter(); if (np) placeNotify(); });
-    document.querySelector(".table-wrap").addEventListener("scroll", () => { if (fp) placeFilter(); if (np) placeNotify(); });
+    window.addEventListener("resize", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); });
+    document.querySelector(".table-wrap").addEventListener("scroll", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); });
     $("query").addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
       // Enter runs the keyword/boolean search; Ctrl/Cmd+Enter runs AI search.

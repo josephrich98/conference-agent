@@ -104,63 +104,35 @@ function nowStamp() {
   );
 }
 
-// Labels a multi-line deadline_time may prefix each entry with, by event kind.
-const DEADLINE_TIME_LABELS = {
-  abstract: ["abstract"],
-  "late-abstract": ["late abstract", "late-abstract", "late_abstract"],
-  paper: ["paper"],
+// The three deadline kinds, in display order. Each row carries a 24-hour
+// "HH:MM" time and a zone code per kind (`abstract_time` / `abstract_timezone`,
+// ...), the stored source of truth the "Deadline time" text is derived from.
+const DEADLINE_KINDS = ["abstract", "late_abstract", "paper"];
+
+// Zone codes a deadline may use, each a fixed UTC offset (minutes) or an IANA
+// zone. Region codes (ET, CET, ...) name the region's wall clock, so they follow
+// daylight time. Mirrors TIMEZONES in conference_agent/deadline_time.py (a test
+// pins the two together). A "UTC+9" offset or any IANA name is also accepted.
+const DEADLINE_ZONES = {
+  AoE: { offset: -12 * 60 },
+  UTC: { offset: 0 },
+  ET: { zone: "America/New_York" },
+  CT: { zone: "America/Chicago" },
+  MT: { zone: "America/Denver" },
+  PT: { zone: "America/Los_Angeles" },
+  AKT: { zone: "America/Anchorage" },
+  HST: { zone: "Pacific/Honolulu" },
+  CET: { zone: "Europe/Berlin" },
+  WET: { zone: "Europe/Lisbon" },
+  EET: { zone: "Europe/Athens" },
+  UK: { zone: "Europe/London" },
+  IST: { zone: "Asia/Kolkata" },
+  SGT: { zone: "Asia/Singapore" },
+  JST: { zone: "Asia/Tokyo" },
+  KST: { zone: "Asia/Seoul" },
+  AEST: { zone: "Australia/Sydney" },
+  BRT: { zone: "America/Sao_Paulo" },
 };
-
-// The deadline-time text that applies to one event kind (mirrors
-// calendar_sync.deadline_time_for): one shared value, or the matching
-// "kind: time" entry (newline- or semicolon-separated), or null.
-function deadlineTimeFor(deadlineTime, kind) {
-  if (!deadlineTime || !deadlineTime.trim()) return null;
-  const entries = deadlineTime.split(/[\n;]/).map((e) => e.trim()).filter(Boolean);
-  const labeled = {};
-  for (const entry of entries) {
-    const m = entry.match(/^\s*([A-Za-z][A-Za-z _-]*?)\s*:\s*(.+)$/);
-    if (m) labeled[m[1].trim().toLowerCase()] = m[2].trim();
-  }
-  if (Object.keys(labeled).length === 0) return deadlineTime.trim();
-  for (const label of DEADLINE_TIME_LABELS[kind] || []) {
-    if (label in labeled) return labeled[label];
-  }
-  return null;
-}
-
-// Description line carrying the deadline time; the event itself stays all-day.
-function deadlineNote(row, kind) {
-  const t = deadlineTimeFor(row.deadline_time, kind);
-  return t ? `\nDeadline time: ${t}` : "";
-}
-
-// Time zones a free-text deadline time may name, tried in order. `offset` is a
-// fixed UTC offset in minutes; `zone` is an IANA zone. Standard/daylight
-// abbreviations for regions that observe DST (EST/EDT, CET/CEST, ...) resolve
-// to the region's wall clock rather than a fixed offset: organizers often keep
-// writing "EST" or "CET" through the summer while meaning local time.
-const DEADLINE_ZONES = [
-  { re: /\bAoE\b|anywhere on earth/i, offset: -12 * 60 },
-  { re: /\b(?:UTC|GMT)\s*([+\-−])\s*(\d{1,2})(?::?(\d{2}))?\b/i, signed: true },
-  { re: /\b(?:UTC|GMT|Z)\b/, offset: 0 },
-  { re: /\bE[SD]?T\b|\beastern\b/i, zone: "America/New_York" },
-  { re: /\bC[SD]?T\b|\bcentral(?! europe)\b/i, zone: "America/Chicago" },
-  { re: /\bM[SD]?T\b|\bmountain\b/i, zone: "America/Denver" },
-  { re: /\bP[SD]?T\b|\bpacific\b/i, zone: "America/Los_Angeles" },
-  { re: /\bAK[SD]?T\b|\balaska\b/i, zone: "America/Anchorage" },
-  { re: /\bHST\b|\bhawaii\b/i, zone: "Pacific/Honolulu" },
-  { re: /\bCES?T\b|\bcentral europe/i, zone: "Europe/Berlin" },
-  { re: /\bWES?T\b/, zone: "Europe/Lisbon" },
-  { re: /\bEES?T\b/, zone: "Europe/Athens" },
-  { re: /\bBST\b|\bUK time\b|\bLondon\b/i, zone: "Europe/London" },
-  { re: /\bIST\b/, zone: "Asia/Kolkata" },
-  { re: /\bSGT\b/, zone: "Asia/Singapore" },
-  { re: /\bJST\b/, zone: "Asia/Tokyo" },
-  { re: /\bKST\b/, zone: "Asia/Seoul" },
-  { re: /\bAE[SD]T\b/, zone: "Australia/Sydney" },
-  { re: /\bBRT\b/, zone: "America/Sao_Paulo" },
-];
 
 // UTC offset (minutes) of an IANA zone at a given instant (ms).
 function zoneOffset(timeZone, ms) {
@@ -172,79 +144,130 @@ function zoneOffset(timeZone, ms) {
   return (Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - ms) / 60000;
 }
 
-// Parse a free-text deadline time ("11:59 PM ET", "23:59 AoE", "Noon PT") into
-// {hour, minute, offsetAt(ms)}, or null when it names no time or no zone.
-// Parenthetical asides are ignored unless the zone appears only there
-// ("11:59 PM CDT (UTC-5)", "AoE (12:00 noon UTC the following day)").
-function parseDeadlineTime(text) {
-  const main = text.replace(/\([^)]*\)/g, " ");
-  let zoneSpec = null;
-  for (const source of [main, text]) {
-    for (const z of DEADLINE_ZONES) {
-      const m = source.match(z.re);
-      if (!m) continue;
-      if (z.signed) {
-        const sign = m[1] === "+" ? 1 : -1;
-        zoneSpec = { offset: sign * (Number(m[2]) * 60 + Number(m[3] || 0)) };
-      } else {
-        zoneSpec = z;
-      }
-      break;
-    }
-    if (zoneSpec) break;
+// A zone code -> a function giving its UTC offset (minutes) at an instant, or
+// null when the code is unknown.
+function zoneOffsetFn(code) {
+  if (!code) return null;
+  const known = DEADLINE_ZONES[code];
+  if (known) return known.zone ? (ms) => zoneOffset(known.zone, ms) : () => known.offset;
+  const m = code.match(/^UTC([+-])(\d{1,2})(?::(\d{2}))?$/);
+  if (m) {
+    const minutes = (m[1] === "+" ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3] || 0));
+    return () => minutes;
   }
-  if (!zoneSpec) return null;
+  if (code.includes("/")) {
+    try {
+      zoneOffset(code, 0);
+      return (ms) => zoneOffset(code, ms);
+    } catch (e) { /* unknown IANA name */ }
+  }
+  return null;
+}
 
-  let hour = null;
-  let minute = 0;
-  const t = main.match(/\b(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(a\.?m\.?|p\.?m\.?)?(?![\d.])/i);
-  if (t && (t[2] !== undefined || t[3])) {
-    hour = Number(t[1]);
-    minute = Number(t[2] || 0);
-    const ampm = (t[3] || "").toLowerCase().replace(/\./g, "");
-    if (ampm === "pm" && hour < 12) hour += 12;
-    if (ampm === "am" && hour === 12) hour = 0;
-  } else if (/\bnoon\b/i.test(main)) {
-    hour = 12;
-  } else if (/\bmidnight\b|\bend of (?:the )?day\b|\bEOD\b/i.test(main) || /\bAoE\b/i.test(main)) {
-    // A deadline at "midnight" means the end of the stated day; a bare "AoE"
-    // conventionally means 23:59 AoE.
-    hour = 23;
-    minute = 59;
-  }
-  if (hour === null || hour > 23 || minute > 59) return null;
-  const offsetAt = zoneSpec.zone
-    ? (ms) => zoneOffset(zoneSpec.zone, ms)
-    : () => zoneSpec.offset;
-  return { hour, minute, offsetAt };
+// The instant (ms) a deadline on `dateIso` (YYYY-MM-DD) has passed: the end of
+// its stated minute in its zone. With no time it is the end of that day, and
+// with no usable zone the zone is AoE (UTC-12) -- the latest moment the day ends
+// anywhere, so a date is never treated as passed while it is still the day
+// somewhere. `time` is 24-hour "HH:MM".
+function deadlineInstant(dateIso, time, tz) {
+  const [y, mo, d] = dateIso.split("-").map(Number);
+  const t = /^(\d{1,2}):(\d{2})$/.exec(time || "");
+  const wall = t
+    ? Date.UTC(y, mo - 1, d, Number(t[1]), Number(t[2]) + 1)
+    : Date.UTC(y, mo - 1, d + 1, 0, 0);
+  const offsetAt = zoneOffsetFn(tz) || (() => -12 * 60);
+  // Wall-clock time in the source zone -> instant, re-checked once across a DST edge.
+  let instant = wall - offsetAt(wall) * 60000;
+  instant = wall - offsetAt(instant) * 60000;
+  return instant;
+}
+
+// "11:59 PM" (default) or "23:59" for a stored 24-hour "HH:MM".
+function formatDeadlineClock(time, military) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(time || "");
+  if (!m) return time || "";
+  const h = Number(m[1]);
+  if (military) return `${String(h).padStart(2, "0")}:${m[2]}`;
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
+}
+
+// One deadline's time as shown: "8:00 PM AoE" / "20:00 AoE", or "" when none.
+function formatDeadlineSpec(time, tz, military) {
+  return [time ? formatDeadlineClock(time, military) : "", tz || ""].filter(Boolean).join(" ");
+}
+
+// A row's (time, zone) for one deadline kind.
+function deadlineSpec(row, kind) {
+  return { time: row[`${kind}_time`] || null, tz: row[`${kind}_timezone`] || null };
+}
+
+// The entries the "Deadline time" cell shows, collapsing identical times into
+// one unlabeled entry ("8:00 PM ET", not "abstract: 8:00 PM ET / paper: ...").
+// A kind is considered when it has a time or any deadline date; when every
+// considered kind shares one non-empty spec there is a single entry with
+// `kind: null`, otherwise one labeled entry per kind that has a time. Mirrors
+// deadline_entries in conference_agent/deadline_time.py.
+function deadlineEntries(row) {
+  const specs = Object.fromEntries(DEADLINE_KINDS.map((k) => [k, deadlineSpec(row, k)]));
+  const present = DEADLINE_KINDS.filter((k) => specs[k].time || specs[k].tz);
+  const dated = (k) => row[`upcoming_${k}_deadline`] || row[`prior_${k}_deadline`];
+  const considered = DEADLINE_KINDS.filter((k) => present.includes(k) || dated(k));
+  const keys = new Set(considered.map((k) => `${specs[k].time || ""}|${specs[k].tz || ""}`));
+  if (keys.size === 1 && !keys.has("|")) return [{ kind: null, ...specs[considered[0]] }];
+  return present.map((k) => ({ kind: k, ...specs[k] }));
+}
+
+// The derived text for a row ("11:59 PM ET", or labeled lines joined by "\n");
+// the same string the server stores as `deadline_time` when not military.
+function deadlineTimeText(row, military) {
+  return deadlineEntries(row)
+    .map((e) => {
+      const text = formatDeadlineSpec(e.time, e.tz, military);
+      return e.kind ? `${e.kind.replace("_", " ")}: ${text}` : text;
+    })
+    .join("\n");
+}
+
+// The deadline time that applies to one event kind ("abstract", "late-abstract",
+// "paper"), as shown, or null. Mirrors calendar_sync.deadline_time_for.
+function deadlineTimeFor(row, kind) {
+  const spec = deadlineSpec(row, kind.replace("-", "_"));
+  return formatDeadlineSpec(spec.time, spec.tz, false) || null;
+}
+
+// Description line carrying the deadline time; the event itself stays all-day.
+function deadlineNote(row, kind) {
+  const t = deadlineTimeFor(row, kind);
+  return t ? `\nDeadline time: ${t}` : "";
 }
 
 // The viewer's local equivalent of a deadline time on `dateIso` (YYYY-MM-DD),
-// e.g. "2:59 PM PDT" or "5:00 AM PDT the next day"; null when the text cannot
-// be parsed or the viewer is already in that offset. `timeZone` overrides the
-// viewer's zone (for tests).
-function localDeadlineTime(text, dateIso, timeZone) {
-  if (!text || !dateIso) return null;
-  const parsed = parseDeadlineTime(text);
-  if (!parsed) return null;
+// e.g. "2:59 PM PDT" or "5:00 AM PDT the next day" ("14:59 PDT" when `military`);
+// null when there is no time or zone, or the viewer is already in that offset.
+// `timeZone` overrides the viewer's zone (for tests).
+function localDeadlineTime(time, tz, dateIso, timeZone, military) {
+  const t = /^(\d{1,2}):(\d{2})$/.exec(time || "");
+  const offsetAt = zoneOffsetFn(tz);
+  if (!t || !offsetAt || !dateIso) return null;
   const [y, mo, d] = dateIso.split("-").map(Number);
-  const wall = Date.UTC(y, mo - 1, d, parsed.hour, parsed.minute);
-  // Wall-clock time in the source zone → instant, re-checked once across a DST edge.
-  let instant = wall - parsed.offsetAt(wall) * 60000;
-  instant = wall - parsed.offsetAt(instant) * 60000;
+  const wall = Date.UTC(y, mo - 1, d, Number(t[1]), Number(t[2]));
+  // Wall-clock time in the source zone -> instant, re-checked once across a DST edge.
+  let instant = wall - offsetAt(wall) * 60000;
+  instant = wall - offsetAt(instant) * 60000;
 
   const viewerZone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (zoneOffset(viewerZone, instant) === parsed.offsetAt(instant)) return null;
-  const time = new Date(instant).toLocaleTimeString("en-US", {
-    timeZone: viewerZone, hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  if (zoneOffset(viewerZone, instant) === offsetAt(instant)) return null;
+  const clock = new Date(instant).toLocaleTimeString("en-US", {
+    timeZone: viewerZone, hour: military ? "2-digit" : "numeric", minute: "2-digit",
+    hourCycle: military ? "h23" : "h12", timeZoneName: "short",
   });
   const localDate = new Intl.DateTimeFormat("en-CA", {
     timeZone: viewerZone, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(new Date(instant));
   const dayDiff = Math.round((Date.parse(localDate) - Date.UTC(y, mo - 1, d)) / 86400000);
-  if (dayDiff === 1) return `${time} the next day`;
-  if (dayDiff === -1) return `${time} the previous day`;
-  return time;
+  if (dayDiff === 1) return `${clock} the next day`;
+  if (dayDiff === -1) return `${clock} the previous day`;
+  return clock;
 }
 
 // The upcoming-edition events a row yields (mirrors _edition_events).
@@ -355,7 +378,13 @@ function downloadIcs(row) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { conferenceToIcs, eventId, localDeadlineTime };
+  module.exports = {
+    conferenceToIcs, eventId, localDeadlineTime, deadlineInstant, deadlineEntries,
+    deadlineTimeText, deadlineTimeFor, DEADLINE_ZONES,
+  };
 } else {
-  window.ConferenceCalendar = { conferenceToIcs, downloadIcs, localDeadlineTime };
+  window.ConferenceCalendar = {
+    conferenceToIcs, downloadIcs, localDeadlineTime, deadlineInstant, deadlineEntries,
+    formatDeadlineSpec,
+  };
 }

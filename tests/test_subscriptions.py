@@ -14,6 +14,8 @@ from conference_agent.models import Conference
 
 SITE = "https://example.test"
 SECRET = "s3cret"
+# Ids are slugs of names.
+RID = "radiological-society-of-north-america"
 
 
 def _conf(**overrides):
@@ -30,7 +32,7 @@ def _conf(**overrides):
     return Conference(**base)
 
 
-def _run(confs, state_path, subscribers=None, send=None):
+def _run(confs, state_path, subscribers=None, send=None, resolve=None):
     sent = []
     return subs.notify_subscribers(
         confs,
@@ -41,6 +43,7 @@ def _run(confs, state_path, subscribers=None, send=None):
         send=send or sent.append,
         fetch=lambda: subscribers or {},
         log=lambda _: None,
+        resolve=resolve,
     ), sent
 
 
@@ -54,9 +57,9 @@ def test_sign_matches_the_js_implementation():
 
 def test_first_run_records_snapshot_and_sends_nothing(tmp_path):
     state = tmp_path / "state.json"
-    report, sent = _run([_conf()], state, {"RSNA": ["a@x.org"]})
+    report, sent = _run([_conf()], state, {RID: ["a@x.org"]})
     assert report.initialized and not sent
-    assert subs.load_state(state)["RSNA"]["upcoming_start_date"] == "2026-11-29"
+    assert subs.load_state(state)[RID]["upcoming_start_date"] == "2026-11-29"
 
 
 def test_changed_series_emails_its_subscribers_only(tmp_path):
@@ -66,12 +69,12 @@ def test_changed_series_emails_its_subscribers_only(tmp_path):
     report, sent = _run(
         [moved, _conf(acronym="ECR", name="ECR")],
         state,
-        {"RSNA": ["a@x.org", "b@x.org"], "ECR": ["c@x.org"]},
+        {RID: ["a@x.org", "b@x.org"], "ecr": ["c@x.org"]},
     )
-    assert report.changed == {"RSNA": [("Conference start", "2026-11-29", "2026-11-30")]}
+    assert report.changed == {RID: [("Conference start", "2026-11-29", "2026-11-30")]}
     assert sorted(m["To"] for m in sent) == ["a@x.org", "b@x.org"]
     # The snapshot advanced, so the next run is quiet.
-    report, sent = _run([moved, _conf(acronym="ECR", name="ECR")], state, {"RSNA": ["a@x.org"]})
+    report, sent = _run([moved, _conf(acronym="ECR", name="ECR")], state, {RID: ["a@x.org"]})
     assert not report.changed and not sent
 
 
@@ -83,18 +86,43 @@ def test_failed_send_is_retried_next_run(tmp_path):
     def boom(_msg):
         raise OSError("smtp down")
 
-    report, _ = _run([moved], state, {"RSNA": ["a@x.org"]}, send=boom)
-    assert report.failed == [("RSNA", "a@x.org")]
-    report, sent = _run([moved], state, {"RSNA": ["a@x.org"]})
+    report, _ = _run([moved], state, {RID: ["a@x.org"]}, send=boom)
+    assert report.failed == [(RID, "a@x.org")]
+    report, sent = _run([moved], state, {RID: ["a@x.org"]})
     assert [m["To"] for m in sent] == ["a@x.org"]
 
 
 def test_new_series_is_recorded_without_email(tmp_path):
     state = tmp_path / "state.json"
     _run([_conf()], state)
-    report, sent = _run([_conf(), _conf(acronym="ECR", name="ECR")], state, {"ECR": ["c@x.org"]})
+    report, sent = _run([_conf(), _conf(acronym="ECR", name="ECR")], state, {"ecr": ["c@x.org"]})
     assert not report.changed and not sent
-    assert "ECR" in subs.load_state(state)
+    assert "ecr" in subs.load_state(state)
+
+
+def test_former_ids_resolve_to_the_current_series(tmp_path):
+    """State and subscriptions stored under a former id (the acronym id before
+    the move to name ids) still reach the series, and the unsubscribe link
+    names the id the subscription is stored under."""
+    import json
+
+    state = tmp_path / "state.json"
+    snap = subs.watched_snapshot(_conf())
+    state.write_text(json.dumps({"RSNA": snap}), encoding="utf-8")
+    moved = _conf(upcoming_start_date=date(2026, 11, 30))
+
+    def resolve(ids):
+        return {i: RID for i in ids if i in ("RSNA", RID)}
+
+    report, sent = _run(
+        [moved], state, {"RSNA": ["a@x.org"], "GONE": ["z@x.org"]}, resolve=resolve
+    )
+    assert report.changed == {RID: [("Conference start", "2026-11-29", "2026-11-30")]}
+    assert [m["To"] for m in sent] == ["a@x.org"]
+    q = parse_qs(urlparse(sent[0]["List-Unsubscribe"].strip("<>")).query)
+    assert q["id"] == ["RSNA"]
+    assert q["sig"] == [subs.sign(SECRET, "unsubscribe", "a@x.org", "RSNA")]
+    assert set(subs.load_state(state)) == {RID}
 
 
 def test_update_email_has_changes_ics_and_unsubscribe_links():
@@ -106,14 +134,14 @@ def test_update_email_has_changes_ics_and_unsubscribe_links():
     body = msg.get_body(("plain",)).get_content()
     assert "- Paper deadline: 2026-09-01 (newly announced)" in body
     (attachment,) = list(msg.iter_attachments())
-    assert attachment.get_filename() == "RSNA.ics"
+    assert attachment.get_filename() == f"{RID}.ics"
     assert attachment.get_content_type() == "text/calendar"
     assert "BEGIN:VCALENDAR" in attachment.get_content()
 
     unsub = msg["List-Unsubscribe"].strip("<>")
     q = {k: v[0] for k, v in parse_qs(urlparse(unsub).query).items()}
     assert unsub.startswith(f"{SITE}/api/unsubscribe?")
-    assert q["sig"] == subs.sign(SECRET, "unsubscribe", "a@x.org", "RSNA")
+    assert q["sig"] == subs.sign(SECRET, "unsubscribe", "a@x.org", RID)
     assert subs.unsubscribe_url(SITE, SECRET, "a@x.org", "*") in body
     assert msg["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
 

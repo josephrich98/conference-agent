@@ -20,24 +20,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Conference discovery agent (LLM tool-use + web search). The core `anthropic`
-# client is a base dependency; extras here cover optional fetch/parse helpers.
 discover = ["requests>=2.31", "beautifulsoup4>=4.12"]
-# Web table interface (boolean search + per-row calendar export). The .ics feed
-# is generated with the standard library, so it needs no extra dependencies.
-web = ["fastapi>=0.110", "uvicorn>=0.27"]
-# AWS Lambda deployment: ASGI adapter + a pure-Python PostgreSQL driver. pg8000
-# ships no compiled extension, so `sam build` produces a Lambda-compatible
-# package on any platform without Docker. (See web/requirements.txt.)
-deploy = ["mangum>=0.17", "pg8000>=1.30"]
-# PostgreSQL driver for loading/querying a managed database from your laptop
-# (e.g. seeding RDS). psycopg has the best local ergonomics; use a
-# `postgresql+psycopg://` URL with it, or `postgresql+pg8000://` with `deploy`.
-postgres = ["psycopg[binary]>=3.1"]
-notebooks = ["jupyter>=1.0", "ipykernel>=6.0"]
-# The committed offline test suite imports the web layer (web.app / web.nl_query
-# / web.search), so the web extra is needed to run tests hermetically in CI.
-dev = ["pytest>=7.0", "ruff>=0.4", "bandit>=1.7", "conference_agent[web]"]
+web = ["fastapi>=0.110", "uvicorn>=0.27", "mangum>=0.17", "pg8000>=1.30"]
+dev = ["pytest>=7.0", "ruff>=0.4", "bandit>=1.7", "psycopg[binary]>=3.1", "conference_agent[web]"]
 
 [project.scripts]
 conference-agent = "conference_agent.cli:main"

@@ -11,7 +11,9 @@ row's name, url, category, and attendance intact (see
 ``database.merge_records``).
 
 Input is one or more JSON files, each a list of record objects (or a single
-object). Each record is keyed by ``id`` (the acronym) and may carry any of:
+object). Each record names its row by ``id`` (the slug of the conference name;
+a former id, such as the old upper-cased acronym, also resolves) or by
+``name``, and may carry any of:
 ``prior_abstract_deadline``, ``prior_late_abstract_deadline``,
 ``prior_paper_deadline``, ``prior_start_date``, ``prior_end_date``,
 ``upcoming_abstract_deadline``, ``upcoming_late_abstract_deadline``,
@@ -29,7 +31,7 @@ are derived on write, not read from the record. Unknown keys are ignored.
 ``conference-agent add --json`` accepts the same files (and additionally the
 table-facing column names, e.g. ``conference`` / ``abstract_due`` /
 ``late_abstract_due``), with a confirmation prompt before it updates an existing
-row. Run ``conference-agent fields`` to print the full vocabulary. This script
+row. Run ``conference-agent add --fields`` to print the full vocabulary. This script
 remains the unattended, glob-friendly path.
 
 Usage:

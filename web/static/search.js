@@ -516,11 +516,14 @@ const NUMERIC_SORT = new Set([
 // Mirrors ``_SIZE_SORT_RANK`` in web/app.py.
 const SIZE_SORT_RANK = { massive: 1, large: 2, medium: 3, small: 4 };
 
-// The derived-month sorts roll from the current month rather than January, so
-// ascending lists what comes next first (in October: Oct, Nov, ..., Sep).
-// Mirrors ``_rolling_month`` in web/app.py.
-function rollingMonth(month, current) {
-  return isPresent(month) ? (Number(month) - current + 12) % 12 : null;
+// The derived-month sorts roll from today rather than January 1, ranking on the
+// month and the day of its underlying date, so ascending lists what comes next
+// first (on Oct 15: Oct 15-31, Nov, ..., Sep, Oct 1-14). A month without a day
+// counts as the 1st. Mirrors ``_rolling_month`` in web/app.py.
+function rollingMonth(month, day, startMonth, startDay) {
+  if (!isPresent(month)) return null;
+  const d = isPresent(day) ? day : 1;
+  return (Number(month) * 31 + d - (startMonth * 31 + startDay) + 372) % 372;
 }
 
 function coalesce(row, col, fallbackCol) {
@@ -545,16 +548,27 @@ function cmpNullsLast(a, b, descending, numeric) {
 
 /**
  * Sort rows like the server did: displayed value, NULLs last, then tie-breakers.
- * Month sorts begin at `monthStart` (1-12; defaults to this month, local time).
+ * Month sorts begin at `monthStart` (1-12) and `dayStart` (1-31); with neither
+ * given they begin today (local time), with only `monthStart` on its 1st.
  */
-function sortRows(rows, sort, order, monthStart = new Date().getMonth() + 1) {
+function sortRows(rows, sort, order, monthStart, dayStart) {
+  if (monthStart === undefined) {
+    const now = new Date();
+    monthStart = now.getMonth() + 1;
+    dayStart = dayStart ?? now.getDate();
+  }
+  dayStart = dayStart ?? 1;
   if (!SORTABLE.has(sort)) sort = "upcoming_start_date";
   const descending = order === "desc";
   const fallback = DATE_SORT_FALLBACK[sort];
   const numeric = NUMERIC_SORT.has(sort);
   const tiebreak = MONTH_SORT_TIEBREAKER[sort];
+  const day = (row) => {
+    const d = coalesce(row, tiebreak[0], tiebreak[1]);
+    return isPresent(d) ? Number(String(d).slice(8, 10)) : null;
+  };
   const key = tiebreak
-    ? (row) => rollingMonth(row[sort], monthStart)
+    ? (row) => rollingMonth(row[sort], day(row), monthStart, dayStart)
     : (row) => coalesce(row, sort, fallback);
 
   return rows.slice().sort((ra, rb) => {
@@ -562,15 +576,6 @@ function sortRows(rows, sort, order, monthStart = new Date().getMonth() + 1) {
     const b = key(rb);
     let c = cmpNullsLast(a, b, descending, numeric);
     if (c !== 0) return c;
-
-    if (tiebreak) {
-      const day = (row) => {
-        const d = coalesce(row, tiebreak[0], tiebreak[1]);
-        return isPresent(d) ? Number(String(d).slice(8, 10)) : null;
-      };
-      c = cmpNullsLast(day(ra), day(rb), descending, true);
-      if (c !== 0) return c;
-    }
 
     // Within a size bucket, order by the attendance figure the bucket comes
     // from, following the size direction (ascending size runs largest first).

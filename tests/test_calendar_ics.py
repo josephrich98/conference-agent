@@ -103,19 +103,24 @@ def test_deadline_time_labeled_entries_apply_per_kind():
         "paper": next(e for e in events if "paper deadline" in e),
     }
     assert "Deadline time: 11:59 PM ET" in by_kind["abstract"]
-    assert "Deadline time: 5 PM ET" in by_kind["late"]
+    assert "Deadline time: 5:00 PM ET" in by_kind["late"]
     # No labeled entry for paper -> no time claimed for it.
     assert "Deadline time" not in by_kind["paper"]
 
 
-def test_deadline_time_for_parses_shared_and_labeled_text():
+def test_deadline_time_for_reads_the_structured_fields():
     f = cs.deadline_time_for
-    assert f(None, "abstract") is None
-    assert f("  ", "abstract") is None
-    assert f("23:59 AoE", "paper") == "23:59 AoE"
-    assert f("abstract: 11:59 PM ET; paper: 23:59 AoE", "paper") == "23:59 AoE"
-    assert f("abstract: 11:59 PM ET; paper: 23:59 AoE", "late-abstract") is None
-    assert f("Late abstract: 5 PM ET", "late-abstract") == "5 PM ET"
+    assert f(_conf(), "abstract") is None
+    conf = _conf(
+        abstract_time="23:59",
+        abstract_timezone="ET",
+        late_abstract_time="17:00",
+        late_abstract_timezone="AoE",
+        paper_timezone="UTC",
+    )
+    assert f(conf, "abstract") == "11:59 PM ET"
+    assert f(conf, "late-abstract") == "5:00 PM AoE"
+    assert f(conf, "paper") == "UTC"  # a zone with no time is kept as published
 
 
 def test_registration_text_yields_no_event():
@@ -174,7 +179,8 @@ def test_uids_are_stable_distinct_and_namespaced():
     first = _ics([_conf()])
     second = _ics([_conf()])
     assert first == second  # deterministic given a fixed dtstamp
-    uids = [ln[4:] for ln in first.split("\r\n") if ln.startswith("UID:")]
+    unfolded = first.replace("\r\n ", "")  # long (name-derived) UIDs are folded
+    uids = [ln[4:] for ln in unfolded.split("\r\n") if ln.startswith("UID:")]
     assert len(uids) == 3
     assert len(set(uids)) == 3
     assert all(u.endswith("@conference-agent") for u in uids)

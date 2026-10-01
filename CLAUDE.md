@@ -10,7 +10,7 @@ dates as a subscribable calendar feed. For each conference series the agent
 records its **subcategory** tags (one or more granular fields per series — e.g.
 SPR is both radiology and pediatrics, MICCAI is radiology and machine learning)
 and a derived **category** (one of ten fixed top-level buckets: humanities,
-social science, medicine, biology, chemistry, physics, math, stats, computer
+social science, medicine, biology, chemistry, physics, mathematics, stats, computer
 science, artificial intelligence — computed from the subcategories via
 `models.SUBCATEGORY_TO_CATEGORY`, never hand-set), its **prior** and
 **upcoming** editions (abstract deadline, late abstract deadline, paper
@@ -58,8 +58,15 @@ for the design.
     `CONFERENCE_FORMATS` vocabulary; `size_for_attendance` (the size-bucketing rule),
     `categories_for_subcategories` (the category derivation), `normalize_subcategories`
     (the shared tag parser), and `normalize_formats` (the format-vocabulary parser).
-    `deadline_time` is a free-text, per-series field for the time of day (with
-    time zone) submissions close (see the design decision below)
+    each deadline kind's time of day and time zone are structured per-series
+    fields (`abstract_time` / `abstract_timezone`, likewise `late_abstract_*` and
+    `paper_*`), from which the display text `deadline_time` is derived (see the
+    design decision below)
+  - `deadline_time.py` — the deadline-time vocabulary: `normalize_time` (any of
+    24-hour / 12-hour / "noon" → canonical `HH:MM`), `normalize_timezone` (free
+    text → a code in `TIMEZONES`, a `UTC±N` offset, or an IANA name), the display
+    formatters (12- or 24-hour, identical times collapsed into one entry), and
+    `parse_legacy_deadline_time` (the old free text → structured fields)
   - `config.py` — constants, controlled vocabularies, seed list, Anthropic model
     id, and SMTP / notification settings
   - `discover.py` — the AI discovery agent: web search (research) + structured
@@ -85,11 +92,20 @@ for the design.
     each series' subscriber-facing fields against the last run's snapshot
     (`data/notify_state.json`) and emails that series' subscribers the changes
     plus its updated `.ics`, with signed unsubscribe links
-  - `cli.py` — command-line entry point (`discover` / `seed` / `add` / `fields` /
-    `list` / `serve`). `_SCALAR_FIELDS` + `_COMPOSITE_FIELDS` is the single
+  - `cli.py` — command-line entry point (`discover` / `seed` / `add` /
+    `delete` / `list` / `serve`). A bare `discover` surveys every field
+    (`database.discovery_subcategories`: table tags ∪ seed fields), one agent run
+    per field; `--subcategory` / `--category` narrow the survey, while
+    `--conference-name` / `--size` switch to re-checking matching stored series
+    via `discover.refresh_conferences` (no new rows); `discover --options` lists
+    the valid filter values and `list --names` the stored names. `_SCALAR_FIELDS` + `_COMPOSITE_FIELDS` is the single
     registry defining what `add` accepts; it generates the argparse flags, the
-    `--csv`/`--json` column vocabulary, and the `fields` reference output, so a
-    new field is added in one place and every input path picks it up
+    `--csv`/`--json` column vocabulary, and the `add --fields` reference output, so a
+    new field is added in one place and every input path picks it up. Entries
+    are indexed by `conference_name` (see the name-index design decision): `add`
+    fails if the name exists, `add --update` and `delete` (= `add --delete`) fail
+    if it does not, and any conflict in a batch writes nothing.
+    `--update --new-conference-name` renames a series (its id follows)
 - `web/` — FastAPI app + static single-page table (`search.py` boolean-query
   language, `nl_query.py` optional natural-language → boolean-query translation
   via a local Ollama model, `app.py` REST API, `static/index.html`, `handler.py`
@@ -154,8 +170,8 @@ dependencies there rather than installing ad hoc.
 
 ## Architecture / Key Design Decisions
 
-- **One record per conference series.** The `Conference` schema keys on the
-  acronym (e.g. `RSNA`) and holds both the **prior** and **upcoming** editions
+- **One record per conference series, indexed by name.** The `Conference`
+  schema keys on the full name and holds both the **prior** and **upcoming** editions
   (abstract deadline, paper deadline, start/end dates for each). Re-running
   discovery updates the same row each cycle, rolling a newly announced edition
   into the "upcoming" columns rather than creating a second row. Keeping prior
@@ -186,20 +202,39 @@ dependencies there rather than installing ad hoc.
   (`late_abstract_due` / `late_abstract_month`), the table (two columns), the
   calendar (a fourth event, kind `late-abstract`), the discovery prompts, and
   the manual `add` paths.
-- **Deadline time of day is one free-text field per series, not part of the
-  dates.** What matters is the time zone ("23:59 AoE" vs "11:59 PM ET" is nearly
-  a day apart), and a series almost always uses one convention for every deadline
-  and keeps it year to year, so `deadline_time` is a single free-text value per
-  series rather than a time per deadline. When deadlines genuinely differ it
-  holds one `kind: time` entry per line (`abstract: …`, `late abstract: …`,
-  `paper: …`; semicolons also separate entries). The deadline columns stay pure
-  dates so sorting, the derived months, the search's date comparisons, and the
-  all-day calendar events are untouched. The table shows it as its own
-  "Deadline time" column (substring-searchable as `deadline_time:`), and the
-  calendar feed puts the applicable time in each deadline event's note
-  (`calendar_sync.deadline_time_for` picks the shared value or the entry for
-  that event kind; mirrored in `calendar.js`) while the event itself remains
-  all-day.
+- **Deadline time of day is structured per deadline kind, and the display text
+  is derived.** What matters is the time zone ("23:59 AoE" vs "11:59 PM ET" is
+  nearly a day apart), and a series keeps its convention year to year, so the
+  time is per series, not per edition. Six nullable columns (not shown in the
+  table or the CSV) are the source of truth: `abstract_time`, `late_abstract_time`,
+  `paper_time` (always 24-hour `HH:MM`) and `abstract_timezone`,
+  `late_abstract_timezone`, `paper_timezone` (a code from
+  `deadline_time.TIMEZONES` — `AoE`, `UTC`, region codes such as `ET`/`CET`
+  that follow daylight time, so EST/EDT/"Eastern Time" all store as `ET` — or a
+  `UTC±N` offset or IANA name). Input may be 12- or 24-hour and any zone
+  spelling; the model validators canonicalize it, so storage never carries a
+  display preference and the browser never parses free text. The user-facing
+  `deadline_time` is *derived* (like `size` / `category`; stored denormalized,
+  never accepted as input except as a legacy shorthand that is parsed into the
+  six fields): `"11:59 PM ET"` when every deadline the series has shares one
+  time (identical times show once, not "abstract: … paper: …"), otherwise one
+  `kind: time` line per deadline, omitting a dated deadline whose time was not
+  published. Databases predating the columns are migrated on first open
+  (`database.backfill_deadline_times`). The deadline columns stay pure dates so
+  sorting, the derived months, the search's date comparisons, and the all-day
+  calendar events are untouched. The table's "Deadline time" column
+  (substring-searchable as `deadline_time:`) has a ⚙ box with a "Military time
+  (24-hour)" checkbox (display only, remembered per browser; default 12-hour),
+  and the calendar feed puts the applicable time in each deadline event's note
+  (`calendar_sync.deadline_time_for`, mirrored in `calendar.js`).
+  **Coloring is instant:** each colored date carries the instant its deadline
+  passes (`calendar.js` `deadlineInstant`: the end of its stated minute in its
+  zone; with no time the end of the day, and with no usable zone AoE, the
+  latest day-end anywhere), and `index.html` re-judges the colors from a timer set
+  for the next such instant (plus local midnight and tab re-focus), so a date
+  goes from green to red the moment it passes with no re-render or redeploy.
+  The zone table and the display grouping exist in both Python and JS;
+  `tests/test_deadline_time.py` pins them together via Node.
 - **Controlled vocabularies.** `ConferenceSize` (`massive`/`large`/`medium`/`small`) and
   `RemoteOption` (`in-person`/`virtual`/`hybrid`/`unknown`) are enums, not free
   text, so the table and queries can filter/color consistently.
@@ -226,8 +261,31 @@ dependencies there rather than installing ad hoc.
   `45,000 (2025)`.
 - **SQLAlchemy over raw SQL.** The same ORM runs against SQLite (local) or any
   SQLAlchemy backend with only a connection-string change.
-- **Idempotent ingestion.** Upserts key on the conference id (the acronym), so
-  re-running discovery updates rather than duplicates rows.
+- **Name index; the id is the name's slug.** Two series can share an acronym
+  (ICML is also a lymphoma meeting), so the name is the key: `Conference.id` is
+  `models.name_id(name)`, a lowercase hyphenated ASCII slug (case, accents,
+  punctuation, and spacing do not distinguish names). The id is what calendar
+  UIDs, stored email subscriptions, `data/notify_state.json`, and the `/c/<id>/`
+  pages carry, so when an id changes (a rename via `database.rename_conference`,
+  or the one-time move off upper-cased acronym ids done on open by
+  `database._migrate_ids_to_names`) the former id is recorded in the
+  `id_aliases` table. `resolve_ids` maps former ids forward: the subscriber
+  step uses it for snapshot entries and Blob subscriptions stored under old ids
+  (unsubscribe links keep naming the stored id), `merge_records` accepts a
+  former `id`, and `build_static.py` writes `dist/vercel.json` with permanent
+  redirects from each former `/c/<id>/` page. A rename does change that series'
+  calendar UIDs, so a re-imported `.ics` adds new events.
+- **Idempotent ingestion; discovery never renames.** Upserts match an existing
+  row by name id (or a former id); failing that, by the same acronym with an
+  overlapping subcategory, because the agent does not always reproduce a stored
+  name verbatim (`database.match_row`). A same-acronym series in an unrelated
+  field becomes its own row. The stored name is kept on every match; only an
+  explicit rename changes it. The prompts ask the agent to reuse the listed
+  names, and `discover.refresh_conferences` returns results under the targets'
+  stored names. Per-seed curation in `config.py` (links, subcategories,
+  formats) is keyed by seed acronym but looked up from the row's *name*
+  (`config.seed_acronym_for_name`), so it never applies to a different series
+  that shares the acronym; seed names must therefore match the stored names.
 - **Idempotent calendar feed.** Each event carries a deterministic id derived
   (base32hex) from the conference id and event kind, so a re-fetched feed updates
   existing events instead of creating duplicates. A conference yields up to three
@@ -250,7 +308,7 @@ dependencies there rather than installing ad hoc.
   covers it via Node. An "✨ AI search" button next to Search (or Ctrl+Enter)
   sends the same box's text to the natural-language translator. Categorical
   column headers (category, subcategory, format, size, remote, the four month
-  columns) carry an Excel-style ▾ checkbox value filter; clicking a cell (or
+  columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or
   one tag in it) in those columns opens the same list beside it with that value
   pre-checked. The chosen values are
   browser-only state held apart from the search box and ANDed with it, so they
@@ -344,7 +402,11 @@ dependencies there rather than installing ad hoc.
   **conferenceagent**; deploy only from `dist/`. Cloudflare Pages
   (`npx wrangler pages deploy dist`) is an equivalent static host if ever needed.
   To refresh the live data, re-run `build_static.py` after a discovery run and
-  redeploy — there is no database to push.
+  redeploy — there is no database to push. The export omits **retired** series
+  (`refresh.is_retired`: no future edition and the last one is more than
+  `CHECK_WINDOW_MAX_MONTHS` old, i.e. past the point auto-checks stop); rows are
+  never deleted, so a series reappears once discovery records a new edition.
+  `--include-retired` exports everything.
 - **Legacy AWS path (no longer the deploy target).** `scripts/deploy.sh` (push
   local DB → RDS; `DEPLOY_CODE=1` also `sam build` + `aws lambda
   update-function-code`) and the `deploy/vercel/` proxy (a rewrite to CloudFront)

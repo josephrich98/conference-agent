@@ -15,7 +15,11 @@ import argparse
 import os
 
 from conference_agent.config import DEFAULT_DATABASE_URL
-from conference_agent.database import known_attendance_sources, upsert_conferences
+from conference_agent.database import (
+    discovery_subcategories,
+    known_attendance_sources,
+    upsert_conferences,
+)
 from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS, discover_conferences
 
 
@@ -24,7 +28,8 @@ def main() -> None:
     parser.add_argument(
         "--subcategory",
         action="append",
-        help="Subcategory (specific field) to search (repeatable). Default: radiology",
+        help="Subcategory (specific field) to search (repeatable). Default: every "
+        "field in the table and the seed list",
     )
     parser.add_argument(
         "--backend",
@@ -41,11 +46,15 @@ def main() -> None:
     parser.add_argument("--email", action="store_true", help="Email a summary when finished")
     args = parser.parse_args()
 
-    hints = known_attendance_sources(db_url=args.db, subcategories=args.subcategory)
-    conferences = discover_conferences(
-        subcategories=args.subcategory, backend=args.backend, attendance_hints=hints
-    )
-    written = upsert_conferences(conferences, db_url=args.db)
+    conferences = []
+    written = 0
+    for subcategory in args.subcategory or discovery_subcategories(args.db):
+        hints = known_attendance_sources(db_url=args.db, subcategories=[subcategory])
+        found = discover_conferences(
+            subcategories=[subcategory], backend=args.backend, attendance_hints=hints
+        )
+        written += upsert_conferences(found, db_url=args.db)
+        conferences.extend(found)
     print(f"Upserted {written} conference(s) into {args.db}")
 
     if args.email:

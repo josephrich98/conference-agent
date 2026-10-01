@@ -63,6 +63,7 @@ from conference_agent.database import (
     ConferenceRow,
     _row_to_model,
     apply_refreshed_conferences,
+    attendance_hints_for,
     get_engine,
     known_attendance_sources,
 )
@@ -144,6 +145,26 @@ def in_stale_window(row: ConferenceRow, today: Optional[date] = None) -> bool:
     window_open = _add_months(anchor, CHECK_WINDOW_MIN_MONTHS)
     window_close = _add_months(anchor, CHECK_WINDOW_MAX_MONTHS)
     return window_open <= today <= window_close
+
+
+def is_retired(row: ConferenceRow, today: Optional[date] = None) -> bool:
+    """Whether ``row`` has aged past the check window with no new edition.
+
+    True when no future edition is on record and the latest edition's anchor
+    (:func:`edition_anchor`) is more than ``CHECK_WINDOW_MAX_MONTHS`` old -- the
+    point at which :func:`is_due_for_check` stops checking the series. Such a
+    series is presumed discontinued (or renamed, or moved somewhere the agent
+    has not found) and is left out of the published site, but its row is kept
+    so it reappears if a later discovery run records a new edition. A row with
+    no dates at all is never retired: it is a fresh seed awaiting its first fill.
+    """
+    today = today or date.today()
+    if _has_future_edition(row, today):
+        return False
+    anchor = edition_anchor(row)
+    if anchor is None:
+        return False
+    return today > _add_months(anchor, CHECK_WINDOW_MAX_MONTHS)
 
 
 def is_due_for_check(row: ConferenceRow, today: Optional[date] = None) -> bool:
@@ -489,7 +510,7 @@ def run_watch(
         try:
             found = refresh(
                 [before[i] for i in batch],
-                attendance_hints={i: hints[i] for i in batch if i in hints},
+                attendance_hints=attendance_hints_for([before[i] for i in batch], hints),
             )
         except Exception as exc:  # one failed batch must not sink the run
             log(f"  batch failed: {exc}")

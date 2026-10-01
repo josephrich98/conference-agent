@@ -97,11 +97,12 @@ For each notable conference in the requested field, gather:
   meeting publishes, e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"
   or, if only an opening is given, "Registration opens June 2026". Leave blank when
   no registration timing is published -- do not guess
-- the time of day (with time zone) at which submissions close (deadline_time),
-  e.g. "11:59 PM ET" or "23:59 AoE" -- the zone is the part that matters. Give one
-  value when every deadline shares it; if the deadlines differ, give one per
-  deadline ("abstract: ...", "late abstract: ...", "paper: ..."). Leave blank when
-  the call for abstracts does not state a time -- do not guess
+- the time of day and time zone at which each submission deadline closes: for the
+  abstract, the late abstract, and the paper deadline separately (e.g. "11:59 PM ET"
+  or "23:59 AoE") -- the zone is the part that matters. Read each from the call for
+  abstracts / important dates page; several deadlines usually share one time, but
+  report each one that is stated. Leave a deadline's time blank when the page does
+  not state one -- do not guess
 - the typical annual attendance (total number of attendees) of the most recent
   edition, as a plain integer; plus the year that figure describes and the source
   URL you took it from. Prefer an official figure; state the number only when you
@@ -159,6 +160,11 @@ Cover the well-known conferences thoroughly, and be sure to include every \
 conference in this list (search for each by name if needed):
 {seed_list}
 
+The full name identifies a conference in the table, and two conferences can \
+share an acronym. Report every listed conference under its full name exactly as \
+written above -- do not expand, shorten, or re-word it, even when the official \
+site styles it differently.
+
 Write up what you find clearly, one conference at a time."""
 
 _EXTRACT_SYSTEM = """\
@@ -179,10 +185,13 @@ still belongs to the edition it opened; if the meeting itself is upcoming, keep 
 its abstract deadline in the upcoming column. Set the paper deadline only when \
 the notes give a distinct full-paper / manuscript deadline; leave it "" for \
 abstract-only meetings rather than repeating the abstract deadline. The \
-deadline_time field is the time of day (with time zone) submissions close, as the \
-notes state it (e.g. "11:59 PM ET"), one value when shared by every deadline or \
-one "kind: time" line per deadline (abstract / late abstract / paper) when they \
-differ; "" when the notes give no time. The prior_registration and \
+abstract_time / late_abstract_time / paper_time fields are the time of day each \
+deadline closes, as 24-hour HH:MM (convert "11:59 PM" to "23:59"), and \
+abstract_timezone / late_abstract_timezone / paper_timezone are the matching \
+zones: use "AoE" (Anywhere on Earth, UTC-12), "UTC", a region code (ET, CT, MT, \
+PT, CET, ...) -- the region code, not EST/EDT, since it covers daylight time -- or \
+an IANA name such as "Asia/Shanghai"; "" when the notes give no time or zone for \
+that deadline. The prior_registration and \
 upcoming_registration fields are the registration window(s) of each edition as \
 free text (e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"), "" \
 when the notes give none. The location \
@@ -240,10 +249,32 @@ class _ExtractedConference(BaseModel):
         default="",
         description="Free-text registration window(s) of the upcoming edition, or ''",
     )
-    deadline_time: str = Field(
+    abstract_time: str = Field(
         default="",
-        description="Time of day (with time zone) submissions close, e.g. "
-        "'23:59 AoE'; one 'kind: time' line per deadline when they differ; or ''",
+        description="Time of day the abstract deadline closes, 24-hour HH:MM, or ''",
+    )
+    abstract_timezone: str = Field(
+        default="",
+        description="Zone of the abstract deadline time: 'AoE', 'UTC', a region code "
+        "like 'ET' / 'CET', or an IANA name; or ''",
+    )
+    late_abstract_time: str = Field(
+        default="",
+        description="Time of day the late abstract deadline closes, 24-hour HH:MM, or ''",
+    )
+    late_abstract_timezone: str = Field(
+        default="",
+        description="Zone of the late abstract deadline time: 'AoE', 'UTC', a region code "
+        "like 'ET' / 'CET', or an IANA name; or ''",
+    )
+    paper_time: str = Field(
+        default="",
+        description="Time of day the paper deadline closes, 24-hour HH:MM, or ''",
+    )
+    paper_timezone: str = Field(
+        default="",
+        description="Zone of the paper deadline time: 'AoE', 'UTC', a region code "
+        "like 'ET' / 'CET', or an IANA name; or ''",
     )
     location: str
     url: str
@@ -322,7 +353,12 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         upcoming_end_date=_parse_date(item.upcoming_end_date),
         prior_registration=_clean(item.prior_registration),
         upcoming_registration=_clean(item.upcoming_registration),
-        deadline_time=_clean(item.deadline_time),
+        abstract_time=_clean(item.abstract_time),
+        abstract_timezone=_clean(item.abstract_timezone),
+        late_abstract_time=_clean(item.late_abstract_time),
+        late_abstract_timezone=_clean(item.late_abstract_timezone),
+        paper_time=_clean(item.paper_time),
+        paper_timezone=_clean(item.paper_timezone),
         location=_clean(item.location),
         url=_clean(item.url),
         remote_option=remote,
@@ -573,8 +609,10 @@ def discover_conferences(
     """Discover conferences for the given subcategories and return typed records.
 
     Args:
-        subcategories: Fields to search (e.g. ``["radiology"]``). Defaults to
-            ``["radiology"]``.
+        subcategories: Fields to search (e.g. ``["radiology"]``). Required;
+            to survey every field, pass
+            :func:`database.discovery_subcategories` (what the CLI does when
+            no field is given).
         backend: ``"claude-code"`` (default) drives the local ``claude`` CLI on
             the user's Claude Code subscription; ``"api"`` calls the Anthropic
             API directly (requires ``ANTHROPIC_API_KEY`` and credits).
@@ -597,7 +635,12 @@ def discover_conferences(
             f"{', '.join(DISCOVERY_BACKENDS)}."
         )
 
-    subs = list(subcategories) if subcategories else ["radiology"]
+    subs = list(subcategories or [])
+    if not subs:
+        raise ValueError(
+            "discover_conferences needs at least one subcategory; pass "
+            "database.discovery_subcategories() to survey every field."
+        )
 
     if backend == "claude-code":
         research_text = _research_via_cli(subs, model, attendance_hints)
@@ -627,9 +670,10 @@ Abstracts", and "Submit" pages -- whether:
 - the meeting dates or location have changed,
 - the next edition has been announced, if the recorded upcoming edition has \
   already taken place (the edition that took place then becomes the prior one),
-- the time of day and time zone at which submissions close (deadline_time) -- \
-  read it from the call for abstracts / important dates page, and re-read it for \
-  a newly announced edition rather than assuming last year's time.
+- the time of day and time zone at which each submission deadline closes \
+  (abstract_time / abstract_timezone, and likewise for the late abstract and \
+  paper) -- read them from the call for abstracts / important dates page, and \
+  re-read them for a newly announced edition rather than assuming last year's.
 
 Report the full current record for each conference -- every field your \
 instructions list, not only what changed -- one conference at a time.
@@ -656,7 +700,11 @@ def _describe_target(conf: Conference) -> str:
         return ", ".join(parts) or "none recorded"
 
     link = f" -- {conf.url}" if conf.url else ""
-    time = f"; deadline time: {conf.deadline_time}" if conf.deadline_time else ""
+    time = (
+        "; deadline time: " + conf.deadline_time.replace("\n", " / ")
+        if conf.deadline_time
+        else ""
+    )
     return (
         f"- {conf.acronym} -- {conf.name} [{conf.subcategory}]{link}\n"
         f"  upcoming: {edition('upcoming')}; prior: {edition('prior')}{time}"
@@ -676,9 +724,8 @@ def refresh_conferences(
     a whole field, the research phase checks only ``targets`` -- given their
     official links and the dates on record -- for extended deadlines, changed
     dates, or a newly announced edition. Extraction is unchanged. Only records
-    whose id matches a target are returned, so the result can be merged back
-    without introducing unrelated rows (see
-    :func:`database.apply_refreshed_conferences`).
+    that match a target are returned, under the target's stored name (see
+    :func:`_match_targets`).
     """
     if backend not in DISCOVERY_BACKENDS:
         raise ValueError(
@@ -688,7 +735,6 @@ def refresh_conferences(
     targets = list(targets)
     if not targets:
         return []
-    wanted = {t.id for t in targets}
     system = _RESEARCH_SYSTEM.format(
         seed_list="\n".join(f"- {t.acronym} — {t.name}" for t in targets),
         attendance_hints=_attendance_hints_block(attendance_hints),
@@ -709,4 +755,28 @@ def refresh_conferences(
         if not research_text.strip():
             return []
         found = _extract(client, research_text, resolved_model, max_tokens)
-    return [c for c in found if c.id in wanted]
+    return _match_targets(found, targets)
+
+
+def _match_targets(found: Iterable[Conference], targets: List[Conference]) -> List[Conference]:
+    """The researched records that belong to a target, renamed to its stored name.
+
+    A record matches the target with the same name id, or else the one target
+    with the same acronym (the model sometimes re-words a name despite the
+    prompt). Records matching no target are dropped, so the result merges back
+    without introducing unrelated rows (see
+    :func:`database.apply_refreshed_conferences`).
+    """
+    by_id = {t.id: t for t in targets}
+    by_acronym: dict = {}
+    for t in targets:
+        by_acronym.setdefault(t.acronym.strip().upper(), []).append(t)
+    out: List[Conference] = []
+    for conf in found:
+        target = by_id.get(conf.id)
+        if target is None:
+            same = by_acronym.get(conf.acronym.strip().upper(), [])
+            target = same[0] if len(same) == 1 else None
+        if target is not None:
+            out.append(conf.model_copy(update={"name": target.name}))
+    return out

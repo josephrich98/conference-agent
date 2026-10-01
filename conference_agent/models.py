@@ -1,8 +1,9 @@
 """Typed schema for a conference.
 
 One ``Conference`` record describes a recurring conference *series* (e.g. RSNA),
-holding both its most recent **prior** edition and its **upcoming** edition. The
-record id is derived from the acronym (e.g. ``RSNA``) so re-running discovery
+holding both its most recent **prior** edition and its **upcoming** edition.
+Series are indexed by their full name -- two series may share an acronym -- and
+the record id is a URL-safe slug of it (:func:`name_id`), so re-running discovery
 updates the same row each cycle: as a new edition is announced, today's
 "upcoming" rolls into "prior" and the freshly announced dates become "upcoming".
 
@@ -15,11 +16,27 @@ from __future__ import annotations
 
 import calendar
 import re
+import unicodedata
 from datetime import date
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from conference_agent.deadline_time import (
+    KINDS,
+    format_deadline_time,
+    normalize_time,
+    normalize_timezone,
+    parse_legacy_deadline_time,
+)
 
 
 class ConferenceSize(str, Enum):
@@ -119,7 +136,7 @@ CATEGORIES = (
     "biology",
     "chemistry",
     "physics",
-    "math",
+    "mathematics",
     "stats",
     "computer science",
     "artificial intelligence",
@@ -182,9 +199,9 @@ SUBCATEGORY_TO_CATEGORY = {
     "physics": "physics",
     "astrophysics": "physics",
     "optics": "physics",
-    # --- math ----------------------------------------------------------------
-    "mathematics": "math",
-    "applied mathematics": "math",
+    # --- mathematics ---------------------------------------------------------
+    "mathematics": "mathematics",
+    "applied mathematics": "mathematics",
     # --- stats ---------------------------------------------------------------
     "statistics": "stats",
     "biostatistics": "stats",
@@ -242,6 +259,18 @@ def normalize_formats(value: "str | list | tuple | None") -> List[str]:
     return [fmt for fmt in CONFERENCE_FORMATS if fmt in present]
 
 
+def name_id(name: str) -> str:
+    """The record id for a conference name: a lowercase, hyphenated ASCII slug.
+
+    Series are indexed by name, so this is also the name comparison used to match
+    rows: case, accents, punctuation, and spacing do not distinguish two names
+    (``"IDWeek"`` and ``"idweek"`` are one series). The slug is the id in
+    calendar event UIDs, subscription keys, and the ``/c/<id>/`` page URLs.
+    """
+    ascii_name = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-")
+
+
 class Conference(BaseModel):
     """A recurring conference series with its prior and upcoming editions."""
 
@@ -249,7 +278,15 @@ class Conference(BaseModel):
 
     # --- Identity ----------------------------------------------------------
     acronym: str = Field(..., description="Short name, e.g. 'RSNA'")
-    name: str = Field(..., description="Full conference name")
+    name: str = Field(..., description="Full conference name (the series' index)")
+
+    @field_validator("name")
+    @classmethod
+    def _name_has_id(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not name_id(value):
+            raise ValueError("name must contain at least one ASCII letter or digit")
+        return value
     # One conference can carry several subcategory tags (e.g. SPR -> radiology +
     # pediatrics). Accepts either a list or a comma/semicolon-delimited string (and
     # the singular ``subcategory`` key) on input; ``subcategory`` below exposes the
@@ -374,29 +411,86 @@ class Conference(BaseModel):
         None, description="Source URL the attendance figure was taken from (internal provenance)"
     )
     notes: Optional[str] = Field(None, description="Free-form notes")
-    # Time of day (with time zone) that submissions close. Free text and
-    # per-series rather than per-deadline: a series almost always uses one
-    # convention for every deadline and keeps it year to year, and the value that
-    # matters is the zone ("23:59 AoE" vs "11:59 PM ET" is nearly a day apart).
-    # When deadlines genuinely differ, one labeled line per kind:
-    # "abstract: 11:59 PM ET\nlate abstract: 5 PM ET\npaper: 23:59 AoE".
-    # The stored deadlines stay pure dates (sorting, derived months, date
-    # comparisons, and all-day calendar events depend on that); this rides along
-    # in the table and in the calendar event notes.
-    deadline_time: Optional[str] = Field(
-        None,
-        description=(
-            "Time of day (with time zone) submissions close, free text, e.g. "
-            "'11:59 PM ET' or '23:59 AoE'. One value for the series when every "
-            "deadline shares it; otherwise one 'kind: time' line per deadline "
-            "(abstract / late abstract / paper). Blank when not published."
-        ),
+    # Time of day and time zone each deadline closes, one pair per deadline kind.
+    # These are the stored source of truth (not shown as columns); the table's
+    # ``Deadline time`` text is *derived* from them (see :attr:`deadline_time`).
+    # Times are canonical 24-hour ``HH:MM`` and zones are canonical codes
+    # (``AoE``, ``ET``, ``CET``, ... or an IANA name), whatever form the input took
+    # -- see ``deadline_time.py``. The deadline columns stay pure dates (sorting,
+    # derived months, date comparisons, and all-day calendar events depend on
+    # that), so a time rides along per kind. A zone with no time, or a time with no
+    # zone, is kept as published.
+    abstract_time: Optional[str] = Field(None, description="Abstract deadline time of day, 24-hour HH:MM")
+    abstract_timezone: Optional[str] = Field(None, description="Zone of the abstract deadline time, e.g. 'AoE', 'ET'")
+    late_abstract_time: Optional[str] = Field(None, description="Late abstract deadline time of day, 24-hour HH:MM")
+    late_abstract_timezone: Optional[str] = Field(None, description="Zone of the late abstract deadline time")
+    paper_time: Optional[str] = Field(None, description="Paper deadline time of day, 24-hour HH:MM")
+    paper_timezone: Optional[str] = Field(None, description="Zone of the paper deadline time")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _structure_deadline_times(cls, data):
+        """Accept the legacy free-text ``deadline_time`` as input.
+
+        ``deadline_time`` is now derived, but older CSV/JSON files and table
+        exports still carry it. When given, it is parsed into whichever of the six
+        structured fields the input did not set explicitly (explicit fields win).
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        legacy = data.pop("deadline_time", None)
+        if legacy and str(legacy).strip():
+            dated = [
+                k
+                for k in KINDS
+                if any(data.get(f"{ed}_{k}_deadline") for ed in ("prior", "upcoming"))
+            ]
+            for key, value in parse_legacy_deadline_time(str(legacy), dated).items():
+                if data.get(key) in (None, ""):
+                    data[key] = value
+        return data
+
+    @field_validator("abstract_time", "late_abstract_time", "paper_time", mode="before")
+    @classmethod
+    def _normalize_deadline_time(cls, value):
+        return normalize_time(value) if value not in (None, "") else None
+
+    @field_validator(
+        "abstract_timezone", "late_abstract_timezone", "paper_timezone", mode="before"
     )
+    @classmethod
+    def _normalize_deadline_timezone(cls, value):
+        return normalize_timezone(value) if value not in (None, "") else None
+
+    @property
+    def deadline_specs(self) -> dict:
+        """``{kind: (time, timezone)}`` for the three deadline kinds."""
+        return {
+            k: (getattr(self, f"{k}_time"), getattr(self, f"{k}_timezone")) for k in KINDS
+        }
+
+    @property
+    def deadline_time(self) -> Optional[str]:
+        """The deadline time(s) as one display string, derived from the six fields.
+
+        ``"11:59 PM ET"`` when every deadline the series has shares one time,
+        otherwise one labeled line per deadline (``"abstract: 5:00 PM ET"`` /
+        ``"paper: 11:59 PM AoE"``). ``None`` when no time is recorded. Always the
+        12-hour form; the browser re-renders the structured fields in 24-hour on
+        request.
+        """
+        dated = [
+            k
+            for k in KINDS
+            if getattr(self, f"upcoming_{k}_deadline") or getattr(self, f"prior_{k}_deadline")
+        ]
+        return format_deadline_time(self.deadline_specs, dated)
 
     @property
     def id(self) -> str:
-        """Stable record id for a series: the upper-cased acronym (e.g. ``RSNA``)."""
-        return self.acronym.upper()
+        """Record id for a series: the slug of its name (see :func:`name_id`)."""
+        return name_id(self.name)
 
     @property
     def subcategory(self) -> str:

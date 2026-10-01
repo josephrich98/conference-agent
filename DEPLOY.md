@@ -1,5 +1,7 @@
 # Deploying conference-agent
 
+TL;DR: simply run `bash scripts/deploy_static.sh`
+
 **The live deployment is a static site on Vercel — "deploy" means the static
 path below, not AWS.** The AWS FastAPI + Lambda + PostgreSQL stack is retained as
 a legacy alternative (see [Legacy: AWS](#legacy-aws-fastapi--lambda--postgresql)),
@@ -87,6 +89,27 @@ per-conference `.ics` files — none of which needs per-request compute. That is
 why the live deployment is the [static path](#deploy-static-site--the-live-path)
 at the top of this file; this Lambda stack remains only as a dynamic-backend
 alternative.
+
+## REST API (FastAPI backend)
+
+The FastAPI app (`web/app.py`) exposes a read-only, credential-free REST API.
+It is available wherever that backend runs: locally via `conference-agent serve`
+(default `http://127.0.0.1:8000`) or behind CloudFront when this stack is up. It
+is **not** served by the static site on Vercel, which offers only the
+`/data/conferences.json` snapshot. Interactive docs are at `/docs`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/search?q=<query>&format=json` | Boolean search; returns the matching conference rows as JSON (`format=csv` for a CSV export). |
+| `GET /api/fields` | Queryable fields, aliases, and controlled vocabularies. Call this first to learn the query grammar at runtime. |
+| `GET /api/calendar.ics?q=<query>` | The selected conferences as a subscribable iCalendar feed. |
+| `GET /api/translate?q=<text>` | Natural-language request → boolean query via a local Ollama model; returns 503 when no model is running. |
+
+The `q` parameter uses the same boolean query language as the web table's
+search box (`field:value`, `AND` / `OR` / `NOT`, parentheses, date
+comparisons); an empty `q` matches everything. An agent that builds queries
+should read `/api/fields` first, since it returns the exact field names,
+aliases, and allowed values the parser accepts.
 
 ## Architecture notes
 

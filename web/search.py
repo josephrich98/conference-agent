@@ -81,7 +81,9 @@ as hidden aliases so older shared query URLs keep working.
 
 from __future__ import annotations
 
+import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional, Tuple, Union
@@ -97,6 +99,41 @@ class QueryError(Exception):
 
 
 # --- Field registry --------------------------------------------------------
+
+# Columns returned and exported by the API / static snapshot, in display order.
+RESULT_COLUMNS = [
+    "id",
+    "acronym",
+    "name",
+    "category",
+    "subcategory",
+    "format",
+    "location",
+    "size",
+    "attendance",
+    "attendance_year",
+    "remote_option",
+    "cost",
+    "url",
+    "abstract_month",
+    "upcoming_abstract_deadline",
+    "late_abstract_month",
+    "upcoming_late_abstract_deadline",
+    "paper_month",
+    "upcoming_paper_deadline",
+    "deadline_time",
+    "conference_month",
+    "upcoming_start_date",
+    "upcoming_end_date",
+    "upcoming_registration",
+    "prior_abstract_deadline",
+    "prior_late_abstract_deadline",
+    "prior_paper_deadline",
+    "prior_start_date",
+    "prior_end_date",
+    "prior_registration",
+    "notes",
+]
 
 # The queryable fields exposed to users mirror the table's column headers exactly
 # (see COLUMNS in web/static/index.html), so the search box and the displayed
@@ -651,3 +688,251 @@ def build_filter(query: str):
     if node is None:
         return None
     return _compile(node)
+
+
+# ---------------------------------------------------------------------------
+# Keyword fallback (Python port of ``keywordSearch`` in web/static/search.js).
+#
+# The table runs the exact boolean search first; when it matches nothing, or the
+# text does not parse, it falls back to this forgiving, relevance-ranked keyword
+# match (prefix / stem / typo tolerant, filler words dropped, rows matching more
+# terms first). Ported so ``conference-agent lookup`` behaves like the site;
+# tests/test_keyword_search.py pins the two implementations together via Node.
+# It works on serialized row dicts (the shape of ``/api/search`` and the static
+# snapshot), not SQL, so every constant below mirrors its JS counterpart.
+# ---------------------------------------------------------------------------
+
+# Row column -> weight of a hit in that column.
+_KEYWORD_FIELDS = (
+    ("acronym", 4),
+    ("name", 3),
+    ("subcategory", 3),
+    ("category", 2),
+    ("location", 2),
+    ("format", 1),
+    ("remote_option", 1),
+    ("size", 1),
+    ("cost", 0.5),
+    ("deadline_time", 0.5),
+    ("upcoming_registration", 0.5),
+    ("prior_registration", 0.5),
+    ("url", 0.5),
+    ("notes", 0.5),
+)
+
+# Long free-text columns where typo-tolerant matching mostly produces noise.
+_KEYWORD_EXACT_ONLY = {"notes", "url", "upcoming_registration", "prior_registration"}
+
+# Displayed-date columns a four-digit year is checked against.
+_KEYWORD_DATE_COLUMNS = (
+    "upcoming_start_date",
+    "prior_start_date",
+    "upcoming_abstract_deadline",
+    "prior_abstract_deadline",
+    "upcoming_late_abstract_deadline",
+    "prior_late_abstract_deadline",
+    "upcoming_paper_deadline",
+    "prior_paper_deadline",
+)
+
+_KEYWORD_MONTH_COLUMNS = ("conference_month", "abstract_month", "late_abstract_month", "paper_month")
+
+# Filler words dropped from a keyword query (plus the boolean operators).
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "not", "of", "in", "on", "at", "for", "to",
+    "with", "without", "by", "from", "about", "as", "is", "are", "be", "that",
+    "this", "these", "those", "which", "what", "where", "when", "who", "i", "me",
+    "my", "we", "our", "you", "your", "any", "all", "some", "find", "show", "list",
+    "give", "want", "looking", "look", "need", "near", "held", "conference",
+    "conferences", "meeting", "meetings", "event", "events",
+}  # fmt: skip
+
+# Common shorthand -> the wording used in the data. A term matches if it or any
+# of its expansions matches.
+_KEYWORD_SYNONYMS = {
+    "ai": ["artificial intelligence"],
+    "ml": ["machine learning"],
+    "nlp": ["natural language processing"],
+    "cs": ["computer science"],
+    "online": ["virtual", "hybrid"],
+    "remote": ["virtual", "hybrid"],
+    "big": ["large", "massive"],
+    "major": ["large", "massive"],
+    "huge": ["massive"],
+    "enormous": ["massive"],
+    "tiny": ["small"],
+}
+
+_KNOWN_FIELD_NAMES = {
+    *_TEXT_FIELDS, *_DATE_FIELDS, *_INT_FIELDS, *_NUMBER_FIELDS, *_ALIASES,
+}  # fmt: skip
+
+_YEAR_RE = re.compile(r"(19|20)\d\d")
+_DIGITS_RE = re.compile(r"[0-9]+")
+
+
+def _fold_text(s) -> str:
+    decomposed = unicodedata.normalize("NFD", str(s))
+    return "".join(ch for ch in decomposed if not 0x300 <= ord(ch) <= 0x36F).lower()
+
+
+def _split_words(s) -> List[str]:
+    return [w for w in re.split(r"[\W_]+", _fold_text(s)) if w]
+
+
+def _edit_distance(a: str, b: str, max_dist: int) -> int:
+    """Optimal-string-alignment distance (a transposition costs 1), with an
+    early exit once the distance is known to exceed ``max_dist``."""
+    if abs(len(a) - len(b)) > max_dist:
+        return max_dist + 1
+    prev2 = None
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i]
+        row_min = i
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if prev2 and i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                v = min(v, prev2[j - 2] + 1)
+            cur.append(v)
+            row_min = min(row_min, v)
+        if row_min > max_dist:
+            return max_dist + 1
+        prev2, prev = prev, cur
+    return prev[len(b)]
+
+
+def _common_prefix_length(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+def _word_quality(term: str, word: str, fuzzy: bool) -> float:
+    """How well a single-word term matches one word of the row text, 0 to 1."""
+    if term == word:
+        return 1
+    if len(term) < 3:
+        return 0
+    if word.startswith(term):
+        return 0.9
+    shared = _common_prefix_length(term, word)
+    if shared >= max(4, math.ceil(0.75 * min(len(term), len(word)))):
+        return 0.8
+    if len(term) >= 4 and term in word:
+        return 0.7
+    if fuzzy and len(term) >= 6:
+        max_dist = 2 if len(term) >= 9 else 1
+        if _edit_distance(term, word, max_dist) <= max_dist:
+            return 0.6
+    return 0
+
+
+def _keyword_index(row: dict) -> list:
+    index = []
+    for col, weight in _KEYWORD_FIELDS:
+        value = row.get(col)
+        if value is None or value == "":
+            continue
+        words = _split_words(value)
+        index.append(
+            (weight, col not in _KEYWORD_EXACT_ONLY, f" {' '.join(words)} ", list(dict.fromkeys(words)))
+        )
+    return index
+
+
+def keyword_terms(query: str) -> List[str]:
+    """Split a query into keyword terms: quoted phrases stay whole, filler words drop."""
+    terms: List[str] = []
+
+    def add(t: str) -> None:
+        if t not in terms:
+            terms.append(t)
+
+    def phrase(m: re.Match) -> str:
+        words = _split_words(m.group(1))
+        if words:
+            add(" ".join(words))
+        return " "
+
+    rest = re.sub(r'"([^"]*)"', phrase, str(query or ""))
+    rest = re.sub(
+        r"([A-Za-z_]\w*)\s*:",
+        lambda m: " " if m.group(1).lower() in _KNOWN_FIELD_NAMES else f" {m.group(1)} ",
+        rest,
+        flags=re.ASCII,
+    )
+    for word in _split_words(rest):
+        if word in _STOPWORDS:
+            continue
+        if _DIGITS_RE.fullmatch(word) and not _YEAR_RE.fullmatch(word):
+            continue  # the "06" of a date
+        if len(word) < 2:
+            continue
+        add(word)
+    return terms
+
+
+def _term_score(term: str, row: dict, index: list) -> float:
+    """Best weighted match of one term anywhere in the row, 0 if none."""
+    best = 0
+    for alt in (term, *_KEYWORD_SYNONYMS.get(term, ())):
+        is_phrase = " " in alt
+        for weight, fuzzy, text, words in index:
+            if weight <= best:
+                continue  # cannot beat the best hit so far
+            q = 0
+            if is_phrase:
+                if f" {alt} " in text:
+                    q = 1
+                elif alt in text:
+                    q = 0.8
+            else:
+                for word in words:
+                    q = max(q, _word_quality(alt, word, fuzzy))
+                    if q == 1:
+                        break
+            best = max(best, q * weight)
+    if _YEAR_RE.fullmatch(term) and any(
+        row.get(c) is not None and str(row[c]).startswith(term) for c in _KEYWORD_DATE_COLUMNS
+    ):
+        best = max(best, 1)
+    month = _MONTH_NAMES.get(term)
+    if month is not None and any(row.get(c) == month for c in _KEYWORD_MONTH_COLUMNS):
+        best = max(best, 1)
+    return best
+
+
+def keyword_search(query: str, rows: List[dict]) -> List[dict]:
+    """Forgiving keyword ranking over serialized ``rows``.
+
+    Returns the rows matching at least half as many of the query's terms as the
+    best row does, most relevant first (more terms matched, then a higher
+    score, with rarer terms weighing more). Empty when the query has no usable
+    terms. Mirrors ``keywordSearch`` in web/static/search.js.
+    """
+    terms = keyword_terms(query)
+    if not terms:
+        return []
+    per_row = []
+    for row in rows:
+        index = _keyword_index(row)
+        per_row.append([_term_score(t, row, index) for t in terms])
+    idf = []
+    for i in range(len(terms)):
+        df = sum(1 for scores in per_row if scores[i] > 0)
+        idf.append(math.log(1 + len(rows) / df) if df else 0)
+    hits = []
+    for row, scores in zip(rows, per_row):
+        matched = sum(1 for s in scores if s > 0)
+        if matched:
+            hits.append((row, matched, sum(s * w for s, w in zip(scores, idf))))
+    if not hits:
+        return []
+    min_matched = math.ceil(max(h[1] for h in hits) / 2)
+    hits = [h for h in hits if h[1] >= min_matched]
+    hits.sort(key=lambda h: (-h[1], -h[2]))
+    return [h[0] for h in hits]

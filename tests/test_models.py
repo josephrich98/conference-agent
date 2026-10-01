@@ -22,8 +22,19 @@ def _conf(**overrides):
     return Conference(**base)
 
 
-def test_conference_id_is_upper_acronym():
-    assert _conf().id == "RSNA"
+def test_conference_id_is_the_name_slug():
+    # Series are indexed by name: two series may share an acronym.
+    assert _conf().id == "radiological-society-of-north-america"
+    assert _conf(name="  Café   Meeting, 2027! ").id == "cafe-meeting-2027"
+    assert _conf(acronym="ISMB", name="A").id != _conf(acronym="ISMB", name="B").id
+
+
+def test_name_without_letters_or_digits_is_rejected():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _conf(name="—")
 
 
 def test_size_is_derived_from_attendance():

@@ -11,7 +11,7 @@ flagships were chosen and flags the decisions that need your sign-off.
 - **Two levels: category → subcategory.** Each conference carries one or more
   granular **subcategory** tags (the specific field) and a broad **category** (one
   of ten top-level buckets: humanities, social science, medicine, biology,
-  chemistry, physics, math, stats, computer science, artificial intelligence). The
+  chemistry, physics, mathematics, stats, computer science, artificial intelligence). The
   category is **derived**, never hand-set: every subcategory maps to exactly one
   category via `models.SUBCATEGORY_TO_CATEGORY`, and a series' category is the
   de-duplicated set of its subcategories' buckets (so MICCAI — radiology +

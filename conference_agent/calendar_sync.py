@@ -22,15 +22,15 @@ existing event instead of creating a duplicate (idempotent).
 from __future__ import annotations
 
 import base64
-import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, Iterable, List, Optional
+from typing import Iterable, List, Optional
 
 from conference_agent.config import (
     CALENDAR_REMINDER_HOUR,
     CALENDAR_REMINDER_LEAD_DAYS,
 )
+from conference_agent.deadline_time import format_spec
 from conference_agent.models import Conference
 
 
@@ -62,42 +62,19 @@ def _event_id(conference_id: str, kind: str) -> str:
     return f"conf{encoded}"
 
 
-# Labels a multi-line ``deadline_time`` may prefix each entry with, keyed by the
-# event kind that entry applies to.
-_DEADLINE_TIME_LABELS = {
-    "abstract": ("abstract",),
-    "late-abstract": ("late abstract", "late-abstract", "late_abstract"),
-    "paper": ("paper",),
-}
+def deadline_time_for(conf: Conference, kind: str) -> Optional[str]:
+    """The deadline time that applies to one event ``kind``, as shown ("11:59 PM ET").
 
-
-def deadline_time_for(deadline_time: Optional[str], kind: str) -> Optional[str]:
-    """The deadline-time text that applies to one event ``kind``.
-
-    ``deadline_time`` is free text: usually one value shared by every deadline
-    ("11:59 PM ET"), otherwise one ``kind: time`` entry per deadline, separated by
-    newlines or semicolons ("abstract: 11:59 PM ET; paper: 23:59 AoE"). When the
-    text has a labeled entry for ``kind`` that entry's time is returned; when it
-    has labeled entries but none for ``kind``, nothing (the time is unknown for
-    that deadline, not shared); otherwise the whole text. Mirrored in
+    Reads the structured per-kind fields (``abstract_time`` / ``abstract_timezone``
+    and so on); ``kind`` is the event kind (``abstract``, ``late-abstract``,
+    ``paper``). ``None`` when that deadline has no recorded time. Mirrored in
     ``web/static/calendar.js``.
     """
-    if not deadline_time or not deadline_time.strip():
-        return None
-    entries = [
-        e.strip() for e in re.split(r"[\n;]", deadline_time) if e.strip()
-    ]
-    labeled: Dict[str, str] = {}
-    for entry in entries:
-        match = re.match(r"^\s*([A-Za-z][A-Za-z _-]*?)\s*:\s*(.+)$", entry)
-        if match:
-            labeled[match.group(1).strip().lower()] = match.group(2).strip()
-    if not labeled:
-        return deadline_time.strip()
-    for label in _DEADLINE_TIME_LABELS.get(kind, ()):
-        if label in labeled:
-            return labeled[label]
-    return None
+    field = kind.replace("-", "_")
+    return (
+        format_spec(getattr(conf, f"{field}_time", None), getattr(conf, f"{field}_timezone", None))
+        or None
+    )
 
 
 def _deadline_note(conf: Conference, kind: str) -> str:
@@ -107,7 +84,7 @@ def _deadline_note(conf: Conference, kind: str) -> str:
     the note because a timed event would need per-zone handling and would break
     the all-day reminder anchoring.
     """
-    time_text = deadline_time_for(conf.deadline_time, kind)
+    time_text = deadline_time_for(conf, kind)
     return f"\nDeadline time: {time_text}" if time_text else ""
 
 
