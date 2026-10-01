@@ -572,8 +572,7 @@ def build_parser() -> argparse.ArgumentParser:
         "delete",
         help="Delete a conference manually",
         description="Delete a conference, matched by --conference-name (fails if "
-        "the name does not exist). A deleted seed series returns on the next "
-        "static build, and discovery may find any series again.",
+        "the name does not exist). A field survey may find it again.",
     )
     p_delete.add_argument(
         "--conference-name",
@@ -639,7 +638,7 @@ def _print_discover_options(db_url: str) -> None:
     print()
     block("--category", normalize_categories([*CATEGORIES, *distinct_categories(db_url)]))
     block(
-        "--subcategory (fields in the table and the seed list; any other field also works)",
+        "--subcategory (fields in the table; any other field also works)",
         discovery_subcategories(db_url),
     )
     block("--size", [s.value for s in ConferenceSize])
@@ -840,14 +839,13 @@ def _warn_new_subcategories(records: list[dict], db_url: str) -> None:
     """Warn (without failing) when a record introduces an unfamiliar subcategory tag.
 
     Subcategory is the one free-form categorical column, so a typo would silently
-    create a new tag. Compare each tag against the known vocabulary -- the seed
-    taxonomy plus tags already in the table -- and flag any newcomer on stderr.
+    create a new tag. Compare each tag against the tags already in the table and
+    flag any newcomer on stderr.
     """
-    from conference_agent.config import seed_subcategories
     from conference_agent.database import _record_subcategory, distinct_subcategories
     from conference_agent.models import normalize_subcategories
 
-    known = set(seed_subcategories()) | distinct_subcategories(db_url)
+    known = distinct_subcategories(db_url)
     flagged: list[str] = []
     for record in records:
         for tag in normalize_subcategories(_record_subcategory(record)):

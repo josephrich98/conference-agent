@@ -94,7 +94,7 @@ class RemoteOption(str, Enum):
 # as a list, since one conference can belong to several fields (e.g. SPR is both
 # radiology and pediatrics; MICCAI is radiology and machine learning). This helper
 # tokenizes any accepted form -- a list, or a delimited string -- into a clean,
-# lowercased, de-duplicated list, so the model, the seed table, and the refresh
+# lowercased, de-duplicated list, so the model, the database, and the refresh
 # policy all split tags the same way.
 def _split_tags(value: "str | list | tuple | None") -> List[str]:
     """Tokenize a list/tuple or ``,``/``;``-delimited string into clean tags.

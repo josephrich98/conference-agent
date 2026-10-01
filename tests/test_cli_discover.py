@@ -9,7 +9,6 @@ import pytest
 
 from conference_agent import discover
 from conference_agent.cli import main
-from conference_agent.config import seed_subcategories
 from conference_agent.database import upsert_conferences
 from conference_agent.models import CATEGORIES, Conference
 
@@ -54,7 +53,7 @@ def test_bare_discover_surveys_every_field(tmp_path, calls):
     assert main(["--db", url, "discover"]) == 0
     surveyed = [fields[0] for fields in calls["survey"]]
     assert all(len(fields) == 1 for fields in calls["survey"])  # one run per field
-    assert set(surveyed) == set(seed_subcategories()) | {"radiology", "optics"}
+    assert set(surveyed) == {"radiology", "optics"}
     assert calls["refresh"] == []
 
 

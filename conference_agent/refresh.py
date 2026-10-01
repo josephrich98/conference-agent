@@ -20,7 +20,7 @@ calls are spent only when a new edition is plausibly about to be announced.
   days, measured from :attr:`ConferenceRow.last_checked`, until it is updated or
   the window closes.
 - A row that has never been checked (``last_checked is None``) with no dates at
-  all is due once, so freshly seeded rows get an initial pass.
+  all is due once, so newly added rows get an initial pass.
 
 Discovery covers a whole field per run, so the integration in ``daily_update``
 selects the *fields* containing due conferences, refreshes those, and then
@@ -175,7 +175,7 @@ def is_retired(row: ConferenceRow, today: Optional[date] = None) -> bool:
     series is presumed discontinued (or renamed, or moved somewhere the agent
     has not found) and is left out of the published site, but its row is kept
     so it reappears if a later discovery run records a new edition. A row with
-    no dates at all is never retired: it is a fresh seed awaiting its first fill.
+    no dates at all is never retired: it is a new row awaiting its first fill.
     """
     today = today or date.today()
     if _has_future_edition(row, today):
@@ -197,7 +197,7 @@ def is_due_for_check(row: ConferenceRow, today: Optional[date] = None) -> bool:
         # Already updated: nothing new to find until that edition passes.
         return False
     if edition_anchor(row) is None:
-        # No date to anchor on. Check once if we never have (initial seed fill);
+        # No date to anchor on. Check once if we never have (initial fill);
         # otherwise there is nothing to schedule against.
         return row.last_checked is None
     if not in_stale_window(row, today):

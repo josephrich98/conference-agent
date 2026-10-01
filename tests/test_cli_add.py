@@ -25,7 +25,6 @@ def _by_id(url):
 
 def test_add_new_conference_via_flags(tmp_path):
     url = _db_url(tmp_path)
-    # A non-seed acronym so curated URL / category floors do not mask the input.
     code = main(
         [
             "--db",
@@ -213,7 +212,7 @@ def test_fields_command_lists_every_add_flag(tmp_path):
     # --conference is the hidden legacy "ACRONYM - Name" shorthand.
     modes = {
         "--csv", "--json", "--fields", "--update", "--overwrite",
-        "--help", "--db", "--conference",
+        "--help", "--db", "--conference", "--pin", "--unpin",
     }
     assert flags - modes == documented
 
@@ -461,13 +460,40 @@ def test_add_rejects_invalid_enum_value(tmp_path):
 
 def test_add_warns_on_new_subcategory_but_still_writes(tmp_path, capsys):
     url = _db_url(tmp_path)
+    assert main(["--db", url, "add", "--conference-name", "Known", "--subcategory", "radiology"]) == 0
+    capsys.readouterr()
     code = main(["--db", url, "add", "--conference", "ZZT - Test", "--subcategory", "radiology", "quantum imaging"])
     assert code == 0
     err = capsys.readouterr().err
-    # The unfamiliar tag is flagged; the known seed subcategory is not.
+    # The unfamiliar tag is flagged; one already in the table is not.
     assert "quantum imaging" in err
     assert "radiology" not in err
     assert _by_id(url)["ZZT"].subcategories == ["radiology", "quantum imaging"]
+
+
+def test_add_pin_and_unpin(tmp_path, capsys):
+    from sqlalchemy.orm import Session
+
+    from conference_agent.database import ConferenceRow, get_engine, pinned_fields
+
+    url = _db_url(tmp_path)
+    args = ["--db", url, "add", "--conference-name", "Pin Test", "--subcategory", "radiology",
+            "--url", "https://pin.example", "--pin", "url", "conference-dates", "deadline_time"]
+    assert main(args) == 0
+
+    def pins():
+        with Session(get_engine(url)) as s:
+            return pinned_fields(s.get(ConferenceRow, "pin-test"))
+
+    assert pins()[:3] == ["url", "upcoming_start_date", "upcoming_end_date"]
+    assert "paper_timezone" in pins()
+    update = ["--db", url, "add", "--update", "--conference-name", "Pin Test"]
+    assert main([*update, "--unpin", "deadline-time", "conference_dates"]) == 0
+    assert pins() == ["url"]
+    # Unknown fields, and pinning and unpinning one field at once, are rejected.
+    assert main([*update, "--pin", "size"]) == 1
+    assert main([*update, "--pin", "url", "--unpin", "url"]) == 1
+    assert "cannot pin 'size'" in capsys.readouterr().err
 
 
 def _seed_zzt(url):

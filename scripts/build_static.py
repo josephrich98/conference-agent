@@ -24,14 +24,14 @@ The output is a self-contained directory::
       c/<id>/, field/<tag>/, sitemap.xml, robots.txt  # prerendered SEO pages
       c/<id>/calendar.ics, field/<tag>/calendar.ics, calendar.ics  # subscribable feeds
       data/conferences.json   # the catalog snapshot (minus retired series) + field metadata
-      add/index.html      # "Add a conference" form (fields from `add --fields`)
+      add/index.html      # "Add or edit a conference" form (fields from `add --fields`)
       data/add_fields.json    # the `conference-agent add` input vocabulary, for the form
       api/ + package.json     # Vercel Functions for per-conference update emails
 
 The ``api/`` functions (from ``web/vercel/``) are the one exception to "no
 compute": they run only when a visitor subscribes, confirms, or unsubscribes,
 never for browsing or search. Other static hosts serve the table unchanged; only
-the ✉️ subscribe button and the "Add a conference" form (which opens a GitHub pull
+the ✉️ subscribe button and the "Add or edit a conference" form (which opens a GitHub pull
 request via ``api/propose``) need them.
 
 ``dist/`` is gitignored (data-derived); regenerate it at deploy time.
@@ -58,7 +58,6 @@ from conference_agent.database import (
     former_ids,
     get_engine,
     query_conferences,
-    seed_conferences,
 )
 from conference_agent.refresh import is_retired
 from web.app import _RESULT_COLUMNS, _row_to_dict
@@ -82,7 +81,6 @@ def _export_rows(
     table's default sort (conference acronym, falling back to the name) so the
     first paint is sensible before the user re-sorts in the browser.
     """
-    seed_conferences(db_url)
     engine = get_engine(db_url)
     today = today or date.today()
     with Session(engine) as session:
@@ -180,7 +178,7 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
 
     for name in _ASSETS:
         shutil.copyfile(_STATIC_DIR / name, out_dir / name)
-    # The "Add a conference" form, served at /add/.
+    # The "Add or edit a conference" form, served at /add/.
     (out_dir / "add").mkdir(exist_ok=True)
     shutil.copyfile(_STATIC_DIR / "add.html", out_dir / "add" / "index.html")
 

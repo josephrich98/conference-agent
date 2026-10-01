@@ -11,27 +11,21 @@ import pytest
 
 import conference_agent.discover as discover
 from conference_agent.config import (
-    SEED_CONFERENCE_SOURCES,
-    SEED_CONFERENCE_URLS,
-    SEED_CONFERENCES,
     WEEKLY_SUBCATEGORIES,
     monthly_subcategories,
-    seed_subcategories,
     weekly_subcategories,
 )
 from conference_agent.discover import (
     _attendance_hints_block,
     _ExtractedConference,
+    _known_checklist,
     _parse_date,
-    _seed_checklist,
     _to_conference,
 )
 from conference_agent.models import (
     Conference,
     ConferenceSize,
     RemoteOption,
-    name_id,
-    normalize_subcategories,
 )
 
 
@@ -145,41 +139,6 @@ def test_to_conference_requires_identity_fields():
     assert _to_conference(_extracted(name="")) is None
 
 
-def test_seed_list_is_well_formed():
-    # Each seed is a (acronym, name, subcategory) tuple. The subcategory element is
-    # a string or a tuple of strings (a conference may span several fields).
-    assert SEED_CONFERENCES
-    # Series are indexed by name, so no two seeds may share a name id.
-    ids = [Conference(acronym=a, name=n, subcategory=s).id for a, n, s in SEED_CONFERENCES]
-    assert len(set(ids)) == len(ids)
-    for acronym, name, subcategory in SEED_CONFERENCES:
-        subs = normalize_subcategories(subcategory)
-        assert acronym.strip() and name.strip() and subs
-        # Seeds must satisfy the same identity/validation rules as discovered rows.
-        conf = Conference(acronym=acronym, name=name, subcategory=subcategory)
-        assert conf.id == name_id(name)
-        assert conf.subcategories == subs
-        # A seed carries no attendance, so its size is blank until discovery.
-        assert conf.size is None
-
-    # Acronyms are the upsert key, so they must be unique (case-insensitive).
-    acronyms = [a.upper() for a, _, _ in SEED_CONFERENCES]
-    assert len(acronyms) == len(set(acronyms))
-
-
-def test_multi_tag_and_cshl_genomics_seeds():
-    by_id = {a.upper(): normalize_subcategories(c) for a, _, c in SEED_CONFERENCES}
-    # Conferences that span fields carry every applicable tag.
-    assert by_id["SPR"] == ["radiology", "pediatrics"]
-    assert by_id["MICCAI"] == ["radiology", "machine learning"]
-    assert "ECCV" in by_id  # newly added computer-vision flagship
-    # Every CSHL meeting carries a genomics tag (its home domain).
-    cshl = {a: subs for a, subs in by_id.items() if a.startswith("CSHL-")}
-    assert cshl
-    for acronym, subs in cshl.items():
-        assert "genomics" in subs, f"{acronym} missing genomics tag"
-
-
 def test_attendance_hints_block_renders_sources_and_bump_instruction():
     # No hints -> empty string, so a first-time run's prompt is unchanged.
     assert _attendance_hints_block(None) == ""
@@ -201,58 +160,28 @@ def test_attendance_hints_block_renders_sources_and_bump_instruction():
     assert _attendance_hints_block({"X": {"source": "", "year": 2025}}) == ""
 
 
-def test_seed_checklist_includes_seeds_and_filters_by_subcategory():
-    # The checklist for a subcategory lists exactly that field's seeds. Each line
-    # is rendered as "- {acronym} — {name}", so match on that exact prefix rather
-    # than a bare substring (e.g. so "ASH" does not match inside "ASHNR").
-    checklist = _seed_checklist(["radiology"])
-    for acronym, _, subcategory in SEED_CONFERENCES:
-        line = f"- {acronym} — "
-        if "radiology" in normalize_subcategories(subcategory):
-            assert line in checklist
-        else:
-            assert line not in checklist
-    # A multi-tag seed appears in every field it is tagged with: MICCAI is both
-    # radiology and machine learning, so it shows up in both checklists.
-    assert "- MICCAI — " in _seed_checklist(["radiology"])
-    assert "- MICCAI — " in _seed_checklist(["machine learning"])
-    # A subcategory with no seeds yields the explicit empty-state line.
-    assert "no seeds" in _seed_checklist(["underwater basket weaving"]).lower()
+def test_known_checklist_lists_stored_conferences_in_the_field():
+    known = [
+        Conference(acronym="MICCAI", name="Medical Image Computing",
+                   subcategory="radiology, machine learning"),
+        Conference(acronym="ASH", name="American Society of Hematology", subcategory="hematology"),
+    ]
+    # Each line is "- {acronym} — {name}"; a multi-tag series appears in every field.
+    assert "- MICCAI — Medical Image Computing" in _known_checklist(["radiology"], known)
+    assert "- MICCAI — " in _known_checklist(["machine learning"], known)
+    assert "- ASH — " not in _known_checklist(["radiology"], known)
+    # A field with nothing stored yields the explicit empty-state line.
+    assert "none recorded" in _known_checklist(["origami"], known)
+    assert "none recorded" in _known_checklist(["radiology"], None)
 
 
-def test_seed_sources_are_well_formed():
-    assert SEED_CONFERENCE_SOURCES
-    for label, url, note in SEED_CONFERENCE_SOURCES:
-        assert label.strip() and note.strip()
-        assert url.startswith("https://")
-
-
-def test_cadence_partitions_the_seed_subcategories():
-    weekly = weekly_subcategories()
-    monthly = monthly_subcategories()
-    # Weekly and monthly are disjoint and together cover every seeded subcategory.
+def test_cadence_partitions_the_given_fields():
+    fields = ["radiology", "genomics", "origami", "pediatrics"]
+    weekly = weekly_subcategories(fields)
+    monthly = monthly_subcategories(fields)
     assert set(weekly).isdisjoint(monthly)
-    assert sorted(weekly + monthly) == seed_subcategories()
-    # Weekly is exactly the seeded subcategories named in WEEKLY_SUBCATEGORIES.
-    assert set(weekly) == WEEKLY_SUBCATEGORIES & set(seed_subcategories())
-
-
-def test_weekly_subcategories_are_all_real_subcategories():
-    # Every name in WEEKLY_SUBCATEGORIES must correspond to an actual seed
-    # subcategory, otherwise the weekly job would silently refresh nothing for it.
-    assert WEEKLY_SUBCATEGORIES <= set(seed_subcategories())
-
-
-def test_mlcb_seed_present_in_genomics_with_url():
-    entry = [s for s in SEED_CONFERENCES if s[0] == "MLCB"]
-    assert entry, "MLCB seed missing"
-    assert "genomics" in normalize_subcategories(entry[0][2])
-    assert SEED_CONFERENCE_URLS.get("MLCB") == "https://www.mlcb.org"
-
-
-# --- Backend dispatch (hermetic; no network/LLM) ---------------------------
-
-
+    assert sorted(weekly + monthly) == sorted(fields)
+    assert set(weekly) == WEEKLY_SUBCATEGORIES & set(fields)
 def test_discover_rejects_unknown_backend():
     with pytest.raises(ValueError):
         discover.discover_conferences(subcategories=["radiology"], backend="bogus")
@@ -261,7 +190,7 @@ def test_discover_rejects_unknown_backend():
 def test_claude_code_backend_dispatches_without_api_key(monkeypatch):
     # The default backend must not require ANTHROPIC_API_KEY or touch the SDK.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(discover, "_research_via_cli", lambda subs, model, hints=None: "notes")
+    monkeypatch.setattr(discover, "_research_via_cli", lambda subs, model, hints=None, known=None: "notes")
     sentinel = [object()]
     monkeypatch.setattr(discover, "_extract_via_cli", lambda text, model: sentinel)
     out = discover.discover_conferences(subcategories=["genomics"], backend="claude-code")
@@ -269,7 +198,7 @@ def test_claude_code_backend_dispatches_without_api_key(monkeypatch):
 
 
 def test_claude_code_backend_returns_empty_when_no_research(monkeypatch):
-    monkeypatch.setattr(discover, "_research_via_cli", lambda subs, model, hints=None: "   ")
+    monkeypatch.setattr(discover, "_research_via_cli", lambda subs, model, hints=None, known=None: "   ")
     out = discover.discover_conferences(subcategories=["genomics"], backend="claude-code")
     assert out == []
 

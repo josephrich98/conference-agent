@@ -206,7 +206,7 @@ both is merged into one.
 
 Each run also:
 
-- adds "Add a conference" submissions merged into `origin/main`
+- adds "Add or edit a conference" submissions merged into `origin/main`
   (`scripts/ingest_submissions.py`; processed files are recorded in
   `data/ingested_submissions.json`, and a failed one is not retried);
 - redeploys the static site (`scripts/deploy_static.sh`) if the data the site

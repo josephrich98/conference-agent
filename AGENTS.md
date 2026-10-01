@@ -17,7 +17,7 @@ iCalendar (`.ics`) feeds. The live site is a static bundle on Vercel
 ## Layout
 
 - `conference_agent/` — core package: `models.py` (pydantic schema, controlled
-  vocabularies, derived fields), `config.py` (constants, seed list, model id),
+  vocabularies, derived fields), `config.py` (constants, model id, refresh schedule),
   `discover.py` (LLM discovery), `database.py` (SQLAlchemy ORM + idempotent
   upserts), `calendar_sync.py` (`.ics` builder), `refresh.py` / `page_watch.py`
   (refresh cadence and agent-free change detection), `subscriptions.py` /

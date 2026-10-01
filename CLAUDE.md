@@ -30,10 +30,11 @@ small, an objective proxy for prominence — e.g. RSNA ≈ 45,000 attendees = ma
 normalizes that information into a typed schema, stores it in a
 SQL database, exposes it through a boolean-searchable web table, and serves each
 conference's deadlines and dates as a credential-free iCalendar (`.ics`) feed.
-Discovery is seeded
-across medicine (radiology and ~18 other specialties), genomics/bioinformatics,
-and data science; the seed list (`SEED_CONFERENCES` in `config.py`) is the lever
-for adding fields, and the standing refresh subcategories are derived from it.
+The table covers medicine (radiology and ~18 other specialties),
+genomics/bioinformatics, and data science. The database is the only source of
+conferences: discovery surveys the subcategories already in it, and a new field
+is added by adding one conference in it (`add`), after which the survey covers
+it.
 
 ## Status
 
@@ -68,8 +69,8 @@ for the design.
     text → a code in `TIMEZONES`, a `UTC±N` offset, or an IANA name), the display
     formatters (12- or 24-hour, identical times collapsed into one entry), and
     `parse_legacy_deadline_time` (the old free text → structured fields)
-  - `config.py` — constants, controlled vocabularies, seed list, Anthropic model
-    id, and SMTP / notification settings
+  - `config.py` — constants, the Anthropic model id, SMTP / notification
+    settings, and the refresh schedule
   - `discover.py` — the AI discovery agent: web search (research) + structured
     output (extraction) to find conferences and extract typed fields. Two
     interchangeable backends run that flow: `claude-code` (default) drives the
@@ -95,7 +96,7 @@ for the design.
     plus its updated `.ics`, with signed unsubscribe links
   - `cli.py` — command-line entry point (`discover` / `add` /
     `delete` / `lookup`). A bare `discover` surveys every field
-    (`database.discovery_subcategories`: table tags ∪ seed fields), one agent run
+    (`database.discovery_subcategories`: the table's subcategories), one agent run
     per field; `--subcategory` / `--category` narrow the survey, while
     `--conference-name` / `--size` switch to re-checking matching stored series
     via `discover.refresh_conferences` (no new rows); `discover --options` lists
@@ -118,7 +119,7 @@ for the design.
   `push_db.py`, `deploy.sh` one-command reconcile + deploy, `scheduled_discovery.sh`
   the daily cron job, `build_static.py` the static-site bundler,
   `notify_subscribers.py` the subscriber-email step of the cron job,
-  `ingest_submissions.py` adds merged "Add a conference" submissions,
+  `ingest_submissions.py` adds merged "Add or edit a conference" submissions,
   `alert_failure.py` emails the log tail when the cron job fails)
 - `scripts/seo_pages.py` — prerenders crawlable per-conference (`/c/<id>/`, with
   `Event` JSON-LD) and per-field (`/field/<tag>/`) pages, `sitemap.xml`,
@@ -129,7 +130,7 @@ for the design.
 - `web/vercel/` — the Vercel Functions behind the table's ✉️ subscribe button
   (`api/subscribe.js`, `confirm.js`, `unsubscribe.js`, `subscriptions.js`,
   shared `_lib.js`) and their `package.json`; `build_static.py` copies them into
-  `dist/`. `api/propose.js` backs the "Add a conference" form
+  `dist/`. `api/propose.js` backs the "Add or edit a conference" form
   (`web/static/add.html`, served at `/add/`, linked from the header and below
   the table): the form is generated from `data/add_fields.json`
   (`cli.add_field_schema`, the same vocabulary as `add --fields json`) but
@@ -140,7 +141,14 @@ for the design.
   Upcoming / Prior radio buttons beside them (Location also Stable, which sets
   `stable_location`); until clicked they follow the dates. Category(s) and
   Subcategory(s) are independent pickers: a dropdown of the values in use (plus
-  the suggested categories) or a typed custom value. A submission is validated,
+  the suggested categories) or a typed custom value. An "Edit an existing
+  conference" box above the form searches the listed names and acronyms as you
+  type; choosing one (or opening `/add/?edit=<id>`) fills the form from its
+  `conferences.json` row (the upcoming edition's dates, else the prior's), and
+  the submission carries only the fields that changed (plus
+  `new_conference_name` for a rename; removing a value is not supported).
+  `api/propose` files an edit as `submissions/<id>-<date>-<rand>.update.json`,
+  which `ingest_submissions.py` writes with `add --update --json`. A submission is validated,
   committed as `submissions/<id>-<date>-<rand>.json`
   (an `add --json` record) on a new branch, and opened as a pull request;
   nothing reaches the table until a maintainer merges it. The daily cron job
@@ -302,8 +310,7 @@ dependencies there rather than installing ad hoc.
   `models.CATEGORIES` lists ten suggested categories, which pickers offer and
   `normalize_categories` orders first; any other value is kept as entered.
   Discovery researches the category alongside the subcategories; a run that
-  reports none keeps the stored value (`upsert_conferences`), and the seed list
-  carries no category. `discover --category` expands to the subcategories of
+  reports none keeps the stored value (`upsert_conferences`). `discover --category` expands to the subcategories of
   the stored series in that category. The legacy single `category` column (granular tags) is renamed to
   `subcategory` in place on first open by `database._migrate_category_to_subcategory`.
 - **Deterministic, sourced size (not a subjective reputation label).** Size is a
@@ -338,10 +345,21 @@ dependencies there rather than installing ad hoc.
   field becomes its own row. The stored name is kept on every match; only an
   explicit rename changes it. The prompts ask the agent to reuse the listed
   names, and `discover.refresh_conferences` returns results under the targets'
-  stored names. Per-seed curation in `config.py` (links, subcategories,
-  formats) is keyed by seed acronym but looked up from the row's *name*
-  (`config.seed_acronym_for_name`), so it never applies to a different series
-  that shares the acronym; seed names must therefore match the stored names.
+  stored names. A survey's prompt lists the stored conferences in that field
+  as a checklist to cover (`discover._known_checklist`).
+- **Pinned fields override discovery, per conference.** Any series can lock
+  fields so no discovery path changes them: the `pinned` column holds stored
+  column names (`database.PINNABLE_FIELDS`, the researched inputs), set with
+  `add [--update] --pin FIELD...` / `--unpin FIELD...` using `add`'s field names
+  (`cli.pin_targets`; `conference_dates` pins both dates, `deadline_time` all
+  six time fields). `upsert_conferences` (a survey) and
+  `apply_refreshed_conferences` (a re-check) restore pinned values and re-derive
+  what is computed from them (`_restore_pins`); manual writes (`add`,
+  `merge_records`, `--overwrite`, which calls `upsert_conferences(manual=True)`)
+  still apply. Discovery starts from the stored link (the page watch fetches
+  it; a re-check passes it to the agent), but the agent may report another, so
+  pin `url` to keep a verified one. The former seed list's hand-checked links,
+  hard-coded CSHL formats, and curated subcategories were converted to pins.
 - **Idempotent calendar feed.** Each event carries a deterministic id derived
   (base32hex) from the conference id and event kind, so a re-fetched feed updates
   existing events instead of creating duplicates. A conference yields up to four

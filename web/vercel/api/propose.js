@@ -1,11 +1,16 @@
-// POST /api/propose  {record, submitter?, website?}
+// POST /api/propose  {record, edit?, submitter?, website?}
 //
-// The website's "Add a conference" form. `record` is a `conference-agent add
-// --json` record (keys from data/add_fields.json, i.e. `add --fields json`).
-// After validation it is committed to a new branch as
+// The website's "Add or edit a conference" form. `record` is a
+// `conference-agent add --json` record (keys from data/add_fields.json, i.e.
+// `add --fields json`). After validation it is committed to a new branch as
 // `submissions/<id>-<stamp>.json` and a pull request is opened against the
 // repository, so nothing reaches the table until a maintainer merges it and
 // runs `conference-agent add --json` on the file.
+//
+// `edit` (a listed conference's id) makes it an edit: `record` holds that
+// conference's name plus only the fields that change (and optionally
+// new_conference_name), and the file is `submissions/<id>-<stamp>.update.json`,
+// which scripts/ingest_submissions.py writes with `add --update --json`.
 //
 // Needs GITHUB_TOKEN: a fine-grained token on the repository with Contents and
 // Pull requests read/write. GITHUB_REPO (owner/name) and GITHUB_BASE (branch)
@@ -19,9 +24,11 @@ const BASE = process.env.GITHUB_BASE || "main";
 // Submissions per client address, and in total, per day.
 const MAX_PER_ADDRESS_PER_DAY = 10;
 const MAX_PER_DAY = 100;
-// Fields the form never sends: renaming is an update, and deadline_time is a
-// shorthand for the structured *_time / *_timezone fields the form collects.
+// Fields the form never sends: deadline_time is a shorthand for the
+// structured *_time / *_timezone fields the form collects, and renaming
+// (new_conference_name) applies only to an edit.
 const EXCLUDED = new Set(["new_conference_name", "deadline_time"]);
+const EDIT_ONLY = new Set(["new_conference_name"]);
 const MAX_TEXT = 2000;
 const MAX_TAGS = 20;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -98,9 +105,10 @@ function text(name, value) {
 
 // Validate and normalize one submitted record against the `add` vocabulary.
 // Mirrors the CLI's checks so a merged file ingests cleanly.
-function cleanRecord(raw, schema) {
+function cleanRecord(raw, schema, edit = false) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new InputError("Missing record.");
-  const fields = new Map(schema.fields.filter((f) => !EXCLUDED.has(f.name)).map((f) => [f.name, f]));
+  const allowed = (name) => !EXCLUDED.has(name) || (edit && EDIT_ONLY.has(name));
+  const fields = new Map(schema.fields.filter((f) => allowed(f.name)).map((f) => [f.name, f]));
   const out = {};
   for (const [name, value] of Object.entries(raw)) {
     const f = fields.get(name);
@@ -156,6 +164,7 @@ function cleanRecord(raw, schema) {
   }
   if (!out.conference_name) throw new InputError("Conference name is required.");
   if (out.conference_name.length > 300) throw new InputError("Conference name is too long.");
+  if (out.new_conference_name && out.new_conference_name.length > 300) throw new InputError("Conference name is too long.");
   return out;
 }
 
@@ -181,15 +190,15 @@ async function github(path, init = {}) {
 // no backticks (it sits in a code span) and no line breaks.
 const inline = (s) => String(s).replace(/[`\r\n]+/g, " ").trim().slice(0, 200);
 
-async function openPullRequest(record, submitter) {
+async function openPullRequest(record, submitter, existing) {
   const id = nameId(record.conference_name).slice(0, 80) || "conference";
   const stamp = `${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(3).toString("hex")}`;
   const branch = `submission/${id}-${stamp}`;
-  const path = `submissions/${id}-${stamp}.json`;
+  const path = `submissions/${id}-${stamp}${existing ? ".update" : ""}.json`;
   const json = JSON.stringify(record, null, 2) + "\n";
-  const label = record.conference_acronym
-    ? `${record.conference_acronym} — ${record.conference_name}`
-    : record.conference_name;
+  const acronym = record.conference_acronym || (existing && existing.acronym !== existing.name ? existing.acronym : "");
+  const label = acronym ? `${acronym} — ${record.conference_name}` : record.conference_name;
+  const verb = existing ? "Edit" : "Add";
 
   const base = await github(`/git/ref/heads/${encodeURIComponent(BASE)}`);
   await github("/git/refs", {
@@ -199,29 +208,30 @@ async function openPullRequest(record, submitter) {
   await github(`/contents/${path}`, {
     method: "PUT",
     body: JSON.stringify({
-      message: `Add conference submission: ${inline(label)}`,
+      message: `${verb} conference submission: ${inline(label)}`,
       content: Buffer.from(json, "utf8").toString("base64"),
       branch,
     }),
   });
   const body = [
-    "Submitted through the website's **Add a conference** form.",
+    `Submitted through the website's **Add or edit a conference** form${existing ? ` as an edit of ${existing.name}` : ""}.`,
     "",
+    ...(existing ? ["Only the fields below change; the rest of the stored record is kept.", ""] : []),
     submitter ? `Submitted by: \`${inline(submitter)}\`` : "Submitted anonymously.",
     "",
     "```json",
     json.trimEnd(),
     "```",
     "",
-    "After merging, add it to the database with:",
+    `After merging, ${existing ? "apply it to" : "add it to"} the database with:`,
     "",
     "```bash",
-    `conference-agent add --json ${path}`,
+    `conference-agent add ${existing ? "--update " : ""}--json ${path}`,
     "```",
   ].join("\n");
   const pr = await github("/pulls", {
     method: "POST",
-    body: JSON.stringify({ title: `Add conference: ${inline(label)}`, head: branch, base: BASE, body }),
+    body: JSON.stringify({ title: `${verb} conference: ${inline(label)}`, head: branch, base: BASE, body }),
   });
   // Best effort: the label is created on first use.
   await github(`/issues/${pr.number}/labels`, {
@@ -250,13 +260,29 @@ export default async function handler(req, res) {
   try {
     const site = origin(req);
     const { schema, catalog } = await siteData(site);
-    const record = cleanRecord(body.record, schema);
-    const existing = catalog.get(nameId(record.conference_name));
-    if (existing) {
-      return res.status(409).json({
-        error: `${existing.name} is already listed.`,
-        url: `${site}/c/${existing.id}/`,
-      });
+    const editing = body.edit ? catalog.get(String(body.edit)) : null;
+    if (body.edit && !editing) throw new InputError("That conference is no longer listed.");
+    const record = cleanRecord(body.record, schema, !!editing);
+    if (editing) {
+      // The stored name identifies the row; a different name is a rename.
+      record.conference_name = editing.name;
+      if (record.new_conference_name) {
+        const other = catalog.get(nameId(record.new_conference_name));
+        if (!nameId(record.new_conference_name)) throw new InputError("Enter the conference's full name.");
+        if (other && other.id !== editing.id) {
+          return res.status(409).json({ error: `${other.name} is already listed.`, url: `${site}/c/${other.id}/` });
+        }
+        if (record.new_conference_name === editing.name) delete record.new_conference_name;
+      }
+      if (Object.keys(record).length === 1) throw new InputError("Nothing has changed.");
+    } else {
+      const existing = catalog.get(nameId(record.conference_name));
+      if (existing) {
+        return res.status(409).json({
+          error: `${existing.name} is already listed. Select it at the top of the form to edit it.`,
+          url: `${site}/c/${existing.id}/`,
+        });
+      }
     }
     const submitter = body.submitter ? text("Your name", body.submitter).slice(0, 200) : "";
 
@@ -266,7 +292,7 @@ export default async function handler(req, res) {
       return res.status(429).json({ error: "Too many submissions today. Please try again tomorrow." });
     }
 
-    const pr = await openPullRequest(record, submitter);
+    const pr = await openPullRequest(record, submitter, editing);
     return res.status(200).json({ status: "ok", url: pr.html_url, number: pr.number });
   } catch (e) {
     if (e instanceof InputError) return res.status(400).json({ error: e.message });

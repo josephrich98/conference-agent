@@ -1,14 +1,18 @@
-"""Add merged "Add a conference" submissions to the database.
+"""Add merged "Add or edit a conference" submissions to the database.
 
 The site's form (``web/static/add.html`` -> ``api/propose``) opens a pull request
-that adds ``submissions/<id>-<date>-<rand>.json``, an ``add --json`` record.
+that adds ``submissions/<id>-<date>-<rand>.json``, an ``add --json`` record, or,
+for an edit of a listed conference, ``submissions/<id>-<date>-<rand>.update.json``
+(the name plus only the changed fields).
 Once a maintainer merges it, the daily job (``scripts/scheduled_discovery.sh``)
 runs this script, which:
 
 1. fetches the base branch (default ``origin/main``);
 2. lists ``submissions/*.json`` on it and reads each file with ``git show``, so
    the working tree and the checked-out branch are never touched; and
-3. runs ``conference-agent add --json`` on every file not processed before.
+3. runs ``conference-agent add --json`` on every file not processed before
+   (``add --update --json`` for an ``.update.json`` edit, which keeps every
+   field the file does not name).
 
 Each processed file is recorded in ``data/ingested_submissions.json`` with its
 outcome. A file that fails (for example, the name already exists because it was
@@ -60,14 +64,14 @@ def _save(path: Path, state: dict) -> None:
     tmp.replace(path)
 
 
-def _add(text: str, db_url: str) -> tuple[int, str]:
-    """Run ``add --json`` on one submission; return (exit code, output)."""
+def _add(text: str, db_url: str, update: bool = False) -> tuple[int, str]:
+    """Run ``add [--update] --json`` on one submission; return (exit code, output)."""
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         fh.write(text)
     out = io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = cli_main(["--db", db_url, "add", "--json", fh.name])
+            code = cli_main(["--db", db_url, "add", *(["--update"] if update else []), "--json", fh.name])
     except SystemExit as exc:  # argparse / validation exits
         code = exc.code if isinstance(exc.code, int) else 1
     except Exception as exc:  # a malformed file must not stop the others
@@ -109,7 +113,7 @@ def main() -> int:
         if args.dry_run:
             print(f"Would add {path}")
             continue
-        code, output = _add(_git("show", f"{ref}:{path}"), args.db)
+        code, output = _add(_git("show", f"{ref}:{path}"), args.db, update=path.endswith(".update.json"))
         ok = code == 0
         failed += not ok
         state[path] = {"date": date.today().isoformat(), "ok": ok, "output": output}

@@ -36,7 +36,6 @@ from conference_agent.database import (
     get_engine,
     late_abstract_date_expr,
     paper_date_expr,
-    seed_conferences,
 )
 from web.nl_query import LLMUnavailable, TranslationError, translate
 from web.search import RESULT_COLUMNS, QueryError, build_filter, field_help
@@ -141,21 +140,6 @@ def get_db_url() -> str:
     return os.environ.get("CONFERENCE_DATABASE_URL", DEFAULT_DATABASE_URL)
 
 
-# Auto-seed the catalog once per process. Mangum runs with lifespan="off", so a
-# FastAPI startup event would not fire on Lambda; instead we seed lazily on the
-# first request that touches the database (once per cold container). Seeding only
-# inserts missing rows, so it never clobbers data filled in by discovery.
-_seeded = False
-
-
-def _ensure_seeded() -> None:
-    global _seeded
-    if _seeded:
-        return
-    seed_conferences(get_db_url())
-    _seeded = True
-
-
 def _row_to_dict(row: ConferenceRow) -> dict:
     """Serialize a row to a JSON-friendly dict (dates as ISO strings)."""
     out: dict = {}
@@ -187,7 +171,6 @@ def _run_search(
 ) -> List[ConferenceRow]:
     """Run a boolean search, sorted. Month sorts begin at ``month_start``
     (1-12) and ``day_start`` (1-31, default 1), defaulting to today."""
-    _ensure_seeded()
     try:
         filt = build_filter(query)
     except QueryError as exc:
@@ -382,7 +365,6 @@ def api_calendar_ics(
     one-off ``.ics``. The feed mirrors the active search ``q`` (or an explicit
     ``ids`` list), so a filtered view becomes a filtered calendar.
     """
-    _ensure_seeded()
     engine = get_engine(get_db_url())
 
     if ids:

@@ -6,6 +6,7 @@ without network access or a shared database.
 
 from datetime import date
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -19,10 +20,9 @@ from conference_agent.database import (
 )
 from conference_agent.models import Conference, ConferenceSize, RemoteOption, name_id
 
-# Series are indexed by name; RSNA's seed name, so the seed curation applies.
+# Series are indexed by name.
 RSNA_NAME = "Radiological Society of North America Annual Meeting"
 RSNA_ID = name_id(RSNA_NAME)
-ESICM_NAME = "European Society of Intensive Care Medicine Annual Congress (LIVES)"
 
 
 def _db_url(tmp_path):
@@ -144,7 +144,7 @@ def test_merge_records_re_derives_stale_month_columns(tmp_path):
 
 def test_formats_round_trip_and_collapse_empty_to_none(tmp_path):
     url = _db_url(tmp_path)
-    # A non-seed acronym so curated floors do not interfere; formats supplied out
+    # Formats supplied out
     # of order are stored in the canonical abstract/paper/poster/oral order.
     upsert_conferences(
         [_conf(acronym="ZZT", name="ZZT", formats=["oral", "abstract", "poster"])],
@@ -177,17 +177,40 @@ def test_merge_records_fills_formats_without_clobbering(tmp_path):
     assert got.location == "Chicago, IL"
 
 
-def test_upsert_applies_curated_link_floor_for_flagship(tmp_path):
+def test_pinned_fields_survive_discovery_but_not_manual_edits(tmp_path):
+    from conference_agent.database import apply_refreshed_conferences, set_pins
+
     url = _db_url(tmp_path)
-    # Discovery reports a weaker (homepage) URL for a flagship series...
+    upsert_conferences([_conf(url="https://www.rsna.org/annual-meeting", subcategory="radiology",
+                              upcoming_start_date=date(2026, 11, 29), attendance=45000)], db_url=url)
+    assert set_pins(RSNA_ID, pin=["url", "subcategory", "attendance"], db_url=url) == [
+        "subcategory", "url", "attendance"]
+    # A survey run (full upsert) changes everything except the pinned fields...
+    upsert_conferences([_conf(url="https://www.rsna.org", subcategory="junk", attendance=50,
+                              upcoming_start_date=date(2026, 11, 30), cost="$1")], db_url=url)
+    got = query_conferences(db_url=url)[0]
+    assert (got.url, got.subcategories, got.attendance) == (
+        "https://www.rsna.org/annual-meeting", ["radiology"], 45000)
+    assert got.size == ConferenceSize.MASSIVE  # derived from the pinned figure
+    assert got.upcoming_start_date == date(2026, 11, 30) and got.cost == "$1"
+    # ...and so does a targeted re-check.
+    apply_refreshed_conferences([_conf(url="https://elsewhere.org", notes="checked")], db_url=url)
+    got = query_conferences(db_url=url)[0]
+    assert got.url == "https://www.rsna.org/annual-meeting" and got.notes == "checked"
+    # A manual edit still applies, and unpinning releases the field.
+    merge_records([{"id": RSNA_ID, "url": "https://rsna.org/2026"}], db_url=url)
+    assert query_conferences(db_url=url)[0].url == "https://rsna.org/2026"
+    assert set_pins(RSNA_ID, unpin=["url"], db_url=url) == ["subcategory", "attendance"]
     upsert_conferences([_conf(url="https://www.rsna.org")], db_url=url)
-    # ...but the curated-link floor keeps the verified deep link.
-    assert query_conferences(db_url=url)[0].url == "https://www.rsna.org/annual-meeting"
+    assert query_conferences(db_url=url)[0].url == "https://www.rsna.org"
+    # Only stored input columns can be pinned.
+    with pytest.raises(ValueError):
+        set_pins(RSNA_ID, pin=["size"], db_url=url)
 
 
-def test_upsert_keeps_discovered_url_when_not_curated(tmp_path):
+def test_upsert_keeps_discovered_url(tmp_path):
     url = _db_url(tmp_path)
-    # A non-curated series keeps whatever URL discovery found (no floor).
+    # With nothing pinned, a series keeps whatever URL discovery found.
     found = "https://siim.org/page/annual_meeting"
     upsert_conferences(
         [_conf(acronym="SIIM", name="SIIM", url=found)], db_url=url
@@ -250,26 +273,8 @@ def test_multi_subcategory_round_trips_and_filters_by_each_tag(tmp_path):
     assert {c.id for c in query_conferences(category="artificial intelligence", db_url=url)} == {"medical-image-computing"}
 
 
-def test_seed_subcategory_floor_overrides_discovered_freetext(tmp_path):
+def test_discovered_subcategories_are_stored_as_given(tmp_path):
     url = _db_url(tmp_path)
-    # Discovery returns a descriptive blurb where a clean tag belongs...
-    upsert_conferences(
-        [_conf(acronym="ESICM", name=ESICM_NAME, subcategories=["intensive care / critical care medicine (europe-based)"])],
-        db_url=url,
-    )
-    # ...but the curated seed tags win (ESICM's seed subcategory is critical care
-    # medicine).
-    got = query_conferences(db_url=url)[0]
-    assert got.subcategories == ["critical care medicine"]
-
-    # The floor also applies on the offline merge path.
-    merge_records([{"id": name_id(ESICM_NAME), "subcategory": "garbage, more garbage"}], db_url=url)
-    assert query_conferences(db_url=url)[0].subcategories == ["critical care medicine"]
-
-
-def test_non_seed_row_keeps_its_own_subcategories(tmp_path):
-    url = _db_url(tmp_path)
-    # An acronym that is not in the seed table is not subject to the floor.
     upsert_conferences(
         [_conf(acronym="NOVEL", name="Novel Workshop", subcategories=["origami", "vision"])],
         db_url=url,
@@ -373,7 +378,7 @@ def test_abstract_and_paper_months_are_independent(tmp_path):
 
 def test_merge_records_fills_dates_without_clobbering(tmp_path):
     url = _db_url(tmp_path)
-    # A seeded row carrying identity + url but no dates (as after seed_conferences).
+    # A row carrying identity + url but no dates.
     upsert_conferences(
         [_conf(attendance=45000, url="https://www.rsna.org")],
         db_url=url,
@@ -401,10 +406,8 @@ def test_merge_records_fills_dates_without_clobbering(tmp_path):
     assert got.upcoming_end_date == date(2026, 12, 3)
     assert got.location == "Chicago, IL"
     assert got.remote_option == RemoteOption.HYBRID
-    # Pre-existing fields the record did not mention are preserved. RSNA is a
-    # flagship series, so upsert_conferences applies the curated-link floor: its
-    # url is the verified deep link regardless of the homepage passed at seed.
-    assert got.url == "https://www.rsna.org/annual-meeting"
+    # Pre-existing fields the record did not mention are preserved.
+    assert got.url == "https://www.rsna.org"
     assert got.attendance == 45000
     assert got.size == ConferenceSize.MASSIVE
     assert got.name == RSNA_NAME

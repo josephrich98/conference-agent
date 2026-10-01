@@ -21,7 +21,7 @@ The other cadences choose a subcategory set:
     calls only on series whose next edition is plausibly about to be announced.
   - ``weekly``  -> flagship fields (``config.weekly_subcategories()``)
   - ``monthly`` -> everything else (``config.monthly_subcategories()``)
-  - ``all``     -> every seeded field (default)
+  - ``all``     -> every field in the table (default)
 ``--subcategory`` overrides the cadence selection entirely.
 
 Usage:

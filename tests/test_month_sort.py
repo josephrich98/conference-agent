@@ -54,7 +54,6 @@ _CASES = [
 def test_api_month_sort_rolls_from_start_date(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'test.db'}"
     monkeypatch.setenv("CONFERENCE_DATABASE_URL", url)
-    monkeypatch.setattr(appmod, "_ensure_seeded", lambda: None)
     upsert_conferences(
         [
             Conference(

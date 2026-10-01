@@ -42,7 +42,6 @@ _CASES = [
 def test_api_size_sort_breaks_ties_on_attendance(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'test.db'}"
     monkeypatch.setenv("CONFERENCE_DATABASE_URL", url)
-    monkeypatch.setattr(appmod, "_ensure_seeded", lambda: None)
     upsert_conferences(
         [
             Conference(acronym=k, name=f"{k} meeting", subcategory="radiology", attendance=n)

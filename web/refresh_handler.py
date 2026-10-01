@@ -8,7 +8,7 @@ jobs:
     {"cadence": "weekly"}    flagship fields  (config.weekly_subcategories)
     {"cadence": "monthly"}   the rest         (config.monthly_subcategories)
     {"cadence": "due"}       only series due for an auto-check (refresh.due_*)
-    {"cadence": "all"}       every seeded field
+    {"cadence": "all"}       every field in the table
 
 It runs the same discovery + idempotent upsert as ``scripts/daily_update.py`` but
 shaped as a Lambda handler. It uses the ``api`` discovery backend, so it needs

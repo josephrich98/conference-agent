@@ -167,7 +167,7 @@ not yet announced, the prior edition's dates are still useful as a reference.
 
 Cover the well-known conferences thoroughly, and be sure to include every \
 conference in this list (search for each by name if needed):
-{seed_list}
+{checklist}
 
 The full name identifies a conference in the table, and two conferences can \
 share an acronym. Report every listed conference under its full name exactly as \
@@ -462,7 +462,7 @@ def _research(
 ) -> str:
     """Run the web-search agentic loop and return the model's research text."""
     system = _RESEARCH_SYSTEM.format(
-        seed_list=_known_checklist(subcategories, known),
+        checklist=_known_checklist(subcategories, known),
         attendance_hints=_attendance_hints_block(attendance_hints),
     )
     return _research_loop(client, system, _research_prompt(subcategories), model, max_tokens)
@@ -603,7 +603,7 @@ def _research_via_cli(
 ) -> str:
     """Run the research phase through the headless ``claude`` CLI."""
     system = _RESEARCH_SYSTEM.format(
-        seed_list=_known_checklist(subcategories, known),
+        checklist=_known_checklist(subcategories, known),
         attendance_hints=_attendance_hints_block(attendance_hints),
     )
     return _research_text_via_cli(system, _research_prompt(subcategories), model)
@@ -784,7 +784,7 @@ def refresh_conferences(
     if not targets:
         return []
     system = _RESEARCH_SYSTEM.format(
-        seed_list="\n".join(f"- {t.acronym} — {t.name}" for t in targets),
+        checklist="\n".join(f"- {t.acronym} — {t.name}" for t in targets),
         attendance_hints=_attendance_hints_block(attendance_hints),
     )
     prompt = _REFRESH_PROMPT.format(targets="\n".join(_describe_target(t) for t in targets))

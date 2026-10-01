@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Add a conference · Conference Agent</title>
-  <meta name="description" content="Suggest a conference for the Conference Agent table. Submissions are reviewed as GitHub pull requests.">
+  <title>Add or edit a conference · Conference Agent</title>
+  <meta name="description" content="Suggest a conference for the Conference Agent table, or a correction to one already listed. Submissions are reviewed as GitHub pull requests.">
   <link rel="canonical" href="https://conferenceagent.vercel.app/add/">
   <style>
     :root {
@@ -104,21 +104,45 @@
     #result.err { color: var(--err); }
     #result.ok { color: var(--ok); }
     #result a { color: inherit; font-weight: 600; }
+    .edit-pick { position: relative; }
+    .edit-pick ul {
+      position: absolute; z-index: 10; left: 0; right: 0; top: 100%;
+      margin: 2px 0 0; padding: 4px 0; list-style: none;
+      max-height: 300px; overflow-y: auto;
+      background: #fff; border: 1px solid var(--border); border-radius: 6px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+    }
+    .edit-pick li { padding: 6px 10px; font-size: 14px; cursor: pointer; }
+    .edit-pick li .acr { font-weight: 600; margin-right: 6px; }
+    .edit-pick li.active, .edit-pick li:hover { background: var(--accent-weak); }
+    .edit-pick li.none { color: var(--muted); cursor: default; background: none; }
+    #editing { font-size: 13px; margin: 6px 0 0; }
+    #editing button { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; }
   </style>
 </head>
 <body>
   <main>
     <a class="back" href="../">← Back to the conference table</a>
-    <h1>Add a conference</h1>
+    <h1>Add or edit a conference</h1>
     <p class="intro">
-      Suggest a conference series that is missing from the table. Your entry is
-      submitted as a pull request on
-      <a href="https://github.com/josephrich98/conference-agent/pulls" target="_blank" rel="noopener noreferrer">GitHub</a>
-      and appears on the site after review. Only the name is
-      required; fill in whatever else you know. Give the upcoming edition's dates
-      if announced, otherwise the most recent edition's. Everything you enter, including your name
-      if you give one, is public.
+      Add or edit a new conference. To add a conference, simply add the
+      information below. To edit a conference, select the conference from the
+      menu below. Your entry is submitted as a pull request on
+      <a href="https://github.com/josephrich98/conference-agent/pulls" target="_blank" rel="noopener noreferrer">GitHub</a>.
     </p>
+
+    <fieldset>
+      <div class="field">
+        <label class="name" for="edit-search">Edit an existing conference</label>
+        <div class="edit-pick">
+          <input type="text" id="edit-search" autocomplete="off" spellcheck="false"
+            placeholder="Type a conference name or acronym" disabled
+            role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="edit-options" />
+          <ul id="edit-options" role="listbox" hidden></ul>
+        </div>
+        <p id="editing" hidden></p>
+      </div>
+    </fieldset>
 
     <form id="add-form" novalidate>
       <div id="groups"><p class="intro">Loading the form…</p></div>
@@ -218,7 +242,7 @@
     const HINTS = {
       conference_name: "", conference_acronym: "", url: "", category: "", subcategory: "",
       format: "", remote_option: "", conference_dates: "",
-      abstract_due: "If there are two, the earlier, main one.",
+      abstract_due: "",
       late_abstract_due: "Only for a second, later round (e.g. late-breaking).",
       paper_due: "Full-paper deadline, for proceedings venues only.",
       abstract_time: "", abstract_timezone: "", late_abstract_time: "", late_abstract_timezone: "",
@@ -237,7 +261,9 @@
 
     let schema = null;
     let known = new Map();  // conference id -> row, for the duplicate check
-    let readers = [];       // [name, () => value, input] per rendered field
+    let readers = [];       // [name, () => value, input, (value) => void] per rendered field
+    let editing = null;     // the listed row being edited, or null when adding
+    let baseline = null;    // toEditions(collect()) right after the row was loaded
     let knownTags = { category: [], subcategory: [] }; // dropdown options
 
     function el(tag, attrs = {}, ...children) {
@@ -283,6 +309,7 @@
         node: el("div", {}, chips, el("div", { class: "picker" }, select, text)),
         input: text,
         read: () => [...values, ...text.value.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t && !values.includes(t))],
+        write: (list) => { values.splice(0); text.value = ""; (list || []).forEach(add); draw(); },
       };
     }
 
@@ -331,6 +358,18 @@
         // Lines with either date entered; problems() reports incomplete ones.
         read: () => lines.filter((l) => l.original.value || l.extended.value)
           .map((l) => ({ type: l.type.value, original: l.original.value, extended: l.extended.value })),
+        write: (entries) => {
+          while (lines.length > 1) lines.pop().node.remove();
+          lines[0].type.id = id;
+          lines[0].original.value = lines[0].extended.value = "";
+          lines[0].type.value = "abstract";
+          (entries || []).forEach((x, i) => {
+            const l = i ? addLine() : lines[0];
+            l.type.value = x.type;
+            l.original.value = x.original;
+            l.extended.value = x.extended;
+          });
+        },
         // Mark and describe incomplete or invalid lines.
         check: () => {
           const out = [];
@@ -361,6 +400,8 @@
           if (touched || radios.find(([r]) => r.checked)[0].value === "stable") return;
           radios.find(([r]) => r.value === (past ? "prior" : "upcoming"))[0].checked = true;
         },
+        // Set by a loaded conference; counts as clicked.
+        set: (value) => { touched = true; radios.find(([r]) => r.value === value)[0].checked = true; },
       };
       return el("div", { class: "checks", role: "radiogroup", "aria-label": `Which edition the ${name} is for` },
         ...radios.map(([r, text]) => el("label", {}, r, text)));
@@ -375,18 +416,21 @@
       wrap.append(label);
       let input;
       let read;
+      let write = (v) => { input.value = v ?? ""; };
 
       if (f.kind === "extensions") {
         const ext = extensionList(id);
         wrap.append(ext.node);
         input = ext.input;
         read = ext.read;
+        write = ext.write;
         extensionChecks.push(ext.check);
       } else if (f.name === "category" || f.name === "subcategory") {
         const picker = tagPicker(id, knownTags[f.name]);
         wrap.append(picker.node);
         input = picker.input;
         read = picker.read;
+        write = picker.write;
       } else if (f.kind === "dates") {
         const start = el("input", { type: "date", id, "aria-label": "Start date" });
         const end = el("input", { type: "date", "aria-label": "End date" });
@@ -400,6 +444,11 @@
         });
         wrap.append(el("div", { class: "pair" }, start, el("span", { text: "to" }), end));
         read = () => [start.value, end.value].filter(Boolean);
+        write = (v) => {
+          [start.value = "", end.value = ""] = v || [];
+          end.min = start.value;
+          endTouched = !!end.value;
+        };
         input = start;
       } else if (f.kind === "date") {
         input = el("input", { type: "date", id });
@@ -421,6 +470,7 @@
         wrap.append(el("div", { class: "checks", id, role: "group" },
           ...boxes.map((b) => el("label", {}, b, b.value))));
         read = () => boxes.filter((b) => b.checked).map((b) => b.value);
+        write = (v) => boxes.forEach((b) => { b.checked = (v || []).includes(b.value); });
       } else if (f.kind === "tags") {
         input = el("input", { type: "text", id, autocomplete: "off", spellcheck: "false" });
         wrap.append(input);
@@ -450,17 +500,23 @@
         const dupe = el("p", { class: "dupe", hidden: true });
         input.addEventListener("input", () => {
           const row = known.get(idOf(input.value));
-          dupe.hidden = !row;
-          if (row) dupe.replaceChildren(row.name + " is already listed. ",
-            el("a", { href: `../c/${row.id}/`, text: "View it" }), ".");
+          dupe.hidden = !row || row === editing;
+          if (dupe.hidden) return;
+          const edit = el("a", { href: `?edit=${encodeURIComponent(row.id)}`, text: "edit it" });
+          edit.addEventListener("click", (e) => { e.preventDefault(); load(row); });
+          dupe.replaceChildren(row.name + " is already listed. ",
+            el("a", { href: `../c/${row.id}/`, text: "View it" }), " or ", edit, ".");
         });
         wrap.append(dupe);
       }
-      readers.push([f.name, read, input]);
+      readers.push([f.name, read, input, write]);
       return wrap;
     }
 
     function render() {
+      readers = [];
+      extensionChecks = [];
+      for (const k of Object.keys(editions)) delete editions[k];
       const byName = new Map(schema.fields.filter((f) => !EXCLUDED.has(f.name)).map((f) => [f.name, f]));
       const placed = new Set(ROWS.flat());
       // Fields added to `add` later but not yet laid out here, before notes.
@@ -533,8 +589,12 @@
     function problems(record) {
       const out = [];
       const mark = (name) => readers.find((r) => r[0] === name)?.[2]?.classList.add("invalid");
+      const listed = record.conference_name && known.get(idOf(record.conference_name));
       if (!record.conference_name) { out.push("Enter the conference's full name."); mark("conference_name"); }
-      else if (known.has(idOf(record.conference_name))) { out.push("That conference is already listed."); mark("conference_name"); }
+      else if (listed && listed !== editing) {
+        out.push(editing ? "Another listed conference already has that name." : "That conference is already listed; select it above to edit it.");
+        mark("conference_name");
+      }
       for (const name of ["url", "attendance_source"]) {
         if (record[name] && !/^https?:\/\/[^\s/]+\.[^\s]+$/i.test(record[name])) { out.push(`${LABELS[name]}: enter a link starting with https://.`); mark(name); }
       }
@@ -547,6 +607,92 @@
       for (const check of extensionChecks) out.push(...check());
       return out;
     }
+
+    // A loaded row's values in the form's terms. The form holds one edition's
+    // dates: the upcoming one when any of its dates is known, else the prior.
+    const lines = (v) => String(v || "").split(",").map((t) => t.trim()).filter(Boolean);
+    const isoOf = (us) => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(us.trim()); return m ? `${m[3]}-${m[1]}-${m[2]}` : ""; };
+    function fromRow(row) {
+      const upcoming = ["start_date", "abstract_deadline", "late_abstract_deadline", "paper_deadline"]
+        .some((k) => row[`upcoming_${k}`]);
+      const ed = upcoming ? "upcoming" : "prior";
+      const values = {
+        conference_name: row.name,
+        conference_acronym: row.acronym && row.acronym !== row.name ? row.acronym : "",
+        url: row.url, category: lines(row.category), subcategory: lines(row.subcategory),
+        format: lines(row.format), attendance: row.attendance, attendance_year: row.attendance_year,
+        remote_option: row.remote_option === "unknown" ? "" : row.remote_option,
+        conference_dates: [row[`${ed}_start_date`], row[`${ed}_end_date`]].filter(Boolean),
+        abstract_due: row[`${ed}_abstract_deadline`], late_abstract_due: row[`${ed}_late_abstract_deadline`],
+        paper_due: row[`${ed}_paper_deadline`], notes: row.notes,
+        deadline_extensions: EXTENSION_KINDS.flatMap(([type]) =>
+          String(row[`${type}_deadline_extension`] || "").split("\n").map((line) => {
+            const [original, extended] = line.split(/\s+[–-]\s+/).map(isoOf);
+            return original && extended ? { type, original, extended } : null;
+          }).filter(Boolean)),
+      };
+      for (const kind of ["abstract", "late_abstract", "paper"]) {
+        values[`${kind}_time`] = row[`${kind}_time`];
+        values[`${kind}_timezone`] = row[`${kind}_timezone`];
+      }
+      const radios = {};
+      for (const name of Object.keys(EDITION_CHOICES)) {
+        const up = row[`upcoming_${name}`], prior = row[`prior_${name}`];
+        values[name] = up || prior;
+        if (name === "location" && row.stable_location) radios[name] = "stable";
+        else if (up || prior) radios[name] = up ? "upcoming" : "prior";
+      }
+      return { values, radios };
+    }
+
+    // Fill the form with a listed conference to edit it.
+    function load(row) {
+      render();
+      editing = row;
+      const { values, radios } = fromRow(row);
+      for (const [name, , , write] of readers) write(values[name]);
+      for (const [name, value] of Object.entries(radios)) editions[name]?.set(value);
+      const past = isPastEdition(collect());
+      for (const e of Object.values(editions)) e.follow(past);
+      baseline = toEditions(collect());
+      $("edit-search").value = "";
+      const clear = el("button", { type: "button", text: "add a new conference instead" });
+      clear.addEventListener("click", reset);
+      $("editing").replaceChildren("Editing ", el("a", { href: `../c/${row.id}/`, text: row.name }),
+        ". Change any field below, or ", clear, ".");
+      $("editing").hidden = false;
+      $("submit-btn").textContent = "Submit edit for review";
+      show("");
+      history.replaceState(null, "", `?edit=${encodeURIComponent(row.id)}`);
+    }
+
+    // Back to adding a new conference, with an empty form.
+    function reset() {
+      editing = baseline = null;
+      render();
+      $("editing").hidden = true;
+      $("submit-btn").textContent = "Submit for review";
+      show("");
+      history.replaceState(null, "", location.pathname);
+    }
+
+    // An edit is submitted as the name plus the fields that changed, written
+    // with `add --update` (which keeps every field not sent). A value moved
+    // between editions (location -> prior_location) is a change, not a clear.
+    function editRecord(record) {
+      const now = toEditions(record);
+      const out = { conference_name: editing.name };
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      for (const [k, v] of Object.entries(now)) {
+        if (k !== "conference_name" && !same(v, baseline[k])) out[k] = v;
+      }
+      if (record.conference_name !== editing.name) out.new_conference_name = record.conference_name;
+      if (baseline.stable_location && !now.stable_location) out.stable_location = false;
+      const counterpart = (k) => k.startsWith("prior_") ? k.slice(6) : `prior_${k}`;
+      const cleared = Object.keys(baseline).filter((k) => k !== "stable_location" && !(k in now) && !(counterpart(k) in now));
+      return { out, cleared };
+    }
+    const fieldLabel = (k) => LABELS[k.replace(/^prior_/, "")] || humanize(k.replace(/^prior_/, ""));
 
     function show(text, cls, link) {
       const r = $("result");
@@ -561,6 +707,15 @@
       document.querySelectorAll(".invalid").forEach((n) => n.classList.remove("invalid"));
       const record = collect();
       const issues = problems(record);
+      let submitted = toEditions(record);
+      if (editing && !issues.length) {
+        const { out, cleared } = editRecord(record);
+        if (cleared.length) {
+          issues.push(`Removing a value is not supported here (${[...new Set(cleared.map(fieldLabel))].join(", ")}). `
+            + "Please open an issue on GitHub instead.");
+        } else if (Object.keys(out).length === 1) issues.push("Nothing has changed yet.");
+        submitted = out;
+      }
       if (issues.length) return show(issues.join(" "), "err");
       const btn = $("submit-btn");
       btn.disabled = true;
@@ -569,7 +724,7 @@
         const resp = await fetch("/api/propose", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ record: toEditions(record), submitter: $("submitter").value.trim(), website: $("website").value }),
+          body: JSON.stringify({ record: submitted, edit: editing?.id, submitter: $("submitter").value.trim(), website: $("website").value }),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
@@ -584,6 +739,60 @@
         show("Couldn't reach the server. Please try again.", "err");
       }
     });
+
+    // The "Edit an existing conference" box: a list of the listed conferences
+    // whose name or acronym matches what is typed, updated on every keystroke
+    // (acronym and name prefixes first). Choosing one loads it into the form.
+    const MAX_OPTIONS = 12;
+    function editPicker(rows) {
+      const box = $("edit-search"), list = $("edit-options");
+      const norm = (t) => String(t || "").normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toLowerCase();
+      const sorted = [...rows].sort((a, b) => a.name.localeCompare(b.name));
+      let shown = [], active = -1;
+      const close = () => { list.hidden = true; box.setAttribute("aria-expanded", "false"); active = -1; };
+      const highlight = (i) => {
+        active = i;
+        [...list.children].forEach((li, j) => li.classList.toggle("active", j === i));
+        if (i >= 0) { list.children[i].scrollIntoView({ block: "nearest" }); box.setAttribute("aria-activedescendant", `edit-opt-${i}`); }
+        else box.removeAttribute("aria-activedescendant");
+      };
+      const choose = (row) => { close(); load(row); };
+      const update = () => {
+        const words = norm(box.value).split(/\s+/).filter(Boolean);
+        if (!words.length) return close();
+        const q = words.join(" ");
+        const rank = (r) => {
+          const acr = norm(r.acronym), name = norm(r.name);
+          if (acr === q) return 0;
+          if (acr.startsWith(q)) return 1;
+          if (name.startsWith(q)) return 2;
+          return 3;
+        };
+        shown = sorted.filter((r) => words.every((w) => `${norm(r.acronym)} ${norm(r.name)}`.includes(w)))
+          .map((r) => [rank(r), r]).sort((a, b) => a[0] - b[0]).map(([, r]) => r).slice(0, MAX_OPTIONS);
+        list.replaceChildren(...(shown.length ? shown.map((r, i) => {
+          const li = el("li", { role: "option", id: `edit-opt-${i}` });
+          if (r.acronym && r.acronym !== r.name) li.append(el("span", { class: "acr", text: r.acronym }));
+          li.append(r.name);
+          li.addEventListener("mousedown", (e) => { e.preventDefault(); choose(r); });
+          return li;
+        }) : [el("li", { class: "none", text: "No listed conference matches." })]));
+        list.hidden = false;
+        box.setAttribute("aria-expanded", "true");
+        highlight(shown.length ? 0 : -1);
+      };
+      box.addEventListener("input", update);
+      box.addEventListener("focus", update);
+      box.addEventListener("blur", close);
+      box.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") return close();
+        if (list.hidden || !shown.length) return;
+        if (e.key === "ArrowDown") { e.preventDefault(); highlight((active + 1) % shown.length); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); highlight((active - 1 + shown.length) % shown.length); }
+        else if (e.key === "Enter") { e.preventDefault(); if (active >= 0) choose(shown[active]); }
+      });
+      box.disabled = false;
+    }
 
     (async () => {
       try {
@@ -600,8 +809,12 @@
           subcategory: used("subcategory"),
         };
         render();
-        const prefill = new URLSearchParams(location.search).get("name");
-        if (prefill) { $("f-conference_name").value = prefill; $("f-conference_name").dispatchEvent(new Event("input")); }
+        editPicker(rows);
+        const params = new URLSearchParams(location.search);
+        const edit = known.get(params.get("edit") || "");
+        const prefill = params.get("name");
+        if (edit) load(edit);
+        else if (prefill) { $("f-conference_name").value = prefill; $("f-conference_name").dispatchEvent(new Event("input")); }
       } catch (err) {
         $("groups").replaceChildren(el("p", { class: "intro", text: "The form couldn't load. Please refresh the page." }));
       }

@@ -58,3 +58,18 @@ def test_failed_submission_is_recorded_and_not_retried(tmp_path, monkeypatch):
     assert state[dup]["ok"] is False and "already exists" in state[dup]["output"]
     code, _ = _main(monkeypatch, tmp_path, url)
     assert code == 0
+
+
+def test_update_submission_changes_only_its_fields(tmp_path, monkeypatch):
+    """An edit from the form (``*.update.json``) runs ``add --update``."""
+    url = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    add, edit = "submissions/a.json", "submissions/b.update.json"
+    _stub_git(monkeypatch, {
+        add: json.dumps(RECORD),
+        edit: json.dumps({"conference_name": RECORD["conference_name"], "attendance": 1200}),
+    })
+    code, state = _main(monkeypatch, tmp_path, url)
+    assert code == 0 and state[edit]["ok"] is True
+    [conf] = query_conferences(db_url=url)
+    assert conf.attendance == 1200
+    assert str(conf.upcoming_abstract_deadline) == RECORD["abstract_due"]

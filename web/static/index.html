@@ -445,7 +445,7 @@
       <p class="subtitle">Conference database for artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. <span id="last-updated" class="muted"></span></p>
     </div>
     <div class="header-links">
-    <a class="add-link" href="add/">Add a conference</a>
+    <a class="add-link" href="add/">Add or edit a conference</a>
     <a class="repo-link" href="https://github.com/josephrich98/conference-agent" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
       GitHub
@@ -1631,7 +1631,8 @@
             `<tr><td><span class="date-old">orange</span></td><td class="muted">past more than 3 months ago</td></tr>` +
           `</table>` +
           `<p class="muted" style="margin:6px 0 0">A deadline turns <span class="date-recent">red</span> the moment its time passes (its Deadline time, or the end of the day in AoE when none is given).</p>` +
-          `<p class="muted" style="margin:10px 0 0">Location and Cost show the upcoming edition's value, or the previous edition's in <span class="from-prior">orange</span> until the next is published (a conference held in the same place every year is not marked).</p>`;
+          `<p class="muted" style="margin:10px 0 0">Location and Cost show the upcoming edition's value, or the previous edition's in <span class="from-prior">orange</span> until the next is published (a conference held in the same place every year is not marked).</p>` +
+          `<p class="muted" style="margin:10px 0 0">A ⏩ after a deadline means the conference has extended that deadline before. Click or tap it to show the extension history (original → extended date); hovering also shows it.</p>`;
       } catch (e) { /* non-fatal */ }
     }
 

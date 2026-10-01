@@ -8,7 +8,7 @@
 # backend: local Claude Code subscription, no API key) only re-researches series
 # whose official pages changed -- see conference_agent/refresh.py.
 #
-# Before the watch run it adds any "Add a conference" submissions merged into
+# Before the watch run it adds any "Add or edit a conference" submissions merged into
 # origin/main (scripts/ingest_submissions.py). The watch run also moves finished
 # editions into the prior columns.
 #
