@@ -36,23 +36,27 @@ import sys
 
 from conference_agent.config import (
     DEFAULT_DATABASE_URL,
-    STANDING_SUBCATEGORIES,
     monthly_subcategories,
     weekly_subcategories,
 )
-from conference_agent.database import known_attendance_sources, upsert_conferences
+from conference_agent.database import (
+    discovery_subcategories,
+    known_attendance_sources,
+    query_conferences,
+    roll_past_editions,
+    upsert_conferences,
+)
 from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS, discover_conferences
 from conference_agent.notify import notify_refresh
 from conference_agent.refresh import due_subcategories, mark_subcategories_checked, run_watch
 
-# Subcategories are derived from the seed list (``config``), so adding a field's
-# seeds extends the refresh; ``WEEKLY_SUBCATEGORIES`` controls which run weekly.
-# The ``due`` cadence is data-dependent (it inspects the stored rows), so it is
-# resolved separately in ``main`` rather than from this static map.
+# Each cadence picks from the fields in the table; ``WEEKLY_SUBCATEGORIES``
+# controls which run weekly. The ``due`` cadence inspects the stored rows' ages,
+# so it is resolved separately in ``main``.
 _CADENCE_SUBCATEGORIES = {
     "weekly": weekly_subcategories,
     "monthly": monthly_subcategories,
-    "all": lambda: list(STANDING_SUBCATEGORIES),
+    "all": list,
 }
 _CADENCE_CHOICES = sorted([*_CADENCE_SUBCATEGORIES, "due", "watch"])
 
@@ -101,7 +105,7 @@ def main() -> None:
     elif args.cadence == "due":
         subcategories = due_subcategories(args.db)
     else:
-        subcategories = _CADENCE_SUBCATEGORIES[args.cadence]()
+        subcategories = _CADENCE_SUBCATEGORIES[args.cadence](discovery_subcategories(args.db))
     if not subcategories:
         if args.cadence == "due":
             print("No conferences are due for an auto-check.")
@@ -113,10 +117,12 @@ def main() -> None:
 
     total = 0
     all_conferences = []
+    known = query_conferences(db_url=args.db)
     for subcategory in subcategories:
         hints = known_attendance_sources(db_url=args.db, subcategories=[subcategory])
         conferences = discover_conferences(
-            subcategories=[subcategory], backend=args.backend, attendance_hints=hints
+            subcategories=[subcategory], backend=args.backend, attendance_hints=hints,
+            known=known,
         )
         written = upsert_conferences(conferences, db_url=args.db)
         all_conferences.extend(conferences)
@@ -124,6 +130,11 @@ def main() -> None:
         print(f"{subcategory}: upserted {written} conference(s)")
 
     print(f"Done. Upserted {total} conference(s) into {args.db}")
+    rolled = roll_past_editions(args.db)
+    print(
+        f"Merged {len(rolled['duplicate'])} duplicated edition(s); "
+        f"moved {len(rolled['rolled'])} finished edition(s) to prior."
+    )
 
     # For the auto-check cadence, record that every row in the refreshed fields
     # was just covered, so the two-week interval gates the next run. (Whether a

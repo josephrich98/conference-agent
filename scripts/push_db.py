@@ -82,7 +82,7 @@ def main() -> None:
         print("Dry run: no rows written.")
         return
 
-    written = upsert_conferences(conferences, db_url=args.target)
+    written = upsert_conferences(conferences, db_url=args.target, manual=True)
     print(f"Upserted {written} rows into {_redact(args.target)}")
 
 

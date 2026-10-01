@@ -9,10 +9,10 @@ major academic and professional conferences and exports their deadlines and
 dates as a subscribable calendar feed. For each conference series the agent
 records its **subcategory** tags (one or more granular fields per series — e.g.
 SPR is both radiology and pediatrics, MICCAI is radiology and machine learning)
-and a derived **category** (one of ten fixed top-level buckets: humanities,
-social science, medicine, biology, chemistry, physics, mathematics, stats, computer
-science, artificial intelligence — computed from the subcategories via
-`models.SUBCATEGORY_TO_CATEGORY`, never hand-set), its **prior** and
+and its **category** tags (one or more broad buckets, set independently of the
+subcategories: usually from ten suggested values — humanities, social science,
+medicine, biology, chemistry, physics, mathematics, stats, computer science,
+artificial intelligence — though a custom one is kept), its **prior** and
 **upcoming** editions (abstract deadline, late abstract deadline, paper
 deadline, conference dates for
 each, plus a free-text registration field per edition capturing the registration
@@ -22,7 +22,9 @@ month, abstract month, late abstract month, and paper
 month (each
 taken from the matching date so rows sort by season even when their years are
 offset; registration, being free text, has no derived month), the official
-link, remote-attendance option, cost, a sourced annual-attendance figure, and a
+link, remote-attendance option, a location and cost per edition (plus a
+`stable_location` flag for series held in the same place every year), a sourced
+annual-attendance figure, and a
 size bucket derived deterministically from that figure (massive / large / medium /
 small, an objective proxy for prominence — e.g. RSNA ≈ 45,000 attendees = massive). It
 normalizes that information into a typed schema, stores it in a
@@ -48,14 +50,14 @@ for the design.
     holding prior + upcoming editions, a list of `subcategories` tags, a controlled
     list of submission/presentation `formats` (any of abstract / paper / poster /
     oral), an `attendance`
-    figure, and derived `categories` / `category` (the broad bucket), `conference_month`
+    figure, a list of `categories` tags (the broad bucket; `category` joins them), `conference_month`
     / `abstract_month` / `late_abstract_month` / `paper_month` (registration is
     free text — `registration` property, no derived month) and
     `size` / `attendance_display` / `format` / `subcategory` properties);
-    `ConferenceSize` and `RemoteOption` enums; `CATEGORIES` and
-    `SUBCATEGORY_TO_CATEGORY` (the top-level vocabulary + derivation map);
+    `ConferenceSize` and `RemoteOption` enums; `CATEGORIES` (the suggested
+    top-level vocabulary);
     `CONFERENCE_FORMATS` vocabulary; `size_for_attendance` (the size-bucketing rule),
-    `categories_for_subcategories` (the category derivation), `normalize_subcategories`
+    `normalize_categories` (the category tag parser), `normalize_subcategories`
     (the shared tag parser), and `normalize_formats` (the format-vocabulary parser).
     each deadline kind's time of day and time zone are structured per-series
     fields (`abstract_time` / `abstract_timezone`, likewise `late_abstract_*` and
@@ -102,7 +104,7 @@ for the design.
     `--csv`/`--json` column vocabulary, and the `add --fields` reference output, so a
     new field is added in one place and every input path picks it up. Entries
     are indexed by `conference_name` (see the name-index design decision): `add`
-    fails if the name exists, `add --update` and `delete` (= `add --delete`) fail
+    fails if the name exists, `add --update` and `delete` fail
     if it does not, and any conflict in a batch writes nothing.
     `--update --new-conference-name` renames a series (its id follows)
 - `web/` — FastAPI app + static single-page table (`search.py` boolean-query
@@ -115,7 +117,9 @@ for the design.
 - `scripts/` — runnable entry points (`build_table.py`, `daily_update.py`,
   `push_db.py`, `deploy.sh` one-command reconcile + deploy, `scheduled_discovery.sh`
   the daily cron job, `build_static.py` the static-site bundler,
-  `notify_subscribers.py` the subscriber-email step of the cron job)
+  `notify_subscribers.py` the subscriber-email step of the cron job,
+  `ingest_submissions.py` adds merged "Add a conference" submissions,
+  `alert_failure.py` emails the log tail when the cron job fails)
 - `scripts/seo_pages.py` — prerenders crawlable per-conference (`/c/<id>/`, with
   `Event` JSON-LD) and per-field (`/field/<tag>/`) pages, `sitemap.xml`,
   `robots.txt`, and the home page's browse links; called by `build_static.py`
@@ -128,11 +132,22 @@ for the design.
   `dist/`. `api/propose.js` backs the "Add a conference" form
   (`web/static/add.html`, served at `/add/`, linked from the header and below
   the table): the form is generated from `data/add_fields.json`
-  (`cli.add_field_schema`, the same vocabulary as `add --fields json`), and a
-  submission is validated, committed as `submissions/<id>-<date>-<rand>.json`
+  (`cli.add_field_schema`, the same vocabulary as `add --fields json`) but
+  lays it out one line per `ROWS` entry. The dates are entered once (upcoming
+  or previous edition): the page files them under the prior keys when the
+  meeting has ended and no deadline is ahead (the `roll_past_editions` rule),
+  else under the upcoming ones. Location, Registration, and Cost each have
+  Upcoming / Prior radio buttons beside them (Location also Stable, which sets
+  `stable_location`); until clicked they follow the dates. Category(s) and
+  Subcategory(s) are independent pickers: a dropdown of the values in use (plus
+  the suggested categories) or a typed custom value. A submission is validated,
+  committed as `submissions/<id>-<date>-<rand>.json`
   (an `add --json` record) on a new branch, and opened as a pull request;
-  nothing reaches the table until a maintainer merges it and runs
-  `conference-agent add --json` on the file
+  nothing reaches the table until a maintainer merges it. The daily cron job
+  then runs `scripts/ingest_submissions.py`, which reads new
+  `submissions/*.json` from `origin/main` via `git show` (the working tree is
+  untouched), runs `add --json` on each, and records the outcome in
+  `data/ingested_submissions.json` (a failed file is not retried)
 - `infra/` — AWS SAM deployment (`template.yaml`: CloudFront over an
   IAM-protected Lambda Function URL + RDS PostgreSQL in a VPC, with optional
   `DomainName`/`AcmCertificateArn` for a custom domain; `samconfig.toml`); built
@@ -219,7 +234,7 @@ dependencies there rather than installing ad hoc.
   `UTC±N` offset or IANA name). Input may be 12- or 24-hour and any zone
   spelling; the model validators canonicalize it, so storage never carries a
   display preference and the browser never parses free text. The user-facing
-  `deadline_time` is *derived* (like `size` / `category`; stored denormalized,
+  `deadline_time` is *derived* (like `size`; stored denormalized,
   never accepted as input except as a legacy shorthand that is parsed into the
   six fields): `"11:59 PM ET"` when every deadline the series has shares one
   time (identical times show once, not "abstract: … paper: …"), otherwise one
@@ -240,20 +255,56 @@ dependencies there rather than installing ad hoc.
   goes from green to red the moment it passes with no re-render or redeploy.
   The zone table and the display grouping exist in both Python and JS;
   `tests/test_deadline_time.py` pins them together via Node.
+- **Deadline extensions are derived on write (or entered by hand) and shown
+  only as a marker.** Three
+  text columns (`abstract_deadline_extension`, `late_abstract_deadline_extension`,
+  `paper_deadline_extension`) log observed extensions as newline-separated
+  `MM/DD/YYYY – MM/DD/YYYY` (original – extended) lines. They are not on the
+  `Conference` model, not researched by discovery, and not table or CSV
+  columns. `add` accepts history as `deadline_extensions` (a repeated
+  `--deadline-extensions TYPE ORIGINAL EXTENDED` flag, `{type, original,
+  extended}` objects in JSON, `;`-separated entries in a CSV cell; parsed by
+  `database.parse_deadline_extensions`), which `merge_records` appends to the
+  stored lines (duplicates dropped); an entry more than five years old is
+  rejected. The add form's "Deadline extension history" (below the paper
+  deadline) collects these as rows of type / original date / extended date,
+  with a + button for more. On the site, `web/app.py` `_EXTENSION_COLUMNS` carries them in
+  each serialized row only so `index.html` (`extensionMark`) can put a ⏩ after
+  an extended deadline date, with the past extensions on hover or tap. `database._record_extensions`
+  runs in both write paths (`upsert_conferences`, `merge_records`) and appends
+  a line when an upcoming deadline moves later for the same edition (start date
+  within `NEW_EDITION_GAP_DAYS`), by at most `EXTENSION_MAX_DAYS` (120), and is
+  observed no earlier than `EXTENSION_NOTICE_DAYS` (60) before the original
+  deadline (earlier changes are treated as corrections). Entries whose extended
+  date is more than five years old are pruned on write and by
+  `roll_past_editions`.
+- **Location and cost are per edition.** A series moves cities and changes its
+  fees, so both are prior/upcoming pairs (`prior_location` / `upcoming_location`,
+  `prior_cost` / `upcoming_cost`, in `models.EDITION_SUFFIXES`), rolled with the
+  rest of the edition. The legacy single `location` / `cost` input keys fill the
+  upcoming slot, and the model's `location` / `cost` properties are the displayed
+  value (upcoming, else prior), which the subscriber diff and `lookup` use. The
+  table shows a prior-edition value in orange (`.from-prior`), except a location
+  of a series flagged `stable_location` (held in the same place every year, e.g.
+  RSNA), which also survives a roll when the finished edition recorded none. A
+  discovery run never clears that flag (`upsert_conferences`); an explicit
+  `add --update --stable-location false` does. Databases with the old single
+  columns are migrated on open (`database._migrate_location_cost_to_editions`:
+  the value moves to the upcoming slot when the row has an upcoming date, else
+  to the prior one).
 - **Controlled vocabularies.** `ConferenceSize` (`massive`/`large`/`medium`/`small`) and
   `RemoteOption` (`in-person`/`virtual`/`hybrid`; an unknown option is NULL) are enums, not free
   text, so the table and queries can filter/color consistently.
-- **Two-level classification: derived category over free-form subcategory.** The
-  granular `subcategory` is the one free-form categorical column (the specific
-  field, multi-valued). The broad `category` is one or more of ten fixed buckets
-  (`models.CATEGORIES`) and is *derived*, never stored as input: every subcategory
-  maps to exactly one category via `models.SUBCATEGORY_TO_CATEGORY`, and a series'
-  category is the de-duplicated set of its subcategories' buckets (so MICCAI →
-  `medicine, artificial intelligence`). Like `size`, the stored `category` column
-  is only ever written by the derivation, so it cannot drift from the
-  subcategories; `recompute_categories` re-derives all rows if the map changes. A
-  new subcategory needs a `SUBCATEGORY_TO_CATEGORY` entry (a test enforces seed
-  coverage). The legacy single `category` column (granular tags) is renamed to
+- **Two-level classification: category and subcategory are independent inputs.**
+  The granular `subcategory` (the specific field) and the broad `category` are
+  both multi-valued tag columns, set separately (MICCAI → subcategories
+  `radiology, machine learning`, categories `medicine, artificial intelligence`).
+  `models.CATEGORIES` lists ten suggested categories, which pickers offer and
+  `normalize_categories` orders first; any other value is kept as entered.
+  Discovery researches the category alongside the subcategories; a run that
+  reports none keeps the stored value (`upsert_conferences`), and the seed list
+  carries no category. `discover --category` expands to the subcategories of
+  the stored series in that category. The legacy single `category` column (granular tags) is renamed to
   `subcategory` in place on first open by `database._migrate_category_to_subcategory`.
 - **Deterministic, sourced size (not a subjective reputation label).** Size is a
   computed property, never a stored hand-set value: `models.size_for_attendance`
@@ -293,9 +344,12 @@ dependencies there rather than installing ad hoc.
   that shares the acronym; seed names must therefore match the stored names.
 - **Idempotent calendar feed.** Each event carries a deterministic id derived
   (base32hex) from the conference id and event kind, so a re-fetched feed updates
-  existing events instead of creating duplicates. A conference yields up to three
-  events for its upcoming edition: abstract deadline, paper deadline, and the
-  conference dates. The feed is pure-Python iCalendar (RFC 5545), so it needs no
+  existing events instead of creating duplicates. A conference yields up to four
+  events for its upcoming edition (abstract, late abstract, and paper deadlines,
+  and the conference dates), or for its prior edition when no upcoming date is
+  known (`calendar_sync.calendar_edition`, mirrored in `calendar.js`), so a
+  finished edition stays in subscribed calendars until the next is announced.
+  The feed is pure-Python iCalendar (RFC 5545), so it needs no
   credentials and runs from the static/Lambda web layer. All-day reminders are
   anchored to the morning (see `calendar_sync._alarm_trigger`) so calendar apps
   label "N days before" correctly rather than a day early.
@@ -322,7 +376,7 @@ dependencies there rather than installing ad hoc.
   survive an AI search and the boolean grammar (which has no exact-match
   operator for text) stays unchanged. A "Browse by field" bar above the search box (one
   card per category with rows, then the chosen category's subcategories as
-  chips, grouped via the snapshot's `subcategory_categories` map) sets those
+  chips: every subcategory tagging a series in that category) sets those
   same category / subcategory filters, and the page mirrors them and the
   search text in the URL (`/?category=<slug>`, `/?subcategory=machine-learning`,
   `&q=...`; back/forward step through selections), so a field's view is a
@@ -359,6 +413,11 @@ dependencies there rather than installing ad hoc.
   with the series' `.ics` attached (same UIDs as the site, so re-importing
   updates events in place) and RFC 8058 one-click unsubscribe links. A series'
   snapshot advances only after its sends succeed, so failures retry next run.
+  A finished edition moving to prior (below) is not reported as a change
+  (`subscriptions.drop_finished_edition`). The same step sends each subscriber
+  one reminder per upcoming deadline once it is `SUBSCRIBER_REMINDER_DAYS` (7)
+  days away or closer (`subscriptions.send_reminders`; per-address state in
+  `data/reminder_state.json`).
   The tokens must match between `web/vercel/api/_lib.js` and
   `subscriptions.sign` (a test pins a JS-computed value). The functions run only
   on subscribe / confirm / unsubscribe, never for browsing or search.
@@ -375,8 +434,11 @@ dependencies there rather than installing ad hoc.
   of the two search implementations drifting is guarded by
   `tests/test_search_parity.py`, which asserts the JS and Python searches select
   identical rows over a query corpus (skipped when `node` is absent, e.g. in CI).
-  The static bundle omits the whole-list subscribe feed (needs per-request
-  compute); per-row calendar downloads and manual boolean search are unaffected.
+  Subscribable feeds are static files too: `build_static.py` writes
+  `c/<id>/calendar.ics`, `field/<tag>/calendar.ics`, and `calendar.ics` with the
+  Python builder (served as `text/calendar` via `vercel.json`); the 📅 button
+  offers them (webcal / Google / copy URL) alongside the one-time download. The
+  search-mirroring feed of the dynamic backend is not available statically.
   Natural-language ("AI") search *is* available on the static site:
   `web/static/nl_query.js` ports the prompt and validate/repair loop from
   `web/nl_query.py` but runs a small instruction model entirely in the browser
@@ -430,9 +492,16 @@ dependencies there rather than installing ad hoc.
 - **Automatic refresh.** A local cron entry (`0 2 * * *`) runs
   `scripts/scheduled_discovery.sh` daily. It runs `daily_update.py --cadence
   watch`, which page-checks series by tier (deadline within ±14 days: daily; a
-  deadline or meeting within 30 days, or 6–24 months since the last edition:
-  every 14 days) and calls the agent only for series whose pages' dates changed
-  (or that are unreadable / past a 28-day backstop). It redeploys (via
+  deadline or meeting within 30 days, under 6 months since the last edition
+  ended with no next one, or 6–24 months since the last edition: every 14 days)
+  and calls the agent only for series whose pages' dates changed (or that are
+  unreadable / past a 28-day backstop). Before planning and after research it
+  runs `database.roll_past_editions`, which moves an upcoming edition whose
+  meeting is over (and with no deadline still ahead) into the prior slots and
+  merges an edition stored in both slots (the `Conference` model collapses the
+  same duplicate on input). Before the watch run the job ingests merged
+  submissions; if any step fails it emails the log tail via
+  `scripts/alert_failure.py`. It redeploys (via
   `scripts/deploy_static.sh`) only when the exported site data changed; the DB
   file itself changes every run from bookkeeping columns, so it is not the
   comparison. cron's minimal PATH lacks `~/.local/bin` (`claude`) and nvm

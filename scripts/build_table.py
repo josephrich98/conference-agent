@@ -18,6 +18,7 @@ from conference_agent.config import DEFAULT_DATABASE_URL
 from conference_agent.database import (
     discovery_subcategories,
     known_attendance_sources,
+    query_conferences,
     upsert_conferences,
 )
 from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS, discover_conferences
@@ -29,7 +30,7 @@ def main() -> None:
         "--subcategory",
         action="append",
         help="Subcategory (specific field) to search (repeatable). Default: every "
-        "field in the table and the seed list",
+        "field in the table",
     )
     parser.add_argument(
         "--backend",
@@ -48,10 +49,12 @@ def main() -> None:
 
     conferences = []
     written = 0
+    known = query_conferences(db_url=args.db)
     for subcategory in args.subcategory or discovery_subcategories(args.db):
         hints = known_attendance_sources(db_url=args.db, subcategories=[subcategory])
         found = discover_conferences(
-            subcategories=[subcategory], backend=args.backend, attendance_hints=hints
+            subcategories=[subcategory], backend=args.backend, attendance_hints=hints,
+            known=known,
         )
         written += upsert_conferences(found, db_url=args.db)
         conferences.extend(found)

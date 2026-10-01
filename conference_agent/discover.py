@@ -41,11 +41,12 @@ from pydantic import BaseModel, Field
 from conference_agent.config import (
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_MODEL,
-    SEED_CONFERENCES,
 )
 from conference_agent.models import (
+    CATEGORIES,
     Conference,
     RemoteOption,
+    normalize_categories,
     normalize_formats,
     normalize_subcategories,
 )
@@ -76,12 +77,18 @@ For each notable conference in the requested field, gather:
 - the specific subcategory field(s) it belongs to -- a conference may span more
   than one (e.g. SPR is both radiology and pediatrics; MICCAI is both radiology
   and machine learning), so list every field that applies, comma-separated
+- its broad category or categories, comma-separated, chosen from: {categories}
+  (e.g. MICCAI is medicine, artificial intelligence); use another category only
+  when none of these fits
 - the most recent (prior) edition: abstract submission deadline, late abstract
   deadline (see below), full paper / manuscript deadline, and the conference
   start and end dates
 - the upcoming edition: abstract submission deadline, late abstract deadline,
   full paper / manuscript deadline, and the conference start and end dates
-- the host city / venue (location) of each edition
+- the host city / venue (location) of each edition, for the prior and the
+  upcoming edition separately (prior_location / upcoming_location), and whether
+  the conference is held in the same place every year (stable_location, e.g. RSNA
+  is always at McCormick Place, Chicago)
 - the official website URL
 - the submission / presentation formats the conference accepts -- any of:
   abstract (a short abstract submission), paper (a full paper / manuscript),
@@ -90,8 +97,10 @@ For each notable conference in the requested field, gather:
   proceedings venues such as NeurIPS or CVPR also take full papers; many accept
   both poster and oral presentations)
 - whether it can be attended remotely (in-person, virtual, or hybrid)
-- the registration cost: give the actual dollar figure(s) when available (e.g.
-  "$1,095 member / $1,395 non-member, early-bird"), not just "varies"
+- the registration cost of each edition (prior_cost / upcoming_cost): give the
+  actual dollar figure(s) when available (e.g. "$1,095 member / $1,395
+  non-member, early-bird"), not just "varies"; leave the upcoming cost blank until
+  that edition's fees are published rather than repeating last year's
 - the registration period(s) as free text, for the prior and the upcoming edition
   separately (prior_registration / upcoming_registration): capture the windows the
   meeting publishes, e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"
@@ -166,6 +175,8 @@ written above -- do not expand, shorten, or re-word it, even when the official \
 site styles it differently.
 
 Write up what you find clearly, one conference at a time."""
+# The suggested categories, filled in once (the prompt is .format()-ed per run).
+_RESEARCH_SYSTEM = _RESEARCH_SYSTEM.replace("{categories}", ", ".join(CATEGORIES))
 
 _EXTRACT_SYSTEM = """\
 Convert the research notes into structured conference records. Use ISO dates \
@@ -194,11 +205,13 @@ an IANA name such as "Asia/Shanghai"; "" when the notes give no time or zone for
 that deadline. The prior_registration and \
 upcoming_registration fields are the registration window(s) of each edition as \
 free text (e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"), "" \
-when the notes give none. The location \
-field is the host city / venue \
-(e.g. "Chicago, IL" or "Vienna, Austria"). The cost field should carry the \
-actual price figure(s) when the notes give one (e.g. "$1,095 member, \
-early-bird"). The attendance field must be a plain integer count of attendees \
+when the notes give none. The prior_location and upcoming_location fields are \
+the host city / venue of each edition (e.g. "Chicago, IL" or "Vienna, \
+Austria"); stable_location is "true" when the notes say the conference is held \
+in the same place every year, otherwise "". The prior_cost and upcoming_cost \
+fields are each edition's registration cost, with the actual price figure(s) \
+when the notes give one (e.g. "$1,095 member, early-bird"). Keep each location \
+and cost with the edition it belongs to. The attendance field must be a plain integer count of attendees \
 (digits only, no commas or words) or "" if the notes give no figure; \
 attendance_year is the four-digit year that figure describes (or ""); \
 attendance_source is the URL the figure came from (or ""). The remote_option \
@@ -222,6 +235,11 @@ class _ExtractedConference(BaseModel):
     subcategory: str = Field(
         description="Specific field(s) the conference belongs to; comma-separate "
         'multiple, e.g. "radiology, machine learning"'
+    )
+    category: str = Field(
+        default="",
+        description="Broad category or categories, comma-separated, normally from: "
+        + ", ".join(CATEGORIES),
     )
     prior_abstract_deadline: str
     prior_late_abstract_deadline: str = Field(
@@ -276,14 +294,20 @@ class _ExtractedConference(BaseModel):
         description="Zone of the paper deadline time: 'AoE', 'UTC', a region code "
         "like 'ET' / 'CET', or an IANA name; or ''",
     )
-    location: str
+    prior_location: str = Field(default="", description="Host city / venue of the prior edition, or ''")
+    upcoming_location: str = Field(default="", description="Host city / venue of the upcoming edition, or ''")
+    stable_location: str = Field(
+        default="",
+        description="'true' when the conference is held in the same place every year, else ''",
+    )
     url: str
     remote_option: str
     formats: str = Field(
         description="Submission/presentation formats offered, comma-separated, any of: "
         "abstract, paper, poster, oral (or '' if the notes do not say)"
     )
-    cost: str
+    prior_cost: str = Field(default="", description="Registration cost of the prior edition, or ''")
+    upcoming_cost: str = Field(default="", description="Registration cost of the upcoming edition, or ''")
     attendance: str = Field(
         description="Total attendee count as a plain integer (digits only), or '' if unknown"
     )
@@ -339,6 +363,7 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         acronym=item.acronym.strip(),
         name=item.name.strip(),
         subcategories=normalize_subcategories(item.subcategory),
+        categories=normalize_categories(item.category),
         prior_abstract_deadline=_parse_date(item.prior_abstract_deadline),
         prior_late_abstract_deadline=_parse_date(item.prior_late_abstract_deadline),
         prior_paper_deadline=_parse_date(item.prior_paper_deadline),
@@ -359,11 +384,14 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         late_abstract_timezone=_clean(item.late_abstract_timezone),
         paper_time=_clean(item.paper_time),
         paper_timezone=_clean(item.paper_timezone),
-        location=_clean(item.location),
+        prior_location=_clean(item.prior_location),
+        upcoming_location=_clean(item.upcoming_location),
+        stable_location=item.stable_location.strip().lower() == "true",
         url=_clean(item.url),
         remote_option=remote,
         formats=normalize_formats(item.formats),
-        cost=_clean(item.cost),
+        prior_cost=_clean(item.prior_cost),
+        upcoming_cost=_clean(item.upcoming_cost),
         attendance=_parse_int(item.attendance),
         attendance_year=_parse_int(item.attendance_year),
         attendance_source=_clean(item.attendance_source),
@@ -371,15 +399,15 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
     )
 
 
-def _seed_checklist(subcategories: List[str]) -> str:
-    """Bullet list of seed conferences in the requested subcategories (or all)."""
+def _known_checklist(subcategories: List[str], known: "Optional[Iterable[Conference]]") -> str:
+    """Bullet list of the stored conferences in the requested subcategories."""
     subs = {s.strip().lower() for s in subcategories}
     lines = [
-        f"- {acronym} — {name}"
-        for acronym, name, subcategory in SEED_CONFERENCES
-        if not subs or (set(normalize_subcategories(subcategory)) & subs)
+        f"- {conf.acronym} — {conf.name}"
+        for conf in known or []
+        if set(conf.subcategories) & subs
     ]
-    return "\n".join(lines) if lines else "- (no seeds for this subcategory)"
+    return "\n".join(lines) if lines else "- (none recorded yet for this field)"
 
 
 def _attendance_hints_block(hints: "Optional[dict]") -> str:
@@ -430,10 +458,11 @@ def _research_prompt(subcategories: List[str]) -> str:
 def _research(
     client, subcategories: List[str], model: str, max_tokens: int,
     attendance_hints: "Optional[dict]" = None,
+    known: "Optional[Iterable[Conference]]" = None,
 ) -> str:
     """Run the web-search agentic loop and return the model's research text."""
     system = _RESEARCH_SYSTEM.format(
-        seed_list=_seed_checklist(subcategories),
+        seed_list=_known_checklist(subcategories, known),
         attendance_hints=_attendance_hints_block(attendance_hints),
     )
     return _research_loop(client, system, _research_prompt(subcategories), model, max_tokens)
@@ -569,11 +598,12 @@ def _run_claude_cli(
 
 
 def _research_via_cli(
-    subcategories: List[str], model: Optional[str], attendance_hints: "Optional[dict]" = None
+    subcategories: List[str], model: Optional[str], attendance_hints: "Optional[dict]" = None,
+    known: "Optional[Iterable[Conference]]" = None,
 ) -> str:
     """Run the research phase through the headless ``claude`` CLI."""
     system = _RESEARCH_SYSTEM.format(
-        seed_list=_seed_checklist(subcategories),
+        seed_list=_known_checklist(subcategories, known),
         attendance_hints=_attendance_hints_block(attendance_hints),
     )
     return _research_text_via_cli(system, _research_prompt(subcategories), model)
@@ -617,6 +647,7 @@ def discover_conferences(
     model: Optional[str] = None,
     max_tokens: int = 16000,
     attendance_hints: "Optional[dict]" = None,
+    known: "Optional[Iterable[Conference]]" = None,
 ) -> List[Conference]:
     """Discover conferences for the given subcategories and return typed records.
 
@@ -637,6 +668,9 @@ def discover_conferences(
             :func:`database.known_attendance_sources`). On a refresh, the research
             prompt re-checks these URLs (and their year-bumped successors) before
             searching afresh, so a known figure's source is reused.
+        known: The conferences already stored (e.g. ``database.query_conferences()``).
+            Those in the requested fields are listed in the prompt as a checklist
+            the survey must cover, under their stored names.
 
     Returns:
         A list of ``Conference`` records.
@@ -655,7 +689,7 @@ def discover_conferences(
         )
 
     if backend == "claude-code":
-        research_text = _research_via_cli(subs, model, attendance_hints)
+        research_text = _research_via_cli(subs, model, attendance_hints, known)
         if not research_text.strip():
             return []
         return _extract_via_cli(research_text, model)
@@ -663,7 +697,7 @@ def discover_conferences(
     # backend == "api"
     resolved_model = model or ANTHROPIC_MODEL
     client = _anthropic_client()
-    research_text = _research(client, subs, resolved_model, max_tokens, attendance_hints)
+    research_text = _research(client, subs, resolved_model, max_tokens, attendance_hints, known)
     if not research_text.strip():
         return []
     return _extract(client, research_text, resolved_model, max_tokens)
@@ -707,6 +741,9 @@ def _describe_target(conf: Conference) -> str:
             value = getattr(conf, f"{prefix}_{suffix}")
             if value:
                 parts.append(f"{label} {value.isoformat()}")
+        location = getattr(conf, f"{prefix}_location")
+        if location:
+            parts.append(f"in {location}")
         return ", ".join(parts) or "none recorded"
 
     link = f" -- {conf.url}" if conf.url else ""
@@ -716,7 +753,8 @@ def _describe_target(conf: Conference) -> str:
         else ""
     )
     return (
-        f"- {conf.acronym} -- {conf.name} [{conf.subcategory}]{link}\n"
+        f"- {conf.acronym} -- {conf.name} [{conf.subcategory}]"
+        f"{' (' + conf.category + ')' if conf.category else ''}{link}\n"
         f"  upcoming: {edition('upcoming')}; prior: {edition('prior')}{time}"
     )
 

@@ -7,11 +7,10 @@ from datetime import date
 
 from conference_agent.models import (
     CATEGORIES,
-    SUBCATEGORY_TO_CATEGORY,
     Conference,
     ConferenceSize,
     RemoteOption,
-    categories_for_subcategories,
+    normalize_categories,
     normalize_formats,
 )
 
@@ -95,9 +94,9 @@ def test_single_subcategory_string_becomes_a_list():
     conf = _conf()  # built with subcategory="radiology"
     assert conf.subcategories == ["radiology"]
     assert conf.subcategory == "radiology"
-    # The broad category is derived from the subcategory (radiology -> medicine).
-    assert conf.categories == ["medicine"]
-    assert conf.category == "medicine"
+    # Category is an input of its own, so none is implied by the subcategory.
+    assert conf.categories == []
+    assert conf.category == ""
 
 
 def test_multiple_subcategories_accepted_as_list_or_string():
@@ -105,46 +104,27 @@ def test_multiple_subcategories_accepted_as_list_or_string():
     a = _conf(subcategories=["Radiology", "Pediatrics"])
     assert a.subcategories == ["radiology", "pediatrics"]
     assert a.subcategory == "radiology, pediatrics"
-    # Both subcategories map to medicine, so the derived category de-dupes to one.
-    assert a.categories == ["medicine"]
     # As a delimited string via the singular alias; normalized + de-duped.
     b = _conf(subcategory="radiology, machine learning, radiology")
     assert b.subcategories == ["radiology", "machine learning"]
 
 
-def test_category_is_derived_from_subcategories_across_domains():
-    # A multi-domain series carries every category its subcategories imply, in
-    # canonical CATEGORIES order (medicine before artificial intelligence).
-    conf = _conf(subcategories=["radiology", "machine learning"])
-    assert conf.categories == ["medicine", "artificial intelligence"]
-    assert conf.category == "medicine, artificial intelligence"
-    # genomics -> biology.
-    assert _conf(subcategory="genomics").categories == ["biology"]
+def test_categories_are_input_and_normalized():
+    # Accepted as a list or a delimited string, under either key; the suggested
+    # categories come first in canonical order, then custom ones as given.
+    conf = _conf(category="Artificial Intelligence; robotics ethics, medicine, medicine")
+    assert conf.categories == ["medicine", "artificial intelligence", "robotics ethics"]
+    assert conf.category == "medicine, artificial intelligence, robotics ethics"
+    assert _conf(categories=["biology"]).categories == ["biology"]
+    # Independent of the subcategories.
+    assert _conf(subcategory="genomics", category="physics").categories == ["physics"]
 
 
-def test_category_is_blank_when_subcategory_is_unmapped():
-    # An unfamiliar subcategory (not in the map) contributes no category rather
-    # than raising, so a novel tag degrades gracefully.
-    conf = _conf(subcategories=["underwater basket weaving"])
-    assert conf.subcategories == ["underwater basket weaving"]
-    assert conf.categories == []
-    assert conf.category == ""
-
-
-def test_categories_for_subcategories_helper():
-    assert categories_for_subcategories(["radiology"]) == ["medicine"]
-    assert categories_for_subcategories(["machine learning", "genomics"]) == [
-        "biology",
-        "artificial intelligence",
-    ]
-    assert categories_for_subcategories([]) == []
-    assert categories_for_subcategories(None) == []
-
-
-def test_subcategory_map_values_are_valid_categories():
-    # Every mapped category must be one of the ten controlled buckets, so the
-    # derived column never produces an out-of-vocabulary value.
-    assert set(SUBCATEGORY_TO_CATEGORY.values()) <= set(CATEGORIES)
+def test_normalize_categories_helper():
+    assert normalize_categories("stats, medicine") == ["medicine", "stats"]
+    assert normalize_categories(["Custom", "medicine"]) == ["medicine", "custom"]
+    assert normalize_categories(None) == []
+    assert set(CATEGORIES) >= {"medicine", "artificial intelligence"}
 
 
 def test_formats_default_to_empty():
@@ -262,3 +242,33 @@ def test_registration_date_aliases_accepted_for_back_compat():
     )
     assert c.upcoming_registration == "2026-03-02"
     assert c.prior_registration == "2025-08-01"
+
+
+def test_duplicated_prior_edition_collapses_into_upcoming():
+    conf = Conference(
+        acronym="ICML",
+        name="International Conference on Machine Learning",
+        subcategory="machine learning",
+        prior_start_date="2026-07-06",
+        prior_abstract_deadline="2026-01-23",
+        prior_registration_date="Opens March",
+        upcoming_start_date=date(2026, 7, 6),
+        upcoming_end_date=date(2026, 7, 11),
+    )
+    assert conf.prior_start_date is None and conf.prior_abstract_deadline is None
+    assert conf.prior_registration is None
+    assert conf.upcoming_start_date == date(2026, 7, 6)
+    assert conf.upcoming_end_date == date(2026, 7, 11)
+    assert conf.upcoming_abstract_deadline == date(2026, 1, 23)
+    assert conf.upcoming_registration == "Opens March"
+
+
+def test_distinct_editions_are_left_alone():
+    conf = Conference(
+        acronym="ICML",
+        name="International Conference on Machine Learning",
+        subcategory="machine learning",
+        prior_start_date=date(2025, 7, 13),
+        upcoming_start_date=date(2026, 7, 6),
+    )
+    assert conf.prior_start_date == date(2025, 7, 13)

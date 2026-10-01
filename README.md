@@ -44,10 +44,10 @@ Query the database for conferences, only returning specific columns:
 
 ```bash
 conference-agent lookup --query "subcategory:radiology AND size:massive" \
-  --columns conference_name acronym conference_dates location
+  --columns name acronym upcoming_start_date location
 ```
 
-View the entire database
+View the entire database:
 
 ```bash
 conference-agent lookup
@@ -107,9 +107,8 @@ conference-agent add --update \
 Delete an existing conference (will fail if the conference name does not exist):
 
 ```bash
-conference-agent add --delete \
-  --conference-name "Radiological Society of North America Annual Meeting" \
-  ...
+conference-agent delete \
+  --conference-name "Radiological Society of North America Annual Meeting"
 ```
 
 ### conference-agent discover
@@ -169,7 +168,8 @@ conference-agent discover \
 - abstract_month, late_abstract_month, paper_month, conference_month (all derived from date columns) --> month names (1 --> January)
 - attendance + attendance_year --> attendance (45,000 (2025))
 - abstract_time/timezone + late_abstract_time/timezone + paper_time/timezone --> deadline time (11:59 PM ET; 12- or 24-hour)
-- added calendar (📅 .ics download) and email (✉️ update subscription) columns
+- added calendar (📅: subscribe to the conference's feed, or download a one-time .ics) and email (✉️: update emails, plus a reminder one week before each deadline) columns
+- subscribable calendar feeds: `/c/<id>/calendar.ics` per conference, `/field/<tag>/calendar.ics` per field, and `/calendar.ics` for everything
 - hidden: id, notes, attendance_source, last_checked, watch_* (internal bookkeeping)
 - retired series (no future edition, last one over 24 months old) are left out of the website
 
@@ -184,6 +184,7 @@ agent run unless something appears to have changed:
 | daily | an upcoming submission deadline within 14 days before or after today | every day |
 | soon | an upcoming deadline or the meeting's start within the next 30 days | every 14 days |
 | stale | no future edition on record; the last edition's submission deadline (or start date) 6–24 months ago | every 14 days |
+| recent | no future edition on record; the last edition's submission deadline (or start date) under 6 months ago | every 14 days |
 
 The page check needs no agent: it fetches the official link plus up to three
 same-site "dates" / "deadlines" / "call for abstracts" pages and fingerprints the
@@ -199,8 +200,23 @@ whole field, only when:
 
 At most 18 series are researched per run; the rest wait for the next day.
 Targeted results are merged without clearing fields the agent did not re-find.
-If the data the site shows changed, the job redeploys the static site
-(`scripts/deploy_static.sh`). Logs go to `data/logs/`. Preview a run without
+Once a meeting is over (and no deadline of that edition is still ahead), its
+dates move from the upcoming columns to the prior ones; an edition recorded in
+both is merged into one.
+
+Each run also:
+
+- adds "Add a conference" submissions merged into `origin/main`
+  (`scripts/ingest_submissions.py`; processed files are recorded in
+  `data/ingested_submissions.json`, and a failed one is not retried);
+- redeploys the static site (`scripts/deploy_static.sh`) if the data the site
+  shows changed;
+- emails subscribers about changed conferences, and once when a subscribed
+  conference's deadline is a week away (`scripts/notify_subscribers.py`); and
+- emails the end of the log to `CONFERENCE_NOTIFY_EMAIL` if any step failed
+  (`scripts/alert_failure.py`).
+
+Logs go to `data/logs/`. Preview a run without
 calling the agent or writing anything with:
 
 ```bash

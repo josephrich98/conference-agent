@@ -25,40 +25,40 @@ _ROWS = [
     dict(
         id="RSNA", acronym="RSNA", name="Radiological Society of North America Annual Meeting",
         subcategory="radiology", category="medicine", size="large", remote_option="in-person",
-        location="McCormick Place, Chicago, Illinois, USA",
+        upcoming_location="McCormick Place, Chicago, Illinois, USA",
         upcoming_start_date="2026-11-29", conference_month=11,
     ),
     dict(
         id="SPR", acronym="SPR", name="Society for Pediatric Radiology Annual Meeting",
         subcategory="radiology, pediatrics", category="medicine", size="medium",
-        remote_option="in-person", location="Dallas, TX", upcoming_start_date="2026-05-12",
+        remote_option="in-person", upcoming_location="Dallas, TX", upcoming_start_date="2026-05-12",
         conference_month=5,
     ),
     dict(
         id="ECR", acronym="ECR", name="European Congress of Radiology",
         subcategory="radiology", category="medicine", size="large", remote_option="hybrid",
-        location="Vienna, Austria", upcoming_start_date="2027-03-03", conference_month=3,
+        upcoming_location="Vienna, Austria", upcoming_start_date="2027-03-03", conference_month=3,
     ),
     dict(
         id="NEURIPS", acronym="NeurIPS", name="Conference on Neural Information Processing Systems",
         subcategory="machine learning", category="artificial intelligence", size="large",
-        remote_option="hybrid", location="Sydney, Australia", upcoming_start_date="2026-12-06",
+        remote_option="hybrid", upcoming_location="Sydney, Australia", upcoming_start_date="2026-12-06",
         conference_month=12,
     ),
     dict(
         id="AAN", acronym="AAN", name="American Academy of Neurology Annual Meeting",
         subcategory="neurology", category="medicine", size="large", remote_option="hybrid",
-        location="Chicago, IL", upcoming_start_date="2027-04-17", conference_month=4,
+        upcoming_location="Chicago, IL", upcoming_start_date="2027-04-17", conference_month=4,
     ),
     dict(
         id="SITC", acronym="SITC", name="Society for Immunotherapy of Cancer Annual Meeting",
         subcategory="oncology", category="medicine", size="large", remote_option="in-person",
-        location="Phoenix, Arizona, USA", conference_month=11,
+        upcoming_location="Phoenix, Arizona, USA", conference_month=11,
     ),
     dict(
         id="JSM", acronym="JSM", name="Joint Statistical Meetings",
         subcategory="statistics", category="stats", size="large", remote_option="in-person",
-        location="Boston, MA, USA", conference_month=8,
+        upcoming_location="Boston, MA, USA", conference_month=8,
     ),
 ]
 

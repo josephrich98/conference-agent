@@ -87,7 +87,7 @@ def test_add_late_abstract_and_prior_fields_via_flags(tmp_path):
     # a later poster-only one, plus the prior edition's dates.
     code = main(
         [
-            "--db", url, "add", "-y",
+            "--db", url, "add",
             "--conference", "ZZB - Biological Data Science",
             "--subcategory", "genomics",
             "--abstract-due", "2026-08-28",
@@ -150,7 +150,7 @@ def test_add_from_json_file(tmp_path):
         ' "location": "Boston, MA"}]',
         encoding="utf-8",
     )
-    assert main(["--db", url, "add", "-y", "--json", str(path)]) == 0
+    assert main(["--db", url, "add", "--json", str(path)]) == 0
     conf = _by_id(url)["ZZJ"]
     assert conf.name == "JSON Conference"
     assert conf.upcoming_abstract_deadline == date(2026, 4, 9)
@@ -165,7 +165,7 @@ def test_add_json_accepts_a_single_object(tmp_path):
         '{"conference": "ZZO - One Object", "subcategory": "genomics"}',
         encoding="utf-8",
     )
-    assert main(["--db", url, "add", "-y", "--json", str(path)]) == 0
+    assert main(["--db", url, "add", "--json", str(path)]) == 0
     assert "ZZO" in _by_id(url)
 
 
@@ -184,7 +184,7 @@ def test_add_late_abstract_from_csv_column(tmp_path):
         "ZZC - CSV Conference,genomics,2026-04-09,2026-05-07\n",
         encoding="utf-8",
     )
-    assert main(["--db", url, "add", "-y", "--csv", str(path)]) == 0
+    assert main(["--db", url, "add", "--csv", str(path)]) == 0
     conf = _by_id(url)["ZZC"]
     assert conf.upcoming_abstract_deadline == date(2026, 4, 9)
     assert conf.upcoming_late_abstract_deadline == date(2026, 5, 7)
@@ -212,7 +212,7 @@ def test_fields_command_lists_every_add_flag(tmp_path):
     # ...and every value-carrying flag is documented (bar the input/mode switches).
     # --conference is the hidden legacy "ACRONYM - Name" shorthand.
     modes = {
-        "--csv", "--json", "--fields", "--update", "--delete", "--overwrite", "--yes",
+        "--csv", "--json", "--fields", "--update", "--overwrite",
         "--help", "--db", "--conference",
     }
     assert flags - modes == documented
@@ -230,8 +230,10 @@ def test_fields_json_is_machine_readable(capsys):
     assert late["stored_as"] == "upcoming_late_abstract_deadline"
     assert late["flag"] == "--late-abstract-due"
     # The derived columns are listed as outputs, never as inputs.
-    assert {d["name"] for d in payload["derived"]} & {"size", "category"}
+    assert {d["name"] for d in payload["derived"]} & {"size"}
     assert "size" not in names
+    # Category is an input like subcategory.
+    assert "category" in names
 
 
 def test_add_formats_via_flag(tmp_path):
@@ -271,7 +273,7 @@ def test_add_formats_from_csv_column(tmp_path):
     url = _db_url(tmp_path)
     csv_path = tmp_path / "confs.csv"
     csv_path.write_text(
-        "conference,category,format\n"
+        "conference,subcategory,format\n"
         'ZZT - Test Imaging Conference,radiology,"poster, oral"\n',
         encoding="utf-8",
     )
@@ -369,7 +371,7 @@ def test_add_from_csv_inserts_multiple_rows(tmp_path):
     csv_path = tmp_path / "confs.csv"
     # Column names are the stored fields, so the web table's CSV export round-trips.
     csv_path.write_text(
-        "acronym,name,category,upcoming_start_date,attendance,remote_option\n"
+        "acronym,name,subcategory,upcoming_start_date,attendance,remote_option\n"
         "AAA,Conf A,radiology,2026-05-12,500,in-person\n"
         "BBB,Conf B,genomics,2026-09-23,12000,hybrid\n",
         encoding="utf-8",
@@ -391,7 +393,7 @@ def test_add_from_csv_with_table_facing_columns(tmp_path):
     # The CSV header uses the same friendly column names as the flags: a
     # "conference" column (ACRONYM - Name) and a space-separated "conference_dates".
     csv_path.write_text(
-        "conference,category,attendance,remote_option,abstract_due,conference_dates\n"
+        "conference,subcategory,attendance,remote_option,abstract_due,conference_dates\n"
         'ZZT - Test Imaging Conference,"radiology, machine learning",12000,hybrid,2026-04-08,2026-11-29 2026-12-03\n',
         encoding="utf-8",
     )
@@ -409,7 +411,7 @@ def test_add_from_csv_with_table_facing_columns(tmp_path):
 def test_add_csv_row_without_identity_errors(tmp_path, capsys):
     url = _db_url(tmp_path)
     csv_path = tmp_path / "confs.csv"
-    csv_path.write_text("conference_acronym,category\nZZT,radiology\n", encoding="utf-8")
+    csv_path.write_text("conference_acronym,subcategory\nZZT,radiology\n", encoding="utf-8")
     code = main(["--db", url, "add", "--csv", str(csv_path)])
     assert code == 1
     assert "no 'conference_name'" in capsys.readouterr().err
@@ -430,12 +432,13 @@ def test_add_acronym_without_name_errors(tmp_path, capsys):
     assert _by_id(url) == {}
 
 
-def test_add_new_without_subcategory_errors(tmp_path, capsys):
+def test_add_new_with_only_a_name(tmp_path):
     url = _db_url(tmp_path)
     code = main(["--db", url, "add", "--conference-name", "Ghost Conference"])
-    assert code == 1
-    assert "needs at least one --subcategory" in capsys.readouterr().err
-    assert _by_id(url) == {}
+    assert code == 0
+    row = _by_id(url)["Ghost Conference"]
+    assert row.name == "Ghost Conference"
+    assert row.subcategories == []
 
 
 def test_overwrite_requires_update(tmp_path, capsys):
@@ -618,20 +621,20 @@ def test_delete_subcommand_with_yes(tmp_path, monkeypatch):
     assert _by_id(url) == {}
 
 
-def test_add_delete_prompts_and_declines(tmp_path, monkeypatch):
+def test_delete_prompts_and_declines(tmp_path, monkeypatch):
     url = _db_url(tmp_path)
     _seed_zzt(url)
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
-    code = main(["--db", url, "add", "--delete", "--conference-name", "Test Imaging Conference"])
+    code = main(["--db", url, "delete", "--conference-name", "Test Imaging Conference"])
     assert code == 1
     assert set(_by_id(url)) == {"ZZT"}
 
 
-def test_add_delete_prompts_and_accepts(tmp_path, monkeypatch):
+def test_delete_prompts_and_accepts(tmp_path, monkeypatch):
     url = _db_url(tmp_path)
     _seed_zzt(url)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-    code = main(["--db", url, "add", "--delete", "--conference-name", "Test Imaging Conference"])
+    code = main(["--db", url, "delete", "--conference-name", "Test Imaging Conference"])
     assert code == 0
     assert _by_id(url) == {}
 

@@ -123,11 +123,10 @@ def normalize_subcategories(value: "str | list | tuple | None") -> List[str]:
     return _split_tags(value)
 
 
-# The ten top-level categories. A conference's category is *derived* from its
-# subcategories via :data:`SUBCATEGORY_TO_CATEGORY` -- never hand-set -- mirroring
-# how ``size`` is derived from ``attendance``: there is a single mapping to
-# maintain, and the broad bucket can never drift from the granular tags it is
-# computed from.
+# The ten suggested top-level categories. A conference's category is an input
+# like its subcategories (multi-valued, one or more per series); these are the
+# canonical values offered in pickers and listed first when present, but any
+# other category is accepted as entered.
 CATEGORIES = (
     "humanities",
     "social science",
@@ -141,101 +140,13 @@ CATEGORIES = (
     "artificial intelligence",
 )
 
-# Granular subcategory -> top-level category. Every subcategory used in
-# ``config.SEED_CONFERENCES`` must appear here (a test enforces this), and every
-# value must be one of :data:`CATEGORIES`. Adding a new subcategory is a single
-# entry here; the category column then derives automatically. Most subcategories
-# are clinical specialties under "medicine"; the cross-domain fields (genomics,
-# machine learning) bucket into biology and artificial intelligence.
-SUBCATEGORY_TO_CATEGORY = {
-    # --- medicine: clinical specialties and medicine-adjacent fields ---------
-    "radiology": "medicine",
-    "anesthesiology": "medicine",
-    "cardiology": "medicine",
-    "dermatology": "medicine",
-    "emergency medicine": "medicine",
-    "endocrinology": "medicine",
-    "family medicine": "medicine",
-    "gastroenterology": "medicine",
-    "internal medicine": "medicine",
-    "neurology": "medicine",
-    "obstetrics and gynecology": "medicine",
-    "oncology": "medicine",
-    "ophthalmology": "medicine",
-    "orthopedics": "medicine",
-    "pediatrics": "medicine",
-    "psychiatry": "medicine",
-    "pulmonology": "medicine",
-    "surgery": "medicine",
-    "urology": "medicine",
-    "allergy and immunology": "medicine",
-    "critical care medicine": "medicine",
-    "geriatrics": "medicine",
-    "hematology": "medicine",
-    "infectious disease": "medicine",
-    "medical physics": "medicine",
-    "nephrology": "medicine",
-    "neurosurgery": "medicine",
-    "otolaryngology": "medicine",
-    "palliative care": "medicine",
-    "pathology": "medicine",
-    "physical medicine and rehabilitation": "medicine",
-    "plastic surgery": "medicine",
-    "public health": "medicine",
-    "radiation oncology": "medicine",
-    "rheumatology": "medicine",
-    "sports medicine": "medicine",
-    # --- biology -------------------------------------------------------------
-    "genomics": "biology",
-    "biophysics": "biology",
-    "biochemistry": "biology",
-    "cell biology": "biology",
-    # --- chemistry -----------------------------------------------------------
-    "chemistry": "chemistry",
-    "analytical chemistry": "chemistry",
-    "drug discovery": "chemistry",
-    # --- physics -------------------------------------------------------------
-    "physics": "physics",
-    "astrophysics": "physics",
-    "optics": "physics",
-    # --- mathematics ---------------------------------------------------------
-    "mathematics": "mathematics",
-    "applied mathematics": "mathematics",
-    # --- stats ---------------------------------------------------------------
-    "statistics": "stats",
-    "biostatistics": "stats",
-    "data science": "stats",
-    # --- computer science ----------------------------------------------------
-    "software engineering": "computer science",
-    "programming languages": "computer science",
-    "theoretical computer science": "computer science",
-    "computer graphics": "computer science",
-    "simulation": "computer science",
-    "robotics": "computer science",
-    "data mining": "computer science",
-    # --- artificial intelligence ---------------------------------------------
-    "machine learning": "artificial intelligence",
-    "natural language processing": "artificial intelligence",
-    "computer vision": "artificial intelligence",
-    "learning theory": "artificial intelligence",
-}
 
-
-def categories_for_subcategories(subcategories: "list | tuple | None") -> List[str]:
-    """Top-level categories implied by a list of subcategories.
-
-    Each subcategory maps to exactly one category via
-    :data:`SUBCATEGORY_TO_CATEGORY`; the result is the de-duplicated set of those
-    categories, returned in canonical :data:`CATEGORIES` order so the column reads
-    consistently. A subcategory with no mapping is skipped (it contributes no
-    category) rather than raising, so an unfamiliar tag degrades gracefully.
-    """
-    present = set()
-    for sub in subcategories or []:
-        category = SUBCATEGORY_TO_CATEGORY.get(sub)
-        if category:
-            present.add(category)
-    return [c for c in CATEGORIES if c in present]
+def normalize_categories(value: "str | list | tuple | None") -> List[str]:
+    """Normalize category tags: lowercased and de-duplicated, with the
+    :data:`CATEGORIES` values first in canonical order, then any custom ones in
+    the order given."""
+    tags = _split_tags(value)
+    return [c for c in CATEGORIES if c in tags] + [t for t in tags if t not in CATEGORIES]
 
 
 # The submission / presentation formats a conference offers. Unlike the free-text
@@ -270,10 +181,52 @@ def name_id(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-")
 
 
+# Per-edition fields, as the suffix after ``prior_`` / ``upcoming_``.
+EDITION_SUFFIXES = (
+    "abstract_deadline",
+    "late_abstract_deadline",
+    "paper_deadline",
+    "start_date",
+    "end_date",
+    "registration",
+    "location",
+    "cost",
+)
+
+
 class Conference(BaseModel):
     """A recurring conference series with its prior and upcoming editions."""
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _collapse_duplicate_edition(cls, data):
+        """Merge a prior edition that duplicates the upcoming one.
+
+        Two editions cannot start on the same day, so a record whose prior and
+        upcoming start dates are equal holds one edition twice (an extraction
+        error). The prior slots fill any upcoming blanks and are then cleared;
+        :func:`database.roll_past_editions` later moves the edition into the prior
+        slots once it is over.
+        """
+        if not isinstance(data, dict):
+            return data
+        prior, upcoming = data.get("prior_start_date"), data.get("upcoming_start_date")
+        if prior in (None, "") or str(prior) != str(upcoming):
+            return data
+        data = dict(data)
+        for edition in ("prior", "upcoming"):  # fold the legacy alias in first
+            alias = data.pop(f"{edition}_registration_date", None)
+            data.setdefault(f"{edition}_registration", alias)
+        for suffix in ("location", "cost"):  # likewise the single-value keys
+            if data.get(f"upcoming_{suffix}") in (None, ""):
+                data[f"upcoming_{suffix}"] = data.pop(suffix, None)
+        for suffix in EDITION_SUFFIXES:
+            value = data.pop(f"prior_{suffix}", None)
+            if data.get(f"upcoming_{suffix}") in (None, "") and value not in (None, ""):
+                data[f"upcoming_{suffix}"] = value
+        return data
 
     # --- Identity ----------------------------------------------------------
     acronym: str = Field(..., description="Short name, e.g. 'RSNA'")
@@ -289,18 +242,30 @@ class Conference(BaseModel):
     # One conference can carry several subcategory tags (e.g. SPR -> radiology +
     # pediatrics). Accepts either a list or a comma/semicolon-delimited string (and
     # the singular ``subcategory`` key) on input; ``subcategory`` below exposes the
-    # joined string for display and storage. The broad ``category`` (one of
-    # :data:`CATEGORIES`) is derived from these, not taken as input.
+    # joined string for display and storage.
     subcategories: List[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices("subcategories", "subcategory"),
         description="Specific field(s), e.g. ['radiology', 'machine learning']",
+    )
+    # The broad bucket(s), set independently of the subcategories: usually from
+    # :data:`CATEGORIES` (e.g. MICCAI -> medicine + artificial intelligence), but
+    # a custom category is kept as entered. ``category`` joins them.
+    categories: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("categories", "category"),
+        description="Broad categories, e.g. ['medicine', 'artificial intelligence']",
     )
 
     @field_validator("subcategories", mode="before")
     @classmethod
     def _normalize_subcategories(cls, value):
         return normalize_subcategories(value)
+
+    @field_validator("categories", mode="before")
+    @classmethod
+    def _normalize_categories(cls, value):
+        return normalize_categories(value)
 
     # --- Prior (most recent completed) edition -----------------------------
     prior_abstract_deadline: Optional[date] = Field(
@@ -332,6 +297,12 @@ class Conference(BaseModel):
             "'Registration opens June 2025'. Blank when no info is available."
         ),
         validation_alias=AliasChoices("prior_registration", "prior_registration_date"),
+    )
+    prior_location: Optional[str] = Field(
+        None, description="Host city / venue of the most recent edition, e.g. 'Chicago, IL'"
+    )
+    prior_cost: Optional[str] = Field(
+        None, description="Registration cost summary of the most recent edition"
     )
 
     # --- Upcoming edition --------------------------------------------------
@@ -369,10 +340,27 @@ class Conference(BaseModel):
         ),
         validation_alias=AliasChoices("upcoming_registration", "upcoming_registration_date"),
     )
+    # Location and cost belong to an edition (a series moves cities and changes
+    # its fees). The legacy single ``location`` / ``cost`` input keys fill the
+    # upcoming slot; the :attr:`location` / :attr:`cost` properties give the
+    # displayed value (upcoming, else prior).
+    upcoming_location: Optional[str] = Field(
+        None,
+        description="Host city / venue of the upcoming edition, e.g. 'Chicago, IL' or 'Vienna, Austria'",
+        validation_alias=AliasChoices("upcoming_location", "location"),
+    )
+    upcoming_cost: Optional[str] = Field(
+        None,
+        description="Registration cost summary of the upcoming edition, e.g. '$1,095 (member, early-bird)'",
+        validation_alias=AliasChoices("upcoming_cost", "cost"),
+    )
 
     # --- Logistics & classification ----------------------------------------
-    location: Optional[str] = Field(
-        None, description="Host city / venue, e.g. 'Chicago, IL' or 'Vienna, Austria'"
+    # True when the series meets in the same place every edition (RSNA is always
+    # in Chicago), so a location recorded for a prior edition still describes the
+    # next one and the table shows it as current rather than as a past value.
+    stable_location: bool = Field(
+        False, description="Whether the series is held in the same location every edition"
     )
     url: Optional[str] = Field(None, description="Official conference website link")
     remote_option: Optional[RemoteOption] = Field(
@@ -389,6 +377,20 @@ class Conference(BaseModel):
         description="Submission/presentation format(s) offered, any of: abstract, paper, poster, oral",
     )
 
+    @field_validator("stable_location", mode="before")
+    @classmethod
+    def _parse_stable_location(cls, value):
+        # Blank means "not stated", i.e. False; accept yes/no spellings from CSV.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return False
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in ("true", "yes", "y", "1"):
+                return True
+            if text in ("false", "no", "n", "0"):
+                return False
+        return value
+
     @field_validator("remote_option", mode="before")
     @classmethod
     def _blank_unknown_remote(cls, value):
@@ -401,9 +403,6 @@ class Conference(BaseModel):
     @classmethod
     def _normalize_formats(cls, value):
         return normalize_formats(value)
-    cost: Optional[str] = Field(
-        None, description="Registration cost summary, e.g. '$1,095 (member, early-bird)'"
-    )
     # Attendance is the objective input from which ``size`` is derived. The figure
     # is paired with the year it describes and the source it was taken from, so the
     # derived size is auditable rather than a bare assertion. The source URL is
@@ -503,19 +502,6 @@ class Conference(BaseModel):
     def subcategory(self) -> str:
         """The subcategories as a single comma-joined string (for display / storage)."""
         return ", ".join(self.subcategories)
-
-    @property
-    def categories(self) -> List[str]:
-        """Top-level categories, derived from :attr:`subcategories`.
-
-        A computed property, never stored as input: each subcategory maps to one
-        of :data:`CATEGORIES` via :data:`SUBCATEGORY_TO_CATEGORY`, and the result
-        is the de-duplicated set in canonical order (see
-        :func:`categories_for_subcategories`). Multi-domain series carry several --
-        e.g. MICCAI (radiology + machine learning) -> ['medicine',
-        'artificial intelligence'].
-        """
-        return categories_for_subcategories(self.subcategories)
 
     @property
     def category(self) -> str:
@@ -625,6 +611,16 @@ class Conference(BaseModel):
         """Full month name papers are due in (e.g. ``"May"``)."""
         month = self.paper_month
         return calendar.month_name[month] if month else None
+
+    @property
+    def location(self) -> Optional[str]:
+        """Location shown in the table: upcoming, else prior."""
+        return self.upcoming_location or self.prior_location
+
+    @property
+    def cost(self) -> Optional[str]:
+        """Cost shown in the table: upcoming, else prior."""
+        return self.upcoming_cost or self.prior_cost
 
     @property
     def registration(self) -> Optional[str]:

@@ -66,7 +66,7 @@
       text-decoration: none;
     }
     .add-link:hover { filter: brightness(1.08); }
-    .add-more { text-align: right; margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+    .add-more { text-align: left; position: sticky; left: 0; margin: 8px 0 0; font-size: 13px; color: var(--muted); }
     /* "Browse by field": one card per category, then the chosen category's
        subcategories as chips. Both are the category / subcategory column
        filters, mirrored in the URL (?category=...&subcategory=...). */
@@ -106,9 +106,6 @@
     }
     .sub-chip .n { color: var(--muted); margin-left: 4px; }
     .sub-chip.on { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); }
-    .share-link { margin-top: 8px; font-size: 13px; color: var(--muted); }
-    .share-link[hidden] { display: none; }
-    .share-link a { color: var(--accent); cursor: pointer; }
     @media (max-width: 600px) {
       .fields-bar { padding: 8px 16px 4px; }
       .cat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -247,6 +244,12 @@
     .date-recent { color: var(--date-recent); }
     .date-old { color: var(--date-old); }
     .date-soon { color: var(--date-soon); }
+    /* A location or cost carried over from the previous edition. */
+    .from-prior { color: var(--date-old); }
+    /* A deadline the series has extended before (hover, or tap, for the dates). */
+    .ext-mark { cursor: help; margin-left: 3px; font-size: 0.85em; user-select: none; }
+    .ext-note { display: block; font-size: 0.85em; white-space: pre-line; }
+    .ext-note[hidden] { display: none; }
     .size { font-weight: 600; text-transform: capitalize; }
     .size.massive { color: var(--massive); }
     .size.large { color: var(--large); }
@@ -296,6 +299,24 @@
       font-size: 13px;
     }
     #notify-pop[hidden] { display: none; }
+    /* 📅 cal: subscribe to the conference's feed, or download a one-time copy. */
+    #cal-pop {
+      position: absolute;
+      z-index: 20;
+      width: 300px;
+      max-width: calc(100vw - 16px);
+      padding: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      font-size: 13px;
+    }
+    #cal-pop[hidden] { display: none; }
+    #cal-pop p { margin: 0 0 6px; }
+    #cal-pop .cp-note { color: var(--muted); font-size: 12px; }
+    #cal-pop .cp-links { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+    #cal-pop .cp-links a, #cal-pop .cp-links button { font-size: 13px; }
     #notify-pop .np-head { margin: 0 0 4px; }
     #notify-pop .np-note { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
     #np-email {
@@ -436,7 +457,6 @@
     <h2>Browse by field</h2>
     <div class="cat-grid" id="cat-grid"></div>
     <div class="sub-chips" id="sub-chips"></div>
-    <div class="share-link" id="share-link" hidden>Share this view: <a id="share-copy" title="Copy this page's link"></a></div>
   </nav>
 
   <div class="controls">
@@ -473,6 +493,7 @@
       <tbody id="results-body"></tbody>
     </table>
     <p class="add-more">Don't see your conference? <a href="add/">Add it here</a>.</p>
+    <p class="add-more">To check out the command-line interface or contribute to this open-source repository, visit the <a href="https://github.com/josephrich98/conference-agent" target="_blank" rel="noopener noreferrer">GitHub Repository</a>.</p>
   </div>
 
   <div id="toast"></div>
@@ -497,7 +518,7 @@
 
   <form id="notify-pop" hidden role="dialog" aria-labelledby="np-title" novalidate>
     <p class="np-head" id="np-title">Email me when <b id="np-conf"></b> changes</p>
-    <p class="np-note">You'll get an email with the updated calendar file whenever its deadlines or dates change. Every email has an unsubscribe link.</p>
+    <p class="np-note">You'll get an email with the updated calendar file whenever its deadlines or dates change, and a reminder a week before each deadline. Every email has an unsubscribe link.</p>
     <input id="np-email" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.org" aria-label="Email address" aria-describedby="np-error" />
     <p id="np-error" role="alert"></p>
     <div class="np-foot">
@@ -505,6 +526,18 @@
       <button type="submit" class="primary" id="np-ok">Subscribe</button>
     </div>
   </form>
+
+  <div id="cal-pop" hidden role="dialog" aria-labelledby="cp-title">
+    <p id="cp-title">Add <b id="cp-conf"></b> to your calendar</p>
+    <p class="cp-note">Subscribe to keep the events up to date when deadlines or dates change.</p>
+    <div class="cp-links">
+      <a class="cal-btn" id="cp-webcal">Apple / Outlook</a>
+      <a class="cal-btn" id="cp-google" target="_blank" rel="noopener">Google Calendar</a>
+      <button type="button" class="cal-btn" id="cp-copy">Copy feed URL</button>
+    </div>
+    <p class="cp-note">Or download a copy that will not update:</p>
+    <div class="cp-links"><button type="button" class="cal-btn" id="cp-download">Download .ics</button></div>
+  </div>
 
   <!--SEO_LINKS-->
 
@@ -531,13 +564,11 @@
       { key: "category", field: "category", label: "Category", sort: "category", facet: listFacet("category") },
       { key: "subcategory", field: "subcategory", label: "Subcategory", sort: "subcategory", facet: listFacet("subcategory") },
       { key: "format", field: "format", label: "Format", sort: "format", facet: listFacet("format") },
-      { key: "location", field: "location", label: "Location", sort: "location" },
       { key: "size", field: "size", label: "Size", sort: "size",
         facet: { values: (r) => (r.size ? [r.size] : []), rank: (v) => SIZE_RANK[v] || 9 } },
       { key: "attendance", field: "attendance", label: "Attendance", sort: "attendance" },
       { key: "remote_option", field: "remote", label: "Remote", sort: "remote_option",
         facet: { values: (r) => (r.remote_option ? [r.remote_option] : []) } },
-      { key: "cost", field: "cost", label: "Cost", sort: null },
       { key: "abstract_month", field: "abstract_month", label: "Abstract month", sort: "abstract_month", facet: monthFacet("abstract_month") },
       { key: "upcoming_abstract_deadline", field: "abstract_due", label: "Abstract due", sort: "upcoming_abstract_deadline" },
       { key: "late_abstract_month", field: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month", facet: monthFacet("late_abstract_month") },
@@ -547,7 +578,9 @@
       { key: "deadline_time", field: "deadline_time", label: "Deadline time", sort: null },
       { key: "conference_month", field: "conference_month", label: "Conference month", sort: "conference_month", facet: monthFacet("conference_month") },
       { key: "upcoming_dates", field: "conference_dates", label: "Conference dates", sort: "upcoming_start_date" },
+      { key: "location", field: "location", label: "Location", sort: "upcoming_location" },
       { key: "registration", field: "registration", label: "Registration", sort: null },
+      { key: "cost", field: "cost", label: "Cost", sort: null },
       { key: "cal", label: "Calendar", sort: null,
         note: "Download this conference's deadlines and dates as a calendar (.ics) file" },
       { key: "email", label: "Email", sort: null,
@@ -678,10 +711,28 @@
       return `<span${cls} data-date="${refDate}" data-at="${at}">${inner}</span>`;
     }
 
-    function dateOrPrior(upcoming, prior, spec) {
+    function dateOrPrior(upcoming, prior, spec, extensions) {
       const value = upcoming || prior;
-      if (value) return dateSpan(value, value, spec);
-      return '<span class="muted">—</span>';
+      if (!value) return '<span class="muted">—</span>';
+      const [mark, note] = extensionMark(extensions);
+      if (!mark) return dateSpan(value, value, spec);
+      return `<span class="nobreak">${dateSpan(value, value, spec)}${mark}</span>${note}`;
+    }
+
+    // A small marker after a deadline the series has extended before: the
+    // recorded extensions (newline-separated "original – extended" lines) show on
+    // hover, and a tap or click toggles them inline. Returns [marker, note], both
+    // empty when there are none.
+    function extensionMark(extensions) {
+      const lines = String(extensions || "").split("\n").map((l) => l.trim()).filter(Boolean);
+      if (!lines.length) return ["", ""];
+      const text = `Past deadline extension${lines.length > 1 ? "s" : ""}:\n` +
+        lines.map((l) => l.replace(" – ", " → ")).join("\n");
+      return [
+        `<span class="ext-mark" role="button" tabindex="0" title="${escapeHtml(text)}" ` +
+          `aria-label="${escapeHtml(text)}">⏩</span>`,
+        `<span class="ext-note muted" hidden>${escapeHtml(text)}</span>`,
+      ];
     }
 
     // Re-judge every colored date against the current time. Run when a deadline
@@ -724,6 +775,16 @@
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+    }
+
+    // Location and cost: the upcoming edition's value, else the prior edition's
+    // in orange (last year's, until the next is published), else a muted dash.
+    // A location marked stable (the same place every edition) is never orange.
+    function editionText(upcoming, prior, stable = false) {
+      if (upcoming) return escapeHtml(upcoming);
+      if (!prior) return '<span class="muted">—</span>';
+      if (stable) return escapeHtml(prior);
+      return `<span class="from-prior" title="Previous edition">${escapeHtml(prior)}</span>`;
     }
 
     // Registration is free text: show the upcoming edition's value, falling back
@@ -895,26 +956,26 @@
           <td data-col="category">${catHtml}</td>
           <td data-col="subcategory">${subcatHtml}</td>
           <td data-col="format">${formatHtml}</td>
-          <td data-col="location">${r.location || '<span class="muted">—</span>'}</td>
           <td data-col="size">${sizeHtml}</td>
           <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
           <td data-col="remote_option">${r.remote_option ? r.remote_option : '<span class="muted">—</span>'}</td>
-          <td data-col="cost">${r.cost || '<span class="muted">—</span>'}</td>
           <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
-          <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
+          <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline, specFor(r, "abstract"), r.abstract_deadline_extension)}</td>
           <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month, r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline, specFor(r, "late_abstract"))}</td>
-          <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline, specFor(r, "late_abstract"))}</td>
+          <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline, specFor(r, "late_abstract"), r.late_abstract_deadline_extension)}</td>
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline, specFor(r, "paper"))}</td>
-          <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline, specFor(r, "paper"))}</td>
+          <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline, specFor(r, "paper"), r.paper_deadline_extension)}</td>
           <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month, r.upcoming_start_date || r.prior_start_date)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
+          <td data-col="location">${editionText(r.upcoming_location, r.prior_location, r.stable_location)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
+          <td data-col="cost">${editionText(r.upcoming_cost, r.prior_cost)}</td>
           <td data-col="cal" class="cal-cell">
-            <button class="cal-btn" data-conf-id="${escapeHtml(r.id)}" title="Download this conference's deadlines and dates as a calendar (.ics) file">📅 cal</button>
+            <button class="cal-btn cal-open" data-conf-id="${escapeHtml(r.id)}" title="Add this conference's deadlines and dates to your calendar">📅 cal</button>
           </td>
           <td data-col="email" class="cal-cell">
-            <button class="cal-btn notify-btn" data-conf-id="${escapeHtml(r.id)}" title="Email me, with the updated calendar file, when this conference's deadlines or dates change">✉️ subscribe</button>
+            <button class="cal-btn notify-btn" data-conf-id="${escapeHtml(r.id)}" title="Email me when this conference's deadlines or dates change, and a week before each deadline">✉️ subscribe</button>
           </td>
         `;
         tr.dataset.confId = r.id;
@@ -1145,6 +1206,7 @@
       const vals = tag ? [tag.dataset.v] : col.facet.values(row);
       $("columns-panel").hidden = true;
       if (np) closeNotify();
+      if (cp) closeCal();
       if (fp && fp.btn === (tag || td)) { closeFilter(); return; }
       openFilter(col, tag || td, new Set(vals.length ? vals : [BLANK]));
     }
@@ -1169,46 +1231,53 @@
     const fieldSlug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "x";
     const fieldLabel = (v) => CATEGORY_LABELS[v] || v.charAt(0).toUpperCase() + v.slice(1);
     const BASE_TITLE = document.title;
-    let FIELD_BAR = { cats: new Map(), subs: new Map(), subCat: {} }; // value -> row count
+    // cats / subs: value -> row count; subCats: subcategory -> Map(category -> rows with both).
+    let FIELD_BAR = { cats: new Map(), subs: new Map(), subCats: new Map() };
+    let lastActive = null; // the category whose chips were last shown
     let urlPush = false; // the next search adds a history entry (a bar click)
 
     function indexFields(payload) {
       const cats = new Map();
       const subs = new Map();
+      const subCats = new Map();
       for (const r of DATA.conferences) {
-        for (const c of new Set(splitList(r.category))) cats.set(c, (cats.get(c) || 0) + 1);
-        for (const t of new Set(splitList(r.subcategory))) subs.set(t, (subs.get(t) || 0) + 1);
+        const rowCats = new Set(splitList(r.category));
+        for (const c of rowCats) cats.set(c, (cats.get(c) || 0) + 1);
+        for (const t of new Set(splitList(r.subcategory))) {
+          subs.set(t, (subs.get(t) || 0) + 1);
+          if (!subCats.has(t)) subCats.set(t, new Map());
+          for (const c of rowCats) subCats.get(t).set(c, (subCats.get(t).get(c) || 0) + 1);
+        }
       }
       const byCount = (m) => new Map([...m].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
-      FIELD_BAR = { cats: byCount(cats), subs: byCount(subs), subCat: payload.subcategory_categories || {} };
+      const byName = (m) => new Map([...m].sort((a, b) =>
+        fieldLabel(a[0]).localeCompare(fieldLabel(b[0]), undefined, { sensitivity: "base", numeric: true })));
+      FIELD_BAR = { cats: byCount(cats), subs: byName(subs), subCats };
     }
 
-    // The category a subcategory derives. A tag missing from the snapshot's map
-    // falls back to a category every row tagged with it shares.
-    function subCategoryOf(tag) {
-      if (FIELD_BAR.subCat[tag]) return FIELD_BAR.subCat[tag];
-      let shared = null;
-      for (const r of DATA.conferences) {
-        if (!splitList(r.subcategory).includes(tag)) continue;
-        const c = new Set(splitList(r.category));
-        shared = shared ? new Set([...shared].filter((x) => c.has(x))) : c;
-      }
-      return shared && shared.size ? [...shared][0] : null;
-    }
+    // The categories a subcategory appears under: those of the series it tags.
+    const subCategories = (tag) => FIELD_BAR.subCats.get(tag) || new Map();
 
-    // The category whose chips are shown: the one category filtered on, or the
-    // one the filtered subcategories all belong to.
+    // The category whose chips are shown: the one category filtered on, or one
+    // every filtered subcategory appears under -- the one shown last if it
+    // qualifies, else the one most of their series share.
     function activeCategory() {
       const cats = filters.category;
       if (cats) return cats.size === 1 ? [...cats][0] : null;
       const subs = filters.subcategory;
       if (!subs) return null;
-      const owners = new Set([...subs].map(subCategoryOf));
-      return owners.size === 1 ? [...owners][0] : null;
+      const counts = new Map();
+      [...subs].forEach((t, i) => {
+        for (const [c, n] of subCategories(t)) if (i === 0 || counts.has(c)) counts.set(c, (counts.get(c) || 0) + n);
+        for (const c of [...counts.keys()]) if (!subCategories(t).has(c)) counts.delete(c);
+      });
+      if (lastActive && counts.has(lastActive)) return lastActive;
+      return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
     }
 
     function renderFieldsBar() {
       const active = activeCategory();
+      lastActive = active;
       const subs = filters.subcategory;
       const allOn = !filters.category && !subs;
       const card = (value, icon, label, n, on) =>
@@ -1226,7 +1295,7 @@
           `<button class="sub-chip${on ? " on" : ""}" data-sub="${escapeHtml(value)}" aria-pressed="${on}">` +
           `${escapeHtml(label)}<span class="n">${n.toLocaleString()}</span></button>`;
         chips = chip("", `All ${fieldLabel(active).toLowerCase()}`, FIELD_BAR.cats.get(active) || 0, !subs) +
-          [...FIELD_BAR.subs].filter(([t]) => subCategoryOf(t) === active)
+          [...FIELD_BAR.subs].filter(([t]) => subCategories(t).has(active))
             .map(([t, n]) => chip(t, t, n, !!(subs && subs.has(t)))).join("");
       }
       $("sub-chips").innerHTML = chips;
@@ -1284,8 +1353,6 @@
       document.title = named.length
         ? `${named.map(fieldLabel).join(", ")} conference deadlines and dates | Conference Agent`
         : BASE_TITLE;
-      $("share-link").hidden = !named.length;
-      $("share-copy").textContent = location.href;
     }
 
     // Read the category, subcategory, and search text from the URL (slugs or
@@ -1297,15 +1364,6 @@
         const want = new Set((p.get(key) || "").split(",").map((v) => v.trim()).filter(Boolean).map(fieldSlug));
         const hit = [...known.keys()].filter((v) => want.has(fieldSlug(v)));
         if (hit.length) filters[key] = new Set(hit); else delete filters[key];
-      }
-    }
-
-    async function copyShareLink() {
-      try {
-        await navigator.clipboard.writeText(location.href);
-        toast("Link copied.", true, 2500);
-      } catch (e) {
-        window.getSelection().selectAllChildren($("share-copy"));
       }
     }
 
@@ -1432,6 +1490,49 @@
       }
     }
 
+    // 📅 cal: a small box under the button with the conference's subscribable
+    // feed (a static file written at build time, so calendar apps that subscribe
+    // pick up changes) and a one-time .ics download built in the browser.
+    let cp = null; // { id, btn } while the box is open
+
+    function openCal(id, btn) {
+      closeFilter();
+      if (np) closeNotify();
+      $("columns-panel").hidden = true;
+      const r = DATA.byId[id];
+      cp = { id, btn };
+      $("cp-conf").textContent = (r && (r.acronym || r.name)) || id;
+      const urls = ConferenceCalendar.feedUrls(id, location.origin);
+      $("cp-webcal").href = urls.webcal;
+      $("cp-google").href = urls.google;
+      $("cp-copy").dataset.url = urls.https;
+      $("cal-pop").hidden = false;
+      placeCal();
+    }
+
+    function placeCal() {
+      const pop = $("cal-pop");
+      const b = cp.btn.getBoundingClientRect();
+      const maxLeft = window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8;
+      pop.style.left = `${Math.max(window.scrollX + 8, Math.min(window.scrollX + b.right - pop.offsetWidth, maxLeft))}px`;
+      pop.style.top = `${window.scrollY + b.bottom + 4}px`;
+    }
+
+    function closeCal() {
+      cp = null;
+      $("cal-pop").hidden = true;
+    }
+
+    async function copyFeedUrl() {
+      const url = $("cp-copy").dataset.url;
+      try {
+        await navigator.clipboard.writeText(url);
+        toast("Feed URL copied. Add it in your calendar app as a subscription (\"from URL\").", true, 6000);
+      } catch (e) {
+        window.prompt("Copy this feed URL:", url);
+      }
+    }
+
     // Load the catalog snapshot once, then run the initial search. All later
     // searches filter this in memory.
     async function loadData() {
@@ -1529,7 +1630,8 @@
             `<tr><td><span class="date-recent">red</span></td><td class="muted">past within the last 3 months</td></tr>` +
             `<tr><td><span class="date-old">orange</span></td><td class="muted">past more than 3 months ago</td></tr>` +
           `</table>` +
-          `<p class="muted" style="margin:6px 0 0">A deadline turns red the moment its time passes (its Deadline time, or the end of the day in AoE when none is given).</p>`;
+          `<p class="muted" style="margin:6px 0 0">A deadline turns <span class="date-recent">red</span> the moment its time passes (its Deadline time, or the end of the day in AoE when none is given).</p>` +
+          `<p class="muted" style="margin:10px 0 0">Location and Cost show the upcoming edition's value, or the previous edition's in <span class="from-prior">orange</span> until the next is published (a conference held in the same place every year is not marked).</p>`;
       } catch (e) { /* non-fatal */ }
     }
 
@@ -1587,21 +1689,41 @@
 
     $("search-btn").addEventListener("click", () => { setNlStatus(""); newSearch(); });
     $("csv-btn").addEventListener("click", exportCsv);
-    // Per-row calendar download (delegated, since rows re-render on each search).
+    // Per-row calendar and email buttons (delegated, since rows re-render on each search).
     $("results-body").addEventListener("click", (e) => {
+      const mark = e.target.closest(".ext-mark");
+      if (mark) {
+        e.stopPropagation();
+        const note = mark.closest("td").querySelector(".ext-note");
+        if (note) note.hidden = !note.hidden;
+        return;
+      }
       const nb = e.target.closest(".notify-btn");
       if (nb) {
         e.stopPropagation();
+        if (cp) closeCal();
         if (np && np.btn === nb) closeNotify(); else openNotify(nb.dataset.confId, nb);
         return;
       }
-      const btn = e.target.closest(".cal-btn");
+      const btn = e.target.closest(".cal-open");
       if (!btn) {
         openCellFilter(e);
         return;
       }
-      const row = DATA.byId[btn.dataset.confId];
+      e.stopPropagation();
+      if (cp && cp.btn === btn) closeCal(); else openCal(btn.dataset.confId, btn);
+    });
+    $("results-body").addEventListener("keydown", (e) => {
+      if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("ext-mark")) {
+        e.preventDefault();
+        e.target.click();
+      }
+    });
+    $("cp-copy").addEventListener("click", copyFeedUrl);
+    $("cp-download").addEventListener("click", () => {
+      const row = cp && DATA.byId[cp.id];
       if (row) ConferenceCalendar.downloadIcs(row);
+      closeCal();
     });
     $("columns-btn").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1616,6 +1738,7 @@
       if (fp && !e.target.closest("#filter-pop")) closeFilter();
       if (tp && !e.target.closest("#time-pop")) closeTimePop();
       if (np && !e.target.closest("#notify-pop")) closeNotify();
+      if (cp && !e.target.closest("#cal-pop")) closeCal();
     });
     $("notify-pop").addEventListener("submit", submitNotify);
     $("np-cancel").addEventListener("click", closeNotify);
@@ -1625,7 +1748,6 @@
     });
     $("cat-grid").addEventListener("click", onFieldsBarClick);
     $("sub-chips").addEventListener("click", onFieldsBarClick);
-    $("share-copy").addEventListener("click", copyShareLink);
     // Back / Forward step through field selections.
     window.addEventListener("popstate", () => {
       if (!DATA.conferences.length) return;
@@ -1662,9 +1784,10 @@
       if (fp) closeFilter();
       if (tp) closeTimePop();
       if (np) closeNotify();
+      if (cp) closeCal();
     });
-    window.addEventListener("resize", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); });
-    document.querySelector(".table-wrap").addEventListener("scroll", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); });
+    window.addEventListener("resize", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
+    document.querySelector(".table-wrap").addEventListener("scroll", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
     $("query").addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
       // Enter runs the keyword/boolean search; Ctrl/Cmd+Enter runs AI search.

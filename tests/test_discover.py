@@ -54,18 +54,18 @@ def test_to_conference_maps_dates_and_enums():
         _extracted(
             upcoming_start_date="2026-11-29",
             upcoming_abstract_deadline="2026-04-08",
-            location="Chicago, IL",
+            upcoming_location="Chicago, IL",
             attendance="45,000",
             attendance_year="2025",
             attendance_source="https://www.rsna.org/annual-meeting/attendance",
             remote_option="Hybrid",
-            cost="$1,095",
+            upcoming_cost="$1,095",
         )
     )
     assert conf is not None
     assert conf.id == "rsna-annual-meeting"
     assert conf.subcategory == "radiology"  # normalized to lowercase
-    assert conf.category == "medicine"  # derived from the subcategory
+    assert conf.category == ""  # none extracted; category is not derived
     assert conf.upcoming_start_date == date(2026, 11, 29)
     assert conf.location == "Chicago, IL"
     # Attendance is parsed (commas stripped); size is derived from it.
@@ -79,12 +79,13 @@ def test_to_conference_maps_dates_and_enums():
 
 def test_to_conference_parses_multiple_subcategories():
     conf = _to_conference(
-        _extracted(acronym="miccai", name="MICCAI", subcategory="Radiology, Machine Learning")
+        _extracted(acronym="miccai", name="MICCAI", subcategory="Radiology, Machine Learning",
+                   category="Artificial Intelligence, Medicine")
     )
     assert conf is not None
     assert conf.subcategories == ["radiology", "machine learning"]
     assert conf.subcategory == "radiology, machine learning"
-    # The broad category is derived from those subcategories.
+    # The broad categories are extracted alongside, in canonical order.
     assert conf.categories == ["medicine", "artificial intelligence"]
 
 
@@ -147,8 +148,6 @@ def test_to_conference_requires_identity_fields():
 def test_seed_list_is_well_formed():
     # Each seed is a (acronym, name, subcategory) tuple. The subcategory element is
     # a string or a tuple of strings (a conference may span several fields).
-    from conference_agent.models import SUBCATEGORY_TO_CATEGORY
-
     assert SEED_CONFERENCES
     # Series are indexed by name, so no two seeds may share a name id.
     ids = [Conference(acronym=a, name=n, subcategory=s).id for a, n, s in SEED_CONFERENCES]
@@ -160,10 +159,6 @@ def test_seed_list_is_well_formed():
         conf = Conference(acronym=acronym, name=name, subcategory=subcategory)
         assert conf.id == name_id(name)
         assert conf.subcategories == subs
-        # Every seed subcategory must be mapped so its broad category derives.
-        for sub in subs:
-            assert sub in SUBCATEGORY_TO_CATEGORY, f"{acronym}: '{sub}' is unmapped"
-        assert conf.categories  # a derived category is always present
         # A seed carries no attendance, so its size is blank until discovery.
         assert conf.size is None
 

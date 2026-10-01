@@ -14,6 +14,10 @@ local refresh job (``scripts/notify_subscribers.py``) after each refresh:
    button, so importing it updates the existing events in place), and signed
    unsubscribe links.
 
+Separately, :func:`send_reminders` emails each subscriber once when one of the
+series' upcoming submission deadlines is ``SUBSCRIBER_REMINDER_DAYS`` days away
+or closer (state in ``data/reminder_state.json``).
+
 The snapshot entry for a series only advances once its emails are sent (or it
 has no subscribers), so a failed send is retried on the next run. The first run
 has no snapshot and only records one.
@@ -134,17 +138,46 @@ def fetch_subscriptions(site_url: str, secret: str, timeout: float = 30) -> Dict
     return by_id
 
 
-def new_edition_year(changes: List[Change]) -> Optional[int]:
+def drop_finished_edition(changes: List[Change], conf: Conference) -> List[Change]:
+    """*changes* without the blanks left by moving a finished edition to prior.
+
+    ``database.roll_past_editions`` clears the upcoming slots once a meeting is
+    over and keeps the same dates in the prior slots, which the site shows in
+    their place. An upcoming field that went from a date to blank while the
+    prior slot now holds that date is that move, not news.
+    """
+    return [
+        (label, old, new)
+        for label, old, new in changes
+        if not (
+            new is None
+            and old is not None
+            and (attr := _ATTR_FOR_LABEL[label]).startswith("upcoming_")
+            and _as_text(getattr(conf, "prior_" + attr[len("upcoming_"):], None)) == old
+        )
+    ]
+
+
+def _as_text(value) -> Optional[str]:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value if value != "" else None
+
+
+def new_edition_year(changes: List[Change], prior_start: Optional[date] = None) -> Optional[int]:
     """The new edition's year when *changes* record an edition rollover, else ``None``.
 
     A rollover is a conference start that moves forward by more than
     ``database.NEW_EDITION_GAP_DAYS`` -- the same rule ``_roll_editions`` uses to
-    shift the stored upcoming edition into the prior slots.
+    shift the stored upcoming edition into the prior slots. When the previous
+    edition had already been moved to prior (so the old start is blank),
+    ``prior_start`` is compared instead.
     """
     for label, old, new in changes:
-        if _ATTR_FOR_LABEL.get(label) == "upcoming_start_date" and old and new:
-            old_d, new_d = date.fromisoformat(old), date.fromisoformat(new)
-            if (new_d - old_d).days > NEW_EDITION_GAP_DAYS:
+        if _ATTR_FOR_LABEL.get(label) == "upcoming_start_date" and new:
+            old_d = date.fromisoformat(old) if old else prior_start
+            new_d = date.fromisoformat(new)
+            if old_d and (new_d - old_d).days > NEW_EDITION_GAP_DAYS:
                 return new_d.year
     return None
 
@@ -178,7 +211,7 @@ def build_update_email(
     label = conf.acronym or conf.name
     one = unsubscribe_url(site_url, secret, to_address, subscription_id or conf.id)
     everything = unsubscribe_url(site_url, secret, to_address, "*")
-    year = new_edition_year(changes)
+    year = new_edition_year(changes, conf.prior_start_date)
     if year:
         subject = f"{label} {year} dates announced"
         intro = f"The {year} edition of {conf.name} ({label}) has been announced on Conference Agent."
@@ -221,6 +254,27 @@ def build_update_email(
         filename=f"{conf.id}.ics",
     )
     return msg
+
+
+def subscribers_by_id(
+    fetch: Callable[[], Dict[str, List[str]]],
+    resolve: Optional[Callable[[Iterable[str]], Dict[str, str]]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Current id -> {email: the id that subscription is stored under}.
+
+    ``fetch`` returns addresses by stored id; ``resolve`` maps stored ids
+    (current or former) to current ones, omitting unknown ids. Without it, ids
+    are taken as current.
+    """
+    stored = fetch()
+    moved = resolve(list(stored)) if resolve is not None else {k: k for k in stored}
+    subscribers: Dict[str, Dict[str, str]] = {}
+    for stored_id, emails in stored.items():
+        cid = moved.get(stored_id)
+        for email in emails:
+            if cid is not None:
+                subscribers.setdefault(cid, {}).setdefault(email, stored_id)
+    return subscribers
 
 
 @dataclass
@@ -271,18 +325,11 @@ def notify_subscribers(
 
     report.changed = {
         cid: changes
-        for cid, (_, snap) in current.items()
-        if cid in state and (changes := diff_snapshots(state[cid], snap))
+        for cid, (conf, snap) in current.items()
+        if cid in state
+        and (changes := drop_finished_edition(diff_snapshots(state[cid], snap), conf))
     }
-    stored = fetch() if report.changed else {}
-    moved = resolve(list(stored)) if resolve is not None else {k: k for k in stored}
-    # Current id -> {email: the id that subscription is stored under}.
-    subscribers: Dict[str, Dict[str, str]] = {}
-    for stored_id, emails in stored.items():
-        cid = moved.get(stored_id)
-        for email in emails:
-            if cid is not None:
-                subscribers.setdefault(cid, {}).setdefault(email, stored_id)
+    subscribers = subscribers_by_id(fetch, resolve) if report.changed else {}
 
     for cid, (conf, snap) in current.items():
         if cid not in report.changed:
@@ -309,6 +356,155 @@ def notify_subscribers(
 
     log(
         f"{len(report.changed)} series changed; sent {len(report.sent)} email(s)"
+        + (f", {len(report.failed)} failed" if report.failed else "")
+        + "."
+    )
+    return report
+
+
+# --- Deadline reminders --------------------------------------------------------
+
+# (kind, label) for the deadlines a reminder is sent for. The kind matches the
+# ``upcoming_<kind>_deadline`` attribute and, with "_" -> "-", the calendar kind.
+REMINDER_KINDS: Tuple[Tuple[str, str], ...] = (
+    ("abstract", "Abstract deadline"),
+    ("late_abstract", "Late abstract deadline"),
+    ("paper", "Paper deadline"),
+)
+
+
+def due_reminders(
+    conferences: Iterable[Conference], today: date, lead_days: int
+) -> List[Tuple[Conference, str, date]]:
+    """``(conference, kind, deadline)`` for each upcoming deadline within ``lead_days``.
+
+    A deadline is due from ``lead_days`` before it through its own day, so a run
+    that was missed (or a deadline added late) still produces one reminder.
+    """
+    due = []
+    for conf in conferences:
+        for kind, _ in REMINDER_KINDS:
+            deadline = getattr(conf, f"upcoming_{kind}_deadline")
+            if deadline is not None and 0 <= (deadline - today).days <= lead_days:
+                due.append((conf, kind, deadline))
+    return due
+
+
+def _when(deadline: date, today: date) -> str:
+    days = (deadline - today).days
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "tomorrow"
+    return f"in {days} days"
+
+
+def build_reminder_email(
+    conf: Conference,
+    kind: str,
+    deadline: date,
+    today: date,
+    to_address: str,
+    from_address: str,
+    site_url: str,
+    secret: str,
+    subscription_id: Optional[str] = None,
+) -> EmailMessage:
+    """The reminder for one subscriber that a deadline of ``conf`` is close."""
+    from conference_agent.calendar_sync import deadline_time_for
+
+    label = conf.acronym or conf.name
+    what = dict(REMINDER_KINDS)[kind]
+    when = _when(deadline, today)
+    one = unsubscribe_url(site_url, secret, to_address, subscription_id or conf.id)
+    everything = unsubscribe_url(site_url, secret, to_address, "*")
+    day = f"{deadline:%A, %B} {deadline.day}, {deadline.year}"
+    lines = [f"The {what.lower()} for {conf.name} ({label}) is {when}: {day}."]
+    time_text = deadline_time_for(conf, kind.replace("_", "-"))
+    if time_text:
+        lines.append(f"Deadline time: {time_text}")
+    if conf.url:
+        lines += ["", f"Conference website: {conf.url}"]
+    lines += [
+        "",
+        "Confirm the deadline on the official site; it can change.",
+        "",
+        f"Browse all conferences: {site_url}",
+        "",
+        f"Stop emails about {label}: {one}",
+        f"Stop all Conference Agent emails: {everything}",
+    ]
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Reminder: {label} {what.lower()} {when} ({deadline:%b} {deadline.day})"
+    msg["From"] = f"Conference Agent <{from_address}>"
+    msg["To"] = to_address
+    msg["List-Unsubscribe"] = f"<{one}>"
+    msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    msg.set_content("\n".join(lines) + "\n")
+    return msg
+
+
+@dataclass
+class ReminderReport:
+    due: List[Tuple[str, str, date]] = field(default_factory=list)  # (id, kind, deadline)
+    sent: List[Tuple[str, str, str]] = field(default_factory=list)  # (id, kind, email)
+    failed: List[Tuple[str, str, str]] = field(default_factory=list)
+
+
+def send_reminders(
+    conferences: Iterable[Conference],
+    state_path: Path,
+    site_url: str,
+    secret: str,
+    from_address: str,
+    send: Callable[[EmailMessage], None],
+    subscribers: Callable[[], Dict[str, Dict[str, str]]],
+    lead_days: int,
+    today: Optional[date] = None,
+    log: Callable[[str], None] = print,
+) -> ReminderReport:
+    """Email each subscriber once when a subscribed series' deadline is near.
+
+    ``subscribers`` returns current id -> {email: stored id} (see
+    :func:`subscribers_by_id`); it is called only when a reminder is due. The
+    state file records, per ``<id>|<kind>|<deadline>``, the addresses already
+    reminded, so each subscriber gets one reminder per deadline, a failed send is
+    retried on the next run, and a moved deadline is reminded again. Entries for
+    past deadlines are pruned.
+    """
+    today = today or date.today()
+    report = ReminderReport()
+    state: Dict[str, List[str]] = load_state(state_path) or {}
+    due = due_reminders(conferences, today, lead_days)
+    report.due = [(c.id, kind, d) for c, kind, d in due]
+    subs = subscribers() if due else {}
+    for conf, kind, deadline in due:
+        key = f"{conf.id}|{kind}|{deadline.isoformat()}"
+        done = set(state.get(key, []))
+        for email, stored_id in sorted(subs.get(conf.id, {}).items()):
+            if email in done:
+                continue
+            try:
+                send(
+                    build_reminder_email(
+                        conf, kind, deadline, today, email, from_address, site_url, secret,
+                        subscription_id=stored_id,
+                    )
+                )
+                done.add(email)
+                report.sent.append((conf.id, kind, email))
+            except Exception as exc:  # keep going; retried next run
+                report.failed.append((conf.id, kind, email))
+                log(f"  reminder failed for {conf.id} {kind} -> {email}: {exc}")
+        if done:
+            state[key] = sorted(done)
+    save_state(
+        state_path,
+        {k: v for k, v in state.items() if date.fromisoformat(k.rsplit("|", 1)[1]) >= today},
+    )
+    log(
+        f"{len(due)} deadline(s) within {lead_days} days; sent {len(report.sent)} reminder(s)"
         + (f", {len(report.failed)} failed" if report.failed else "")
         + "."
     )

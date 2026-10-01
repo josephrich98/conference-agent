@@ -4,14 +4,16 @@
  *
  * The static site has no server, so a row's "📅 cal" button builds the .ics text
  * here and downloads it as a Blob. The output mirrors the Python feed: up to four
- * all-day events for the upcoming edition (abstract deadline, late abstract
+ * all-day events for the upcoming edition, or the prior one when no upcoming
+ * date is known (abstract deadline, late abstract
  * deadline, paper deadline, conference dates), each with reminders at the
  * configured lead times, RFC 5545
  * line folding, and a stable base32hex-derived UID per event so re-downloading
  * updates the event in place rather than duplicating it.
  *
- * (The whole-list subscribe feed was dropped in the static migration; only the
- * per-row download remains, which is what this module serves.)
+ * Subscribable feeds are static files written by `scripts/build_static.py` from
+ * the Python builder (`/c/<id>/calendar.ics`, `/field/<tag>/calendar.ics`,
+ * `/calendar.ics`); this module serves the one-time download and their URLs.
  */
 
 // Mirrors conference_agent/config.py.
@@ -270,50 +272,64 @@ function localDeadlineTime(time, tz, dateIso, timeZone, military) {
   return clock;
 }
 
-// The upcoming-edition events a row yields (mirrors _edition_events).
+const EDITION_DATES = [
+  "abstract_deadline",
+  "late_abstract_deadline",
+  "paper_deadline",
+  "start_date",
+  "end_date",
+];
+
+// "upcoming", or "prior" when no upcoming date is known (mirrors calendar_edition).
+function calendarEdition(row) {
+  return EDITION_DATES.some((d) => row[`upcoming_${d}`]) ? "upcoming" : "prior";
+}
+
+// The edition's events a row yields (mirrors _edition_events).
 function editionEvents(row) {
   const events = [];
   const acronym = row.acronym || "";
   const label = `${acronym} ${row.name || ""}`;
   const url = row.url ? `\n${row.url}` : "";
+  const ed = calendarEdition(row);
+  const get = (field) => row[`${ed}_${field}`];
 
-  if (row.upcoming_abstract_deadline) {
+  if (get("abstract_deadline")) {
     events.push({
       kind: "abstract",
       summary: `${acronym} — abstract deadline`,
-      start: row.upcoming_abstract_deadline,
-      end: row.upcoming_abstract_deadline,
+      start: get("abstract_deadline"),
+      end: get("abstract_deadline"),
       description: `Abstract submission deadline for ${label}.${deadlineNote(row, "abstract")}${url}`,
     });
   }
-  if (row.upcoming_late_abstract_deadline) {
+  if (get("late_abstract_deadline")) {
     events.push({
       kind: "late-abstract",
       summary: `${acronym} — late abstract deadline`,
-      start: row.upcoming_late_abstract_deadline,
-      end: row.upcoming_late_abstract_deadline,
+      start: get("late_abstract_deadline"),
+      end: get("late_abstract_deadline"),
       description:
         `Late abstract deadline (poster-only or late-breaking round) ` +
         `for ${label}.${deadlineNote(row, "late-abstract")}${url}`,
     });
   }
-  if (row.upcoming_paper_deadline) {
+  if (get("paper_deadline")) {
     events.push({
       kind: "paper",
       summary: `${acronym} — paper deadline`,
-      start: row.upcoming_paper_deadline,
-      end: row.upcoming_paper_deadline,
+      start: get("paper_deadline"),
+      end: get("paper_deadline"),
       description: `Full paper / manuscript deadline for ${label}.${deadlineNote(row, "paper")}${url}`,
     });
   }
-  if (row.upcoming_start_date) {
-    const end = row.upcoming_end_date || row.upcoming_start_date;
-    const year = row.upcoming_start_date.split("-")[0];
+  if (get("start_date")) {
+    const start = get("start_date");
     events.push({
       kind: "conference",
-      summary: `${acronym} ${year}`,
-      start: row.upcoming_start_date,
-      end,
+      summary: `${acronym} ${start.split("-")[0]}`,
+      start,
+      end: get("end_date") || start,
       description: `${label} conference dates.${url}`,
     });
   }
@@ -377,14 +393,29 @@ function downloadIcs(row) {
   URL.revokeObjectURL(a.href);
 }
 
+/**
+ * Subscribable feed URLs for one conference: the static `/c/<id>/calendar.ics`
+ * that `scripts/build_static.py` writes, as https, as webcal (opens the system
+ * calendar app), and as a Google Calendar "add by URL" link.
+ */
+function feedUrls(id, origin) {
+  const https = `${origin}/c/${encodeURIComponent(id)}/calendar.ics`;
+  const webcal = https.replace(/^https?:/, "webcal:");
+  return {
+    https,
+    webcal,
+    google: `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}`,
+  };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     conferenceToIcs, eventId, localDeadlineTime, deadlineInstant, deadlineEntries,
-    deadlineTimeText, deadlineTimeFor, DEADLINE_ZONES,
+    deadlineTimeText, deadlineTimeFor, DEADLINE_ZONES, feedUrls,
   };
 } else {
   window.ConferenceCalendar = {
     conferenceToIcs, downloadIcs, localDeadlineTime, deadlineInstant, deadlineEntries,
-    formatDeadlineSpec,
+    formatDeadlineSpec, feedUrls,
   };
 }

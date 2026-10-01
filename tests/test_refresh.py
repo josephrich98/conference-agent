@@ -168,8 +168,9 @@ def test_watch_tier_soon_for_next_month():
     assert watch_tier(_row(upcoming_start_date=TODAY + timedelta(days=30)), TODAY) == "soon"
     # Further out, with nothing else pending -> not watched.
     assert watch_tier(_row(upcoming_start_date=TODAY + timedelta(days=45)), TODAY) is None
-    # A deadline 20 days past is neither daily nor upcoming.
-    assert watch_tier(_row(upcoming_abstract_deadline=TODAY - timedelta(days=20)), TODAY) is None
+    # A deadline 20 days past is neither daily nor upcoming; with nothing after
+    # it, the edition is over -> the recent tier.
+    assert watch_tier(_row(upcoming_abstract_deadline=TODAY - timedelta(days=20)), TODAY) == "recent"
 
 
 def test_watch_tier_stale_and_initial():
@@ -347,3 +348,29 @@ def test_run_watch_passes_each_targets_attendance_hint(tmp_path):
     assert passed == [
         {"HNT — Hint Test Meeting": {"source": "https://hnt.org/2025-stats", "year": 2025}}
     ]
+
+
+def test_watch_tier_recent_after_an_edition_ends():
+    # The meeting ended a month ago, nothing newer: watched as recent until the
+    # stale window opens six months after the anchor.
+    row = _row(prior_abstract_deadline=date(2026, 2, 1), prior_start_date=date(2026, 5, 10))
+    assert watch_tier(row, TODAY) == "recent"
+    assert watch_tier(row, date(2026, 8, 1)) == "stale"
+    # A future edition on record is not recent.
+    assert watch_tier(_row(prior_start_date=date(2026, 5, 10),
+                           upcoming_start_date=TODAY + timedelta(days=300)), TODAY) is None
+
+
+def test_run_watch_moves_finished_editions_to_prior(tmp_path):
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [Conference(acronym="P", name="P", subcategory="genomics", url="https://p.org",
+                    upcoming_start_date=TODAY - timedelta(days=10),
+                    upcoming_end_date=TODAY - timedelta(days=7))],
+        db_url=url,
+    )
+    run_watch(url, today=TODAY, check=lambda u: _check("fp"),
+              refresh=lambda targets, attendance_hints=None: [], log=lambda m: None)
+    row = _rows(url)["p"]
+    assert row.upcoming_start_date is None
+    assert row.prior_start_date == TODAY - timedelta(days=10)

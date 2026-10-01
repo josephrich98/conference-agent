@@ -24,10 +24,10 @@ const TEXT_FIELDS = {
   category: ["category"],
   subcategory: ["subcategory"],
   format: ["format"],
-  location: ["location"],
+  location: ["upcoming_location", "prior_location"],
   size: ["size"],
   remote: ["remote_option"],
-  cost: ["cost"],
+  cost: ["upcoming_cost", "prior_cost"],
   registration: ["upcoming_registration", "prior_registration"],
   deadline_time: ["deadline_time"],
 };
@@ -67,10 +67,12 @@ const BARE_SEARCH_COLUMNS = [
   "category",
   "subcategory",
   "format",
-  "location",
+  "upcoming_location",
+  "prior_location",
   "size",
   "remote_option",
-  "cost",
+  "upcoming_cost",
+  "prior_cost",
   "upcoming_registration",
   "prior_registration",
   "deadline_time",
@@ -480,14 +482,16 @@ function buildPredicate(query) {
 // --- Sorting (mirrors web/app.py _run_search ordering) ---------------------
 
 const SORTABLE = new Set([
-  "acronym", "name", "category", "subcategory", "format", "location", "size",
+  "acronym", "name", "category", "subcategory", "format", "upcoming_location", "size",
   "attendance", "remote_option", "upcoming_start_date", "upcoming_abstract_deadline",
   "upcoming_late_abstract_deadline", "upcoming_paper_deadline", "conference_month",
   "abstract_month", "late_abstract_month", "paper_month",
 ]);
 
-// Date sort columns fall back to the prior edition's value, matching the table.
+// Date sort columns (and location) fall back to the prior edition's value,
+// matching the table.
 const DATE_SORT_FALLBACK = {
+  upcoming_location: "prior_location",
   upcoming_start_date: "prior_start_date",
   upcoming_abstract_deadline: "prior_abstract_deadline",
   upcoming_late_abstract_deadline: "prior_late_abstract_deadline",
@@ -558,6 +562,7 @@ function sortRows(rows, sort, order, monthStart, dayStart) {
     dayStart = dayStart ?? now.getDate();
   }
   dayStart = dayStart ?? 1;
+  if (sort === "location") sort = "upcoming_location"; // former key
   if (!SORTABLE.has(sort)) sort = "upcoming_start_date";
   const descending = order === "desc";
   const fallback = DATE_SORT_FALLBACK[sort];
@@ -612,11 +617,13 @@ const KEYWORD_FIELDS = [
   ["name", 3],
   ["subcategory", 3],
   ["category", 2],
-  ["location", 2],
+  ["upcoming_location", 2],
+  ["prior_location", 2],
   ["format", 1],
   ["remote_option", 1],
   ["size", 1],
-  ["cost", 0.5],
+  ["upcoming_cost", 0.5],
+  ["prior_cost", 0.5],
   ["deadline_time", 0.5],
   ["upcoming_registration", 0.5],
   ["prior_registration", 0.5],

@@ -13,17 +13,15 @@ def _quoted_names(block: str) -> set[str]:
 
 
 def test_form_layout_names_only_real_fields():
-    """GROUPS / LABELS / HINTS in add.html may only name `add` input fields."""
+    """ROWS / EXCLUDED in add.html may only name `add` input fields."""
     html = (_STATIC / "add.html").read_text(encoding="utf-8")
     names = {f["name"] for f in add_field_schema()["fields"]}
-    groups = re.search(r"const GROUPS = \[(.*?)\];", html, re.S).group(1)
-    laid_out = set(re.findall(r"fields: \[([^\]]*)\]", groups))
-    laid_out = set().union(*(_quoted_names(b) for b in laid_out))
-    excluded = _quoted_names(re.search(r"const EXCLUDED = new Set\(\[(.*?)\]\)", html).group(1))
+    laid_out = _quoted_names(re.search(r"const ROWS = \[(.*?)\];", html, re.S).group(1))
+    excluded = _quoted_names(re.search(r"const EXCLUDED = new Set\(\[(.*?)\]\)", html, re.S).group(1))
     assert laid_out <= names
     assert excluded <= names
     # Every field the form accepts is placed explicitly (unplaced ones would
-    # still render under "Other details", but should be laid out on purpose).
+    # still render on their own line, but should be laid out on purpose).
     assert names - excluded == laid_out
 
 
@@ -34,3 +32,5 @@ def test_schema_exposes_form_vocabularies():
     assert kinds["conference_dates"] == "dates"
     assert kinds["subcategory"] == "tags"
     assert kinds["attendance"] == "int"
+    assert kinds["category"] == "tags"
+    assert "medicine" in schema["categories"]

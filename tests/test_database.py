@@ -209,17 +209,16 @@ def test_query_filters_by_subcategory_category_and_size(tmp_path):
     url = _db_url(tmp_path)
     upsert_conferences(
         [
-            _conf(acronym="RSNA", attendance=45000),  # massive, radiology -> medicine
-            _conf(acronym="SIIM", name="SIIM", attendance=500),  # medium, radiology
-            _conf(acronym="ASHG", name="ASHG", subcategory="genomics", attendance=12000),  # biology
+            _conf(acronym="RSNA", category="medicine", attendance=45000),  # massive
+            _conf(acronym="SIIM", name="SIIM", category="medicine", attendance=500),  # medium
+            _conf(acronym="ASHG", name="ASHG", subcategory="genomics", category="biology", attendance=12000),
         ],
         db_url=url,
     )
 
     assert {c.id for c in query_conferences(subcategory="radiology", db_url=url)} == {RSNA_ID, "siim"}
     assert {c.id for c in query_conferences(size="massive", db_url=url)} == {RSNA_ID, "ashg"}
-    # The derived broad category groups the two radiology rows under medicine,
-    # while genomics sorts into biology.
+    # The broad category filter groups rows by their stored categories.
     assert {c.id for c in query_conferences(category="medicine", db_url=url)} == {RSNA_ID, "siim"}
     assert {c.id for c in query_conferences(category="biology", db_url=url)} == {"ashg"}
 
@@ -232,6 +231,7 @@ def test_multi_subcategory_round_trips_and_filters_by_each_tag(tmp_path):
                 acronym="MICCAI",
                 name="Medical Image Computing",
                 subcategories=["radiology", "machine learning"],
+                categories=["medicine", "artificial intelligence"],
             )
         ],
         db_url=url,
@@ -239,13 +239,13 @@ def test_multi_subcategory_round_trips_and_filters_by_each_tag(tmp_path):
     got = query_conferences(db_url=url)[0]
     assert got.subcategories == ["radiology", "machine learning"]
     assert got.subcategory == "radiology, machine learning"
-    # The derived category spans both domains (medicine + artificial intelligence).
+    # The stored category spans both domains (medicine + artificial intelligence).
     assert got.categories == ["medicine", "artificial intelligence"]
     assert got.category == "medicine, artificial intelligence"
     # A substring subcategory filter finds the row under either of its tags.
     assert {c.id for c in query_conferences(subcategory="radiology", db_url=url)} == {"medical-image-computing"}
     assert {c.id for c in query_conferences(subcategory="machine learning", db_url=url)} == {"medical-image-computing"}
-    # And the broad category filter finds it under either derived bucket.
+    # And the broad category filter finds it under either bucket.
     assert {c.id for c in query_conferences(category="medicine", db_url=url)} == {"medical-image-computing"}
     assert {c.id for c in query_conferences(category="artificial intelligence", db_url=url)} == {"medical-image-computing"}
 
@@ -258,10 +258,9 @@ def test_seed_subcategory_floor_overrides_discovered_freetext(tmp_path):
         db_url=url,
     )
     # ...but the curated seed tags win (ESICM's seed subcategory is critical care
-    # medicine), and the derived category follows (-> medicine).
+    # medicine).
     got = query_conferences(db_url=url)[0]
     assert got.subcategories == ["critical care medicine"]
-    assert got.categories == ["medicine"]
 
     # The floor also applies on the offline merge path.
     merge_records([{"id": name_id(ESICM_NAME), "subcategory": "garbage, more garbage"}], db_url=url)
@@ -277,27 +276,22 @@ def test_non_seed_row_keeps_its_own_subcategories(tmp_path):
     )
     got = query_conferences(db_url=url)[0]
     assert got.subcategories == ["origami", "vision"]
-    # Neither tag is in the map, so the derived category is empty.
-    assert got.categories == []
 
 
-def test_recompute_categories_rederives_from_subcategories(tmp_path):
-    from sqlalchemy.orm import Session
-
-    from conference_agent.database import ConferenceRow, get_engine, recompute_categories
-
+def test_category_is_stored_and_kept_when_a_run_omits_it(tmp_path):
     url = _db_url(tmp_path)
-    upsert_conferences([_conf(acronym="NOVEL", name="Novel", subcategory="radiology")], db_url=url)
-    # Simulate a stale stored category (e.g. left over before the map changed).
-    engine = get_engine(url)
-    with Session(engine) as s:
-        s.get(ConferenceRow, "novel").category = "physics"
-        s.commit()
-    changed = recompute_categories(url)
-    assert changed == 1
-    assert query_conferences(db_url=url)[0].categories == ["medicine"]
-    # Idempotent: a second pass changes nothing.
-    assert recompute_categories(url) == 0
+    upsert_conferences([_conf(acronym="NOVEL", name="Novel", subcategory="origami", category="art, medicine")], db_url=url)
+    assert query_conferences(db_url=url)[0].categories == ["medicine", "art"]
+    # A discovery run that reports no category keeps the stored one...
+    upsert_conferences([_conf(acronym="NOVEL", name="Novel", subcategory="origami")], db_url=url)
+    assert query_conferences(db_url=url)[0].categories == ["medicine", "art"]
+    # ...one that reports a category replaces it, and a merge does the same.
+    upsert_conferences([_conf(acronym="NOVEL", name="Novel", subcategory="origami", category="physics")], db_url=url)
+    assert query_conferences(db_url=url)[0].categories == ["physics"]
+    merge_records([{"id": "novel", "categories": ["stats"]}], db_url=url)
+    assert query_conferences(db_url=url)[0].categories == ["stats"]
+    merge_records([{"id": "novel", "notes": "x"}], db_url=url)
+    assert query_conferences(db_url=url)[0].categories == ["stats"]
 
 
 def test_month_columns_are_sql_computed_from_dates(tmp_path):
@@ -507,7 +501,7 @@ def test_merge_records_skips_unknown_id_without_identity(tmp_path):
     # With identity supplied, an unknown id is inserted.
     assert (
         merge_records(
-            [{"id": "NEW", "name": "New Meeting", "category": "radiology"}], db_url=url
+            [{"id": "NEW", "name": "New Meeting", "subcategory": "radiology"}], db_url=url
         )
         == 1
     )
@@ -684,3 +678,236 @@ def test_delete_and_rename_helpers(tmp_path):
     assert rename_conference("aaa", "Aaa Renamed", db_url=url) == "aaa-renamed"
     assert delete_conferences(["bbb", "missing"], db_url=url) == 1
     assert [c.id for c in query_conferences(db_url=url)] == ["aaa-renamed"]
+
+
+def _row(url, cid):
+    with Session(get_engine(url)) as session:
+        row = session.get(ConferenceRow, cid)
+        session.expunge(row)
+        return row
+
+
+def test_roll_past_editions_moves_a_finished_edition_to_prior(tmp_path):
+    from conference_agent.database import roll_past_editions
+
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [
+            _conf(
+                prior_start_date=date(2025, 11, 30),
+                upcoming_abstract_deadline=date(2026, 4, 8),
+                upcoming_start_date=date(2026, 6, 1),
+                upcoming_end_date=date(2026, 6, 5),
+                upcoming_registration="Early bird: Jan 5 - Mar 1",
+            )
+        ],
+        db_url=url,
+    )
+    # Still running on its last day: not rolled.
+    assert roll_past_editions(url, today=date(2026, 6, 5))["rolled"] == []
+    out = roll_past_editions(url, today=date(2026, 6, 6))
+    assert out == {"duplicate": [], "rolled": [RSNA_ID]}
+    row = _row(url, RSNA_ID)
+    assert row.prior_start_date == date(2026, 6, 1)
+    assert row.prior_end_date == date(2026, 6, 5)
+    assert row.prior_abstract_deadline == date(2026, 4, 8)
+    assert row.prior_registration == "Early bird: Jan 5 - Mar 1"
+    assert row.upcoming_start_date is None and row.upcoming_abstract_deadline is None
+    # The displayed month falls back to prior, so it is unchanged.
+    assert row.conference_month == 6
+    # Idempotent.
+    assert roll_past_editions(url, today=date(2026, 6, 6)) == {"duplicate": [], "rolled": []}
+
+
+def test_roll_past_editions_keeps_an_edition_with_a_deadline_ahead(tmp_path):
+    from conference_agent.database import roll_past_editions
+
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [_conf(upcoming_start_date=date(2026, 6, 1), upcoming_paper_deadline=date(2026, 8, 1))],
+        db_url=url,
+    )
+    assert roll_past_editions(url, today=date(2026, 7, 1))["rolled"] == []
+
+
+def test_roll_past_editions_merges_a_duplicated_edition(tmp_path):
+    from conference_agent.database import roll_past_editions
+
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [_conf(upcoming_start_date=date(2026, 12, 1), upcoming_end_date=date(2026, 12, 4))],
+        db_url=url,
+    )
+    # Write the duplicate straight to the row (the model would collapse it).
+    with Session(get_engine(url)) as session:
+        row = session.get(ConferenceRow, RSNA_ID)
+        row.prior_start_date = date(2026, 12, 1)
+        row.prior_abstract_deadline = date(2026, 5, 1)
+        session.commit()
+    out = roll_past_editions(url, today=date(2026, 10, 1))
+    assert out == {"duplicate": [RSNA_ID], "rolled": []}
+    row = _row(url, RSNA_ID)
+    assert row.prior_start_date is None and row.prior_abstract_deadline is None
+    assert row.upcoming_start_date == date(2026, 12, 1)
+    assert row.upcoming_abstract_deadline == date(2026, 5, 1)  # filled from prior
+
+
+def test_location_and_cost_roll_with_their_edition(tmp_path):
+    from conference_agent.database import roll_past_editions
+
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [_conf(upcoming_start_date=date(2026, 6, 1), location="Boston, MA", cost="$500")],
+        db_url=url,
+    )
+    row = _row(url, RSNA_ID)
+    # The legacy single-value keys fill the upcoming slots.
+    assert (row.upcoming_location, row.upcoming_cost) == ("Boston, MA", "$500")
+    roll_past_editions(url, today=date(2026, 7, 1))
+    row = _row(url, RSNA_ID)
+    assert (row.prior_location, row.prior_cost) == ("Boston, MA", "$500")
+    assert row.upcoming_location is None and row.upcoming_cost is None
+    conf = query_conferences(db_url=url)[0]
+    assert (conf.location, conf.cost) == ("Boston, MA", "$500")
+
+
+def test_stable_location_survives_a_roll_and_a_refresh(tmp_path):
+    from conference_agent.database import roll_past_editions
+
+    url = _db_url(tmp_path)
+    upsert_conferences(
+        [
+            _conf(
+                prior_start_date=date(2025, 6, 1),
+                prior_location="Chicago, IL",
+                upcoming_start_date=date(2026, 6, 1),
+                stable_location=True,
+            )
+        ],
+        db_url=url,
+    )
+    roll_past_editions(url, today=date(2026, 7, 1))
+    row = _row(url, RSNA_ID)
+    # The finished edition had no location of its own; the stable one is kept.
+    assert row.prior_location == "Chicago, IL" and row.stable_location
+    # A discovery run that does not report the flag leaves it set.
+    upsert_conferences([_conf(prior_start_date=date(2026, 6, 1), prior_location="Chicago, IL")], db_url=url)
+    assert _row(url, RSNA_ID).stable_location
+    # An explicit false from a record clears it.
+    merge_records([{"id": RSNA_ID, "stable_location": "false"}], db_url=url)
+    assert not _row(url, RSNA_ID).stable_location
+
+
+def test_merge_records_accepts_legacy_location_and_cost_keys(tmp_path):
+    url = _db_url(tmp_path)
+    upsert_conferences([_conf()], db_url=url)
+    merge_records([{"id": RSNA_ID, "location": "Chicago, IL", "prior_cost": "$100"}], db_url=url)
+    row = _row(url, RSNA_ID)
+    assert (row.upcoming_location, row.prior_cost, row.upcoming_cost) == ("Chicago, IL", "$100", None)
+
+
+def test_legacy_location_and_cost_columns_move_to_the_shown_edition(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE conferences (id VARCHAR PRIMARY KEY, acronym VARCHAR NOT NULL, "
+        "name VARCHAR NOT NULL, subcategory VARCHAR NOT NULL, upcoming_start_date DATE, "
+        "prior_start_date DATE, location TEXT, cost TEXT)"
+    )
+    con.executemany(
+        "INSERT INTO conferences VALUES (?, ?, ?, 'radiology', ?, ?, ?, ?)",
+        [
+            ("a-meeting", "A", "A Meeting", "2026-06-01", None, "Boston", "$1"),
+            ("b-meeting", "B", "B Meeting", None, "2025-06-01", "Vienna", None),
+        ],
+    )
+    con.commit()
+    con.close()
+    url = f"sqlite:///{path}"
+    get_engine(url)
+    a, b = _row(url, "a-meeting"), _row(url, "b-meeting")
+    assert (a.upcoming_location, a.upcoming_cost, a.prior_location) == ("Boston", "$1", None)
+    assert (b.prior_location, b.upcoming_location) == ("Vienna", None)
+    con = sqlite3.connect(path)
+    columns = {r[1] for r in con.execute("PRAGMA table_info(conferences)")}
+    con.close()
+    assert "location" not in columns and "cost" not in columns
+
+
+# --- Deadline extensions ----------------------------------------------------
+
+
+def _rsna_row(db_url):
+    with Session(get_engine(db_url)) as session:
+        row = session.get(ConferenceRow, RSNA_ID)
+        session.expunge(row)
+        return row
+
+
+def test_a_later_deadline_for_the_same_edition_is_recorded_as_an_extension(tmp_path):
+    from datetime import timedelta
+
+    db_url = _db_url(tmp_path)
+    due = date.today() + timedelta(days=5)
+    start = due + timedelta(days=60)
+    upsert_conferences([_conf(upcoming_abstract_deadline=due, upcoming_start_date=start)], db_url)
+    assert _rsna_row(db_url).abstract_deadline_extension is None
+
+    first = due + timedelta(days=5)
+    upsert_conferences([_conf(upcoming_abstract_deadline=first, upcoming_start_date=start)], db_url)
+    second = first + timedelta(days=7)
+    merge_records([{"id": RSNA_ID, "upcoming_abstract_deadline": second.isoformat()}], db_url)
+    # An unchanged deadline adds nothing.
+    merge_records([{"id": RSNA_ID, "upcoming_abstract_deadline": second.isoformat()}], db_url)
+
+    fmt = "%m/%d/%Y"
+    row = _rsna_row(db_url)
+    assert row.abstract_deadline_extension == (
+        f"{due:{fmt}} – {first:{fmt}}\n{first:{fmt}} – {second:{fmt}}"
+    )
+    assert row.paper_deadline_extension is None
+    assert row.late_abstract_deadline_extension is None
+
+
+def test_new_editions_corrections_and_earlier_dates_are_not_extensions(tmp_path):
+    from datetime import timedelta
+
+    from conference_agent.database import _record_extensions
+
+    today = date(2026, 10, 1)
+    row = ConferenceRow(id="x", acronym="X", name="X", subcategory="radiology")
+    row.upcoming_start_date = date(2026, 12, 1)
+    cases = [
+        # (old deadline, new deadline, new start date)
+        (date(2026, 10, 5), date(2027, 10, 5), date(2027, 12, 1)),  # next edition
+        (date(2026, 10, 5), date(2026, 10, 9), date(2027, 12, 1)),  # start moved a year
+        (date(2027, 3, 1), date(2027, 3, 8), date(2026, 12, 1)),  # months ahead: correction
+        (date(2026, 10, 5), date(2026, 10, 1), date(2026, 12, 1)),  # moved earlier
+        (date(2026, 10, 5), today + timedelta(days=200), date(2026, 12, 1)),  # too large a jump
+    ]
+    for old, new, start in cases:
+        before = {"abstract": old, "late_abstract": None, "paper": None, "start": row.upcoming_start_date}
+        row.upcoming_abstract_deadline, row.upcoming_start_date = new, start
+        assert not _record_extensions(row, before, today=today)
+        row.upcoming_start_date = date(2026, 12, 1)
+    assert row.abstract_deadline_extension is None
+
+
+def test_extensions_older_than_five_years_are_dropped(tmp_path):
+    from conference_agent.database import _prune_extensions
+
+    value = "09/30/2020 – 10/05/2020\n09/30/2021 – 10/05/2021\n09/30/2021 – 10/05/2021"
+    assert _prune_extensions(value, date(2026, 10, 1)) == "09/30/2021 – 10/05/2021"
+    assert _prune_extensions("09/30/2020 – 10/05/2020", date(2026, 10, 1)) is None
+
+
+def test_extensions_reach_the_page_but_not_the_csv_columns(tmp_path):
+    from web.app import _RESULT_COLUMNS, _row_to_dict
+
+    db_url = _db_url(tmp_path)
+    upsert_conferences([_conf()], db_url)
+    # Serialized for the table's hover marker, but never a table / CSV column.
+    assert "abstract_deadline_extension" in _row_to_dict(_rsna_row(db_url))
+    assert not any("extension" in col for col in _RESULT_COLUMNS)

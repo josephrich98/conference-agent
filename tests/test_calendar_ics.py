@@ -205,3 +205,67 @@ def test_long_lines_are_folded_to_75_octets():
 def test_url_property_emitted_when_present():
     assert "URL:https://www.rsna.org/annual-meeting" in _ics([_conf()])
     assert "URL:" not in _ics([_conf(url=None)])
+
+
+def test_prior_edition_is_used_when_no_upcoming_date_is_known():
+    conf = _conf(
+        upcoming_abstract_deadline=None,
+        upcoming_paper_deadline=None,
+        upcoming_start_date=None,
+        upcoming_end_date=None,
+        prior_abstract_deadline=date(2025, 4, 9),
+        prior_start_date=date(2025, 11, 30),
+        prior_end_date=date(2025, 12, 4),
+    )
+    assert cs.calendar_edition(conf) == "prior"
+    ics = _ics([conf])
+    assert "DTSTART;VALUE=DATE:20250409" in ics
+    assert "DTSTART;VALUE=DATE:20251130" in ics
+    assert "SUMMARY:RSNA 2025" in ics
+    # Same UIDs as the upcoming edition's events, so a new edition replaces them.
+    assert f"UID:{cs._event_id(conf.id, 'conference')}@conference-agent" in ics.replace("\r\n ", "")
+
+
+def test_upcoming_edition_wins_over_prior():
+    conf = _conf(prior_start_date=date(2025, 11, 30))
+    assert cs.calendar_edition(conf) == "upcoming"
+    assert "20251130" not in _ics([conf])
+
+
+def test_js_calendar_matches_python_for_both_editions():
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    confs = [
+        _conf(abstract_time="23:59", abstract_timezone="AoE"),
+        _conf(
+            upcoming_abstract_deadline=None,
+            upcoming_paper_deadline=None,
+            upcoming_start_date=None,
+            upcoming_end_date=None,
+            prior_late_abstract_deadline=date(2025, 5, 1),
+            prior_start_date=date(2025, 11, 30),
+        ),
+    ]
+    calendar_js = Path(__file__).resolve().parent.parent / "web" / "static" / "calendar.js"
+    rows = [json.loads(c.model_dump_json()) | {"id": c.id} for c in confs]
+    script = (
+        f"const c = require({json.dumps(str(calendar_js))});"
+        "const rows = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+        "process.stdout.write(JSON.stringify(rows.map((r) => c.conferenceToIcs(r, 'RSNA'))));"
+    )
+    out = subprocess.run([node, "-e", script], input=json.dumps(rows),
+                         capture_output=True, text=True, check=True)
+
+    def body(ics):  # DTSTAMP differs by run
+        return [ln for ln in ics.replace("\r\n ", "").split("\r\n") if not ln.startswith("DTSTAMP")]
+
+    for conf, js in zip(confs, json.loads(out.stdout)):
+        assert body(js) == body(_ics([conf], calendar_name="RSNA"))

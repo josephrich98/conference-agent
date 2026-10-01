@@ -41,7 +41,7 @@ export default async function handler(req, res) {
       res,
       200,
       "Confirm update emails",
-      `<p>Email <b>${escapeHtml(email)}</b> when <b>${escapeHtml(id)}</b> changes its deadlines or dates?</p>` +
+      `<p>Email <b>${escapeHtml(email)}</b> when <b>${escapeHtml(id)}</b> changes its deadlines or dates, and a week before each deadline?</p>` +
         `<form method="post" action="/api/confirm">${inputs}<button type="submit">Confirm</button></form>`
     );
   }
@@ -57,7 +57,7 @@ export default async function handler(req, res) {
     res,
     200,
     "Subscribed",
-    `<p><b>${escapeHtml(email)}</b> will get an email, with an updated calendar file, whenever <b>${escapeHtml(id)}</b> changes.</p>` +
+    `<p><b>${escapeHtml(email)}</b> will get an email, with an updated calendar file, whenever <b>${escapeHtml(id)}</b> changes, and a reminder a week before each deadline.</p>` +
       `<p>Each email has an unsubscribe link.</p>`
   );
 }

@@ -61,6 +61,14 @@ _TIME_COLUMNS = [
     for part in ("time", "timezone")
 ]
 
+# Observed deadline extensions (newline-separated "MM/DD/YYYY – MM/DD/YYYY" lines;
+# see ``database._record_extensions``). Carried in each serialized row only so the
+# table can mark an extended deadline with a hover note -- like the times above,
+# they are not table columns and stay out of the CSV / API column list.
+_EXTENSION_COLUMNS = [
+    f"{kind}_deadline_extension" for kind in ("abstract", "late_abstract", "paper")
+]
+
 # Columns that may be used for sorting.
 _SORTABLE = {
     "acronym",
@@ -68,7 +76,7 @@ _SORTABLE = {
     "category",
     "subcategory",
     "format",
-    "location",
+    "upcoming_location",
     "size",
     "attendance",
     "remote_option",
@@ -82,16 +90,20 @@ _SORTABLE = {
     "paper_month",
 }
 
+# Former sort keys, kept so older links still sort the same column.
+_SORT_ALIASES = {"location": "upcoming_location"}
+
 # Size sorts by magnitude, not alphabetically: ascending is massive -> small.
 # Mirrors ``SIZE_SORT_RANK`` in web/static/search.js.
 _SIZE_SORT_RANK = {"massive": 1, "large": 2, "medium": 3, "small": 4}
 
-# Date sort columns fall back to the prior edition's value, matching what the
+# Date sort columns (and location) fall back to the prior edition's value, matching what the
 # table actually displays (upcoming ?? prior ?? "—"). Sorting on the bare
 # upcoming_* column alone bucketed every row whose upcoming date is not yet
 # announced into the NULLs-last group, even though the table shows its prior
 # date — so those rows appeared interleaved with the genuinely-empty ones.
 _DATE_SORT_FALLBACK = {
+    "upcoming_location": "prior_location",
     "upcoming_start_date": "prior_start_date",
     "upcoming_abstract_deadline": "prior_abstract_deadline",
     "upcoming_late_abstract_deadline": "prior_late_abstract_deadline",
@@ -147,11 +159,13 @@ def _ensure_seeded() -> None:
 def _row_to_dict(row: ConferenceRow) -> dict:
     """Serialize a row to a JSON-friendly dict (dates as ISO strings)."""
     out: dict = {}
-    for col in (*_RESULT_COLUMNS, *_TIME_COLUMNS):
+    for col in (*_RESULT_COLUMNS, *_TIME_COLUMNS, *_EXTENSION_COLUMNS):
         value = getattr(row, col)
         if hasattr(value, "isoformat"):
             value = value.isoformat()
         out[col] = value
+    # NULL (a row predating the column) means false.
+    out["stable_location"] = bool(out["stable_location"])
     return out
 
 
@@ -183,6 +197,7 @@ def _run_search(
     if filt is not None:
         stmt = stmt.where(filt)
 
+    sort = _SORT_ALIASES.get(sort, sort)
     if sort not in _SORTABLE:
         sort = "upcoming_start_date"
     primary = getattr(ConferenceRow, sort)

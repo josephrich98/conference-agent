@@ -22,6 +22,7 @@ The output is a self-contained directory::
       calendar.js         # per-row iCalendar (.ics) generation in the browser
       nl_query.js         # natural-language ("AI") search via in-browser WebLLM
       c/<id>/, field/<tag>/, sitemap.xml, robots.txt  # prerendered SEO pages
+      c/<id>/calendar.ics, field/<tag>/calendar.ics, calendar.ics  # subscribable feeds
       data/conferences.json   # the catalog snapshot (minus retired series) + field metadata
       add/index.html      # "Add a conference" form (fields from `add --fields`)
       data/add_fields.json    # the `conference-agent add` input vocabulary, for the form
@@ -42,17 +43,23 @@ import argparse
 import json
 import os
 import shutil
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from seo_pages import slugify, write_pages
+from seo_pages import _field_groups, slugify, write_pages
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from conference_agent.calendar_sync import conferences_to_ics
 from conference_agent.cli import add_field_schema
 from conference_agent.config import DEFAULT_DATABASE_URL
-from conference_agent.database import ConferenceRow, former_ids, get_engine, seed_conferences
-from conference_agent.models import SUBCATEGORY_TO_CATEGORY
+from conference_agent.database import (
+    ConferenceRow,
+    former_ids,
+    get_engine,
+    query_conferences,
+    seed_conferences,
+)
 from conference_agent.refresh import is_retired
 from web.app import _RESULT_COLUMNS, _row_to_dict
 from web.search import field_help
@@ -105,10 +112,47 @@ def _write_redirects(db_url: str, rows: list[dict], out_dir: Path) -> int:
             continue
         for source in (f"/c/{old_path}", f"/c/{old_path}/"):
             redirects.append({"source": source, "destination": f"/c/{new_id}/", "permanent": True})
+    headers = [
+        {
+            "source": "/(.*)\\.ics",
+            "headers": [{"key": "Content-Type", "value": "text/calendar; charset=utf-8"}],
+        }
+    ]
     (out_dir / "vercel.json").write_text(
-        json.dumps({"redirects": redirects}, indent=1) + "\n", encoding="utf-8"
+        json.dumps({"redirects": redirects, "headers": headers}, indent=1) + "\n",
+        encoding="utf-8",
     )
     return len(redirects) // 2
+
+
+def _write_feeds(db_url: str, rows: list[dict], out_dir: Path) -> int:
+    """Write the subscribable calendar feeds; return how many were written.
+
+    One ``calendar.ics`` per exported conference (``c/<id>/``) and per field
+    (``field/<tag>/``), and ``calendar.ics`` at the root for the whole catalog.
+    Calendar apps that subscribe re-fetch them, and the event UIDs are stable, so
+    each redeploy updates the subscribed events in place.
+    """
+    exported = {r["id"] for r in rows}
+    confs = {c.id: c for c in query_conferences(db_url=db_url) if c.id in exported}
+    stamp = datetime.now(timezone.utc)
+
+    def write(path: Path, items, name: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(conferences_to_ics(items, calendar_name=name, dtstamp=stamp), encoding="utf-8")
+
+    for cid, conf in confs.items():
+        write(out_dir / "c" / slugify(cid) / "calendar.ics", [conf], conf.acronym or conf.name)
+    groups = _field_groups(rows)
+    for tag, group in groups.items():
+        items = [confs[r["id"]] for r in group if r["id"] in confs]
+        write(
+            out_dir / "field" / slugify(tag) / "calendar.ics",
+            items,
+            f"{tag.title()} conferences (Conference Agent)",
+        )
+    write(out_dir / "calendar.ics", list(confs.values()), "Conference Agent")
+    return len(confs) + len(groups) + 1
 
 
 def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
@@ -123,9 +167,6 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
         "generated": generated,
         "columns": _RESULT_COLUMNS,
         "fields": field_help()["fields"],
-        # The page's "Browse by field" bar lists each subcategory under the
-        # category it derives.
-        "subcategory_categories": SUBCATEGORY_TO_CATEGORY,
         "conferences": rows,
     }
     (data_dir / "conferences.json").write_text(
@@ -150,6 +191,7 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
         index.read_text(encoding="utf-8").replace("<!--SEO_LINKS-->", seo["browse"]),
         encoding="utf-8",
     )
+    _write_feeds(db_url, rows, out_dir)
     _write_redirects(db_url, rows, out_dir)
     shutil.copyfile(_VERCEL_DIR / "package.json", out_dir / "package.json")
     shutil.copytree(_VERCEL_DIR / "api", out_dir / "api", dirs_exist_ok=True)

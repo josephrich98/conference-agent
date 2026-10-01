@@ -23,6 +23,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 from typing import Iterable, Optional
+from urllib.parse import quote
 
 from conference_agent.models import CATEGORIES
 
@@ -106,6 +107,23 @@ def _page(title: str, description: str, path: str, body: str, jsonld: Iterable[d
     )
 
 
+def _feed_links(page_path: str, what: str) -> str:
+    """Links to subscribe to the ``calendar.ics`` feed next to ``page_path``.
+
+    ``scripts/build_static.py`` writes the feed; a subscribed calendar re-fetches
+    it, so changed deadlines and dates update in place.
+    """
+    https = f"{SITE_URL}{page_path}calendar.ics"
+    webcal = "webcal:" + https.split(":", 1)[1]
+    google = "https://calendar.google.com/calendar/r?cid=" + quote(webcal, safe="")
+    return (
+        f"<p>Subscribe to {_e(what)} in your calendar (updates automatically): "
+        f'<a href="{_e(webcal)}">Apple / Outlook</a> · '
+        f'<a href="{_e(google)}" rel="noopener">Google Calendar</a> · '
+        f'<a href="{_e(https)}">feed URL</a></p>'
+    )
+
+
 def _event_jsonld(row: dict, url: str) -> Optional[dict]:
     start = row.get("upcoming_start_date")
     if not start:
@@ -125,13 +143,21 @@ def _event_jsonld(row: dict, url: str) -> Optional[dict]:
         "eventAttendanceMode": mode,
         "url": url,
     }
-    if row.get("location"):
-        event["location"] = {"@type": "Place", "name": row["location"], "address": row["location"]}
+    place = _upcoming_location(row)
+    if place:
+        event["location"] = {"@type": "Place", "name": place, "address": place}
     elif remote == "virtual":
         event["location"] = {"@type": "VirtualLocation", "url": _safe_url(row.get("url")) or url}
     else:
         return None  # Google requires a location; omit rather than emit invalid markup
     return event
+
+
+def _upcoming_location(row: dict) -> Optional[str]:
+    """The upcoming edition's location; a stable series' prior one stands in."""
+    if row.get("upcoming_location"):
+        return row["upcoming_location"]
+    return row.get("prior_location") if row.get("stable_location") else None
 
 
 def conference_page(row: dict, generated: str) -> tuple[str, str]:
@@ -149,9 +175,9 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Deadline time", row.get("deadline_time")),
         ("Conference dates", _date_range(row.get("upcoming_start_date"), row.get("upcoming_end_date"))),
         ("Registration", row.get("upcoming_registration")),
-        ("Location", row.get("location")),
+        ("Location", _upcoming_location(row)),
         ("Attendance format", row.get("remote_option")),
-        ("Cost", row.get("cost")),
+        ("Cost", row.get("upcoming_cost")),
         ("Submission types", row.get("format")),
         ("Fields", row.get("subcategory")),
         (
@@ -167,6 +193,8 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Paper deadline", _fmt_date(row.get("prior_paper_deadline"))),
         ("Conference dates", _date_range(row.get("prior_start_date"), row.get("prior_end_date"))),
         ("Registration", row.get("prior_registration")),
+        ("Location", row.get("prior_location")),
+        ("Cost", row.get("prior_cost")),
     ]
 
     def table(items):
@@ -186,6 +214,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
     )
     if prior_tbl:
         parts.append(f"<h2>Prior edition</h2>{prior_tbl}")
+    parts.append(_feed_links(path, f"{label}'s deadlines and dates"))
     parts.append(
         f'<p><a href="/?q={_e(label)}">Add {_e(label)} to your calendar or get update emails</a> '
         "from the main table.</p>"
@@ -242,7 +271,8 @@ def field_page(tag: str, rows: list[dict], generated: str) -> tuple[str, str]:
         f"<p>{len(rows)} {_e(tag)} conference series with abstract and paper deadlines, "
         "conference dates, registration, and cost.</p>"
         f"<ul>{''.join(items)}</ul>"
-        f'<p><a href="/?{"category" if tag in CATEGORIES else "subcategory"}={slugify(tag)}">'
+        + _feed_links(path, f"every {tag} deadline and conference")
+        + f'<p><a href="/?{"category" if tag in CATEGORIES else "subcategory"}={slugify(tag)}">'
         "Search and filter these in the full table</a>, "
         "add deadlines to your calendar, or get email updates.</p>"
         f'<p class="muted">Data last updated {_e(generated)}.</p>'

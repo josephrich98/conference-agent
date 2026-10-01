@@ -40,9 +40,9 @@ def _store(url):
     upsert_conferences(
         [
             Conference(acronym="ZZA", name="Zeta Imaging Meeting", subcategory="radiology",
-                       attendance=20000),
+                       category="medicine", attendance=20000),
             Conference(acronym="ZZB", name="Zeta Optics Workshop", subcategory="optics",
-                       attendance=100),
+                       category="physics", attendance=100),
         ],
         db_url=url,
     )

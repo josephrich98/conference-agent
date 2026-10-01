@@ -1,12 +1,13 @@
 """Calendar export — an iCalendar (``.ics``) feed of a conference's deadlines.
 
-Each conference can yield up to four all-day events for its upcoming edition:
+Each conference can yield up to four all-day events for its upcoming edition
+(or, when no upcoming date is known yet, its prior edition):
 
-- the upcoming abstract submission deadline
-- the upcoming late abstract deadline (the second, later abstract deadline some
+- the abstract submission deadline
+- the late abstract deadline (the second, later abstract deadline some
   series publish — a poster-only deadline or a late-breaking round)
-- the upcoming full paper / manuscript deadline
-- the upcoming conference dates (start through end)
+- the full paper / manuscript deadline
+- the conference dates (start through end)
 
 (Registration is a free-text field — windows, not a single date — so it yields
 no calendar event.)
@@ -88,59 +89,86 @@ def _deadline_note(conf: Conference, kind: str) -> str:
     return f"\nDeadline time: {time_text}" if time_text else ""
 
 
+_EDITION_DATES = (
+    "abstract_deadline",
+    "late_abstract_deadline",
+    "paper_deadline",
+    "start_date",
+    "end_date",
+)
+
+
+def calendar_edition(conf: Conference) -> str:
+    """``"upcoming"``, or ``"prior"`` when no date of the upcoming edition is known.
+
+    A finished edition is moved into the prior slots
+    (``database.roll_past_editions``) before the next one is announced. Falling
+    back to it keeps its events in subscribed calendars until then, the same
+    "upcoming, falling back to prior" rule the table uses. Mirrored in
+    ``web/static/calendar.js``.
+    """
+    if any(getattr(conf, f"upcoming_{d}") for d in _EDITION_DATES):
+        return "upcoming"
+    return "prior"
+
+
 def _edition_events(conf: Conference) -> List[CalEvent]:
-    """The upcoming-edition events a conference yields.
+    """The events a conference yields for its edition (see :func:`calendar_edition`).
 
     Up to four: the abstract deadline, the late abstract deadline, the paper
-    deadline, and the conference dates. Only populated upcoming fields produce an
+    deadline, and the conference dates. Only populated fields produce an
     event. ``start``/``end`` are inclusive (a single-day deadline has
     ``start == end``). Registration is free text, so it produces no event.
     """
     events: List[CalEvent] = []
     label = f"{conf.acronym} {conf.name}"
     url = f"\n{conf.url}" if conf.url else ""
+    ed = calendar_edition(conf)
 
-    if conf.upcoming_abstract_deadline:
+    def get(field: str) -> Optional[date]:
+        return getattr(conf, f"{ed}_{field}")
+
+    if get("abstract_deadline"):
         events.append(
             CalEvent(
                 "abstract",
                 f"{conf.acronym} — abstract deadline",
-                conf.upcoming_abstract_deadline,
-                conf.upcoming_abstract_deadline,
+                get("abstract_deadline"),
+                get("abstract_deadline"),
                 f"Abstract submission deadline for {label}."
                 f"{_deadline_note(conf, 'abstract')}{url}",
             )
         )
-    if conf.upcoming_late_abstract_deadline:
+    if get("late_abstract_deadline"):
         events.append(
             CalEvent(
                 "late-abstract",
                 f"{conf.acronym} — late abstract deadline",
-                conf.upcoming_late_abstract_deadline,
-                conf.upcoming_late_abstract_deadline,
+                get("late_abstract_deadline"),
+                get("late_abstract_deadline"),
                 f"Late abstract deadline (poster-only or late-breaking round) "
                 f"for {label}.{_deadline_note(conf, 'late-abstract')}{url}",
             )
         )
-    if conf.upcoming_paper_deadline:
+    if get("paper_deadline"):
         events.append(
             CalEvent(
                 "paper",
                 f"{conf.acronym} — paper deadline",
-                conf.upcoming_paper_deadline,
-                conf.upcoming_paper_deadline,
+                get("paper_deadline"),
+                get("paper_deadline"),
                 f"Full paper / manuscript deadline for {label}."
                 f"{_deadline_note(conf, 'paper')}{url}",
             )
         )
-    if conf.upcoming_start_date:
-        end = conf.upcoming_end_date or conf.upcoming_start_date
+    if get("start_date"):
+        start = get("start_date")
         events.append(
             CalEvent(
                 "conference",
-                f"{conf.acronym} {conf.upcoming_start_date.year}",
-                conf.upcoming_start_date,
-                end,
+                f"{conf.acronym} {start.year}",
+                start,
+                get("end_date") or start,
                 f"{label} conference dates.{url}",
             )
         )

@@ -27,6 +27,11 @@ const MAX_TAGS = 20;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const URL_FIELDS = new Set(["url", "attendance_source"]);
+// Deadline extension history: the kinds, and how many entries / how far back
+// (matches database.EXTENSION_RETENTION_YEARS; older entries are not kept).
+const EXTENSION_KINDS = ["abstract", "late_abstract", "paper"];
+const MAX_EXTENSIONS = 20;
+const EXTENSION_RETENTION_YEARS = 5;
 
 class InputError extends Error {}
 
@@ -61,6 +66,30 @@ function isHttpUrl(value) {
   }
 }
 
+// The oldest extended date kept, as YYYY-MM-DD.
+function extensionCutoff() {
+  const d = new Date();
+  d.setUTCFullYear(d.getUTCFullYear() - EXTENSION_RETENTION_YEARS);
+  return d.toISOString().slice(0, 10);
+}
+
+function extensions(value) {
+  if (!Array.isArray(value)) throw new InputError("deadline extensions: expected a list.");
+  if (value.length > MAX_EXTENSIONS) throw new InputError("Too many deadline extensions.");
+  const cutoff = extensionCutoff();
+  return value.map((entry) => {
+    if (!entry || typeof entry !== "object") throw new InputError("deadline extensions: malformed entry.");
+    const type = String(entry.type || "").trim().toLowerCase();
+    const original = String(entry.original || "").trim();
+    const extended = String(entry.extended || "").trim();
+    if (!EXTENSION_KINDS.includes(type)) throw new InputError("deadline extensions: unknown submission type.");
+    if (!isDate(original) || !isDate(extended)) throw new InputError("deadline extensions: give an original and an extended date.");
+    if (extended <= original) throw new InputError("deadline extensions: the extended date must be after the original.");
+    if (extended < cutoff) throw new InputError(`deadline extensions: entries more than ${EXTENSION_RETENTION_YEARS} years old are not kept.`);
+    return { type, original, extended };
+  });
+}
+
 function text(name, value) {
   const s = String(value).trim();
   if (s.length > MAX_TEXT) throw new InputError(`${name} is too long.`);
@@ -93,6 +122,9 @@ function cleanRecord(raw, schema) {
       if (list.length > 2 || !list.every(isDate)) throw new InputError(`${label}: give a start and optional end date.`);
       if (list.length === 2 && list[1] < list[0]) throw new InputError(`${label}: the end date is before the start date.`);
       if (list.length) out[name] = list;
+    } else if (f.kind === "extensions") {
+      const list = extensions(value);
+      if (list.length) out[name] = list;
     } else if (f.kind === "date") {
       const s = text(label, value);
       if (!isDate(s)) throw new InputError(`${label}: not a valid date.`);
@@ -106,6 +138,10 @@ function cleanRecord(raw, schema) {
         throw new InputError("Attendance year must be between 1900 and this year.");
       }
       out[name] = n;
+    } else if (f.kind === "bool") {
+      const s = String(value).trim().toLowerCase();
+      if (!["true", "false"].includes(s)) throw new InputError(`${label}: must be true or false.`);
+      out[name] = s === "true";
     } else if (f.kind === "enum") {
       const s = text(label, value).toLowerCase();
       if (!schema.remote_options.includes(s)) throw new InputError(`${label}: unknown option.`);
@@ -120,7 +156,6 @@ function cleanRecord(raw, schema) {
   }
   if (!out.conference_name) throw new InputError("Conference name is required.");
   if (out.conference_name.length > 300) throw new InputError("Conference name is too long.");
-  if (!out.subcategory) throw new InputError("Give at least one subcategory (the conference's field).");
   return out;
 }
 

@@ -21,7 +21,9 @@ a former id, such as the old upper-cased acronym, also resolves) or by
 (ISO ``YYYY-MM-DD``), the free-text ``prior_registration`` /
 ``upcoming_registration`` (registration windows, e.g. "Early bird: Jan 5 - Mar 1;
 Regular: Mar 2 - conference"), plus
-``location``, ``url``, ``cost``, ``notes``, ``remote_option``, ``attendance``,
+``prior_location`` / ``upcoming_location``, ``prior_cost`` / ``upcoming_cost``
+(the legacy ``location`` / ``cost`` keys fill the upcoming slot),
+``stable_location``, ``url``, ``notes``, ``remote_option``, ``attendance``,
 ``attendance_year``, ``attendance_source``. The ``*_late_abstract_deadline``
 fields hold the second, later abstract deadline some series publish (a
 poster-only deadline, or a late-breaking round); the main abstract deadline is

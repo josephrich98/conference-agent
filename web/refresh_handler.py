@@ -25,11 +25,15 @@ import os
 
 from conference_agent.config import (
     DEFAULT_DATABASE_URL,
-    STANDING_SUBCATEGORIES,
     monthly_subcategories,
     weekly_subcategories,
 )
-from conference_agent.database import known_attendance_sources, upsert_conferences
+from conference_agent.database import (
+    discovery_subcategories,
+    known_attendance_sources,
+    query_conferences,
+    upsert_conferences,
+)
 from conference_agent.discover import discover_conferences
 from conference_agent.refresh import due_subcategories, mark_subcategories_checked
 
@@ -38,7 +42,7 @@ from conference_agent.refresh import due_subcategories, mark_subcategories_check
 _CADENCE_SUBCATEGORIES = {
     "weekly": weekly_subcategories,
     "monthly": monthly_subcategories,
-    "all": lambda: list(STANDING_SUBCATEGORIES),
+    "all": list,
 }
 
 
@@ -51,7 +55,7 @@ def _resolve_subcategories(cadence: str, db_url: str) -> list[str]:
             f"unknown cadence {cadence!r}; expected one of "
             f"{sorted([*_CADENCE_SUBCATEGORIES, 'due'])}"
         )
-    return selector()
+    return selector(discovery_subcategories(db_url))
 
 
 def handler(event, context):  # noqa: ANN001 - Lambda event/context are untyped
@@ -64,10 +68,12 @@ def handler(event, context):  # noqa: ANN001 - Lambda event/context are untyped
         return {"cadence": cadence, "subcategories": [], "upserted": 0}
 
     total = 0
+    known = query_conferences(db_url=db_url)
     for subcategory in subcategories:
         hints = known_attendance_sources(db_url=db_url, subcategories=[subcategory])
         conferences = discover_conferences(
-            subcategories=[subcategory], backend="api", attendance_hints=hints
+            subcategories=[subcategory], backend="api", attendance_hints=hints,
+            known=known,
         )
         total += upsert_conferences(conferences, db_url=db_url)
 

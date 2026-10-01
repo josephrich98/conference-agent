@@ -42,7 +42,7 @@ export default async function handler(req, res) {
       await addSubscription(email, id);
       return res.status(200).json({
         status: "subscribed",
-        message: `Subscribed. ${email} will get an email when ${label} changes.`,
+        message: `Subscribed. ${email} will get an email when ${label} changes, and a reminder a week before each deadline.`,
       });
     }
 
@@ -62,7 +62,7 @@ export default async function handler(req, res) {
       subject: `Confirm update emails for ${label}`,
       text:
         `Someone (hopefully you) asked Conference Agent to email ${email} when ` +
-        `${conf.name || label} changes its deadlines or dates.\n\n` +
+        `${conf.name || label} changes its deadlines or dates, and a week before each deadline.\n\n` +
         `Confirm within 3 days:\n${site}/api/confirm?${q}\n\n` +
         `If this wasn't you, ignore this email and nothing will be sent.\n`,
     });

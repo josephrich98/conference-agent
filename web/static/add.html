@@ -38,11 +38,23 @@
       border-radius: 8px;
     }
     legend { font-weight: 600; font-size: 14px; padding: 0 4px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 16px; }
+    .row { display: grid; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); gap: 0 16px; }
+    @media (max-width: 560px) { .row { grid-template-columns: minmax(0, 1fr); } }
     .field { margin-bottom: 12px; min-width: 0; }
-    .field.wide { grid-column: 1 / -1; }
-    .field.range { grid-column: span 2; }
-    @media (max-width: 560px) { .field.range { grid-column: auto; } }
+    .inline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .inline > input { flex: 1 1 240px; min-width: 0; }
+    .inline .checks { padding-top: 0; white-space: nowrap; }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chips:not(:empty) { margin-bottom: 5px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 4px 2px 9px; font-size: 12px;
+      border: 1px solid var(--border); border-radius: 999px;
+      background: var(--accent-weak); color: var(--accent);
+    }
+    .chip button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 3px; }
+    .picker { display: flex; gap: 6px; }
+    .picker > * { flex: 1 1 0; min-width: 0; }
     label.name { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; }
     .req { color: var(--err); }
     .hint { color: var(--muted); font-size: 12px; margin: 3px 0 0; line-height: 1.4; }
@@ -64,16 +76,16 @@
     .pair span { color: var(--muted); font-size: 13px; }
     .checks { display: flex; gap: 14px; flex-wrap: wrap; padding-top: 4px; font-size: 14px; }
     .checks label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
-    .suggest { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px; }
-    .suggest button {
-      padding: 2px 8px;
-      font-size: 12px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: var(--accent-weak);
-      color: var(--accent);
-      cursor: pointer;
+    .ext-head, .ext-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 28px; gap: 8px; align-items: center; }
+    .ext-head { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+    .ext-row { margin-bottom: 6px; }
+    .ext-row button, button.ext-add {
+      border: 1px solid var(--border); border-radius: 6px; background: #fff;
+      color: var(--accent); cursor: pointer; font-size: 15px; line-height: 1;
     }
+    .ext-row button { height: 28px; color: var(--muted); }
+    button.ext-add { padding: 5px 10px; font-size: 13px; }
+    @media (max-width: 560px) { .ext-head { display: none; } .ext-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; } .ext-row select { grid-column: 1 / -1; } }
     .dupe { color: var(--err); font-size: 12px; margin: 3px 0 0; }
     .dupe a { color: inherit; }
     .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
@@ -102,8 +114,9 @@
       Suggest a conference series that is missing from the table. Your entry is
       submitted as a pull request on
       <a href="https://github.com/josephrich98/conference-agent/pulls" target="_blank" rel="noopener noreferrer">GitHub</a>
-      and appears on the site after review. Only the name and field are required;
-      fill in whatever else you know. Everything you enter, including your name
+      and appears on the site after review. Only the name is
+      required; fill in whatever else you know. Give the upcoming edition's dates
+      if announced, otherwise the most recent edition's. Everything you enter, including your name
       if you give one, is public.
     </p>
 
@@ -111,7 +124,6 @@
       <div id="groups"><p class="intro">Loading the form…</p></div>
 
       <fieldset>
-        <legend>About you (optional)</legend>
         <div class="field">
           <label class="name" for="submitter">Your name or GitHub username</label>
           <input type="text" id="submitter" maxlength="200" autocomplete="name" />
@@ -133,63 +145,88 @@
   <script>
     // The form is generated from data/add_fields.json, the same input
     // vocabulary as `conference-agent add --fields json`, so a new `add` field
-    // appears here without editing this page. GROUPS only lays fields out; any
-    // field it does not name lands in "Other details". The submission is a
-    // `conference-agent add --json` record.
-    const GROUPS = [
-      { title: "Conference", fields: ["conference_name", "conference_acronym", "url", "subcategory", "format", "location", "remote_option"] },
-      { title: "Upcoming edition", fields: ["conference_dates", "abstract_due", "late_abstract_due", "paper_due", "registration"] },
-      { title: "Deadline times", note: "The time of day each deadline closes, and its time zone, if published.", fields: ["abstract_time", "abstract_timezone", "late_abstract_time", "late_abstract_timezone", "paper_time", "paper_timezone"] },
-      { title: "Prior edition", note: "Last year's schedule, shown until the upcoming one is announced.", fields: ["prior_conference_dates", "prior_abstract_due", "prior_late_abstract_due", "prior_paper_due", "prior_registration"] },
-      { title: "Attendance and cost", fields: ["attendance", "attendance_year", "attendance_source", "cost"] },
-      { title: "Other details", fields: ["notes"] },
+    // appears here without editing this page. ROWS only lays fields out, one
+    // line per entry; any field it does not name gets its own line before
+    // "notes". The submission is a `conference-agent add --json` record.
+    const ROWS = [
+      ["conference_name"],
+      ["conference_acronym", "url"],
+      ["category", "subcategory"],
+      ["format"],
+      ["attendance", "attendance_year", "attendance_source"],
+      ["remote_option"],
+      ["abstract_due", "abstract_time", "abstract_timezone"],
+      ["late_abstract_due", "late_abstract_time", "late_abstract_timezone"],
+      ["paper_due", "paper_time", "paper_timezone"],
+      ["deadline_extensions"],
+      ["conference_dates"],
+      ["location"],
+      ["registration"],
+      ["cost"],
+      ["notes"],
     ];
-    // Fields the form leaves out: renaming is an update, and deadline_time is a
-    // shorthand for the structured time fields above.
-    const EXCLUDED = new Set(["new_conference_name", "deadline_time"]);
+    // Fields the form leaves out: renaming is an update, deadline_time is a
+    // shorthand for the structured time fields above, the prior_* edition
+    // fields are filled from the same inputs (see toEditions), and
+    // prior_location / stable_location by the radio buttons beside Location.
+    const EXCLUDED = new Set([
+      "new_conference_name", "deadline_time",
+      "prior_conference_dates", "prior_abstract_due", "prior_late_abstract_due", "prior_paper_due",
+      "prior_registration", "prior_cost", "prior_location", "stable_location",
+    ]);
+    // The dates and their prior-edition counterparts; they describe the
+    // previous edition when the meeting is over (see isPastEdition).
+    const DATE_PRIOR_OF = {
+      conference_dates: "prior_conference_dates", abstract_due: "prior_abstract_due",
+      late_abstract_due: "prior_late_abstract_due", paper_due: "prior_paper_due",
+    };
+    // Fields with Upcoming / Prior (/ Stable) radio buttons beside them.
+    const EDITION_CHOICES = {
+      location: [["upcoming", "Upcoming"], ["prior", "Prior"], ["stable", "Stable"]],
+      registration: [["upcoming", "Upcoming"], ["prior", "Prior"]],
+      cost: [["upcoming", "Upcoming"], ["prior", "Prior"]],
+    };
+    const editions = {};  // field name -> { read, follow(past) }
     const LABELS = {
-      conference_name: "Full name",
-      conference_acronym: "Acronym",
+      conference_name: "Conference name",
+      conference_acronym: "Conference name acronym",
       url: "Official website",
-      subcategory: "Field(s)",
-      format: "Submission formats",
-      remote_option: "Remote attendance",
-      conference_dates: "Conference dates",
-      prior_conference_dates: "Conference dates",
+      category: "Category(s)",
+      subcategory: "Subcategory(s)",
+      format: "Format",
+      remote_option: "Remote",
+      attendance: "Attendance",
+      attendance_year: "Year of attendance",
+      attendance_source: "Source of attendance",
       abstract_due: "Abstract deadline",
       late_abstract_due: "Late abstract deadline",
       paper_due: "Paper deadline",
-      prior_abstract_due: "Abstract deadline",
-      prior_late_abstract_due: "Late abstract deadline",
-      prior_paper_due: "Paper deadline",
-      prior_registration: "Registration",
-      attendance: "Annual attendance",
-      attendance_year: "Year of that attendance figure",
-      attendance_source: "Source for the attendance figure",
+      conference_dates: "Conference dates",
+      deadline_extensions: "Deadline extension history",
+    };
+    const PLACEHOLDERS = {
+      conference_name: "e.g. Radiological Society of North America Annual Meeting",
+      conference_acronym: "e.g. RSNA",
+      attendance: "e.g. 45000",
+      location: "e.g. Chicago, IL, USA",
+      registration: "e.g. Early bird: Jan 5 – Mar 1; Regular: Mar 2 – conference",
+      cost: "e.g. Members $450, non-members $650, students $150",
+      abstract_timezone: "e.g. AoE, ET, CET", late_abstract_timezone: "e.g. AoE, ET, CET",
+      paper_timezone: "e.g. AoE, ET, CET",
     };
     // Short help for the form; other fields show their `add --fields` text.
     const HINTS = {
-      conference_name: "The full series name, e.g. Radiological Society of North America Annual Meeting.",
-      conference_acronym: "e.g. RSNA. Leave blank if the series has none.",
-      url: "",
-      subcategory: "One or more specific fields, comma-separated, e.g. radiology, machine learning.",
-      remote_option: "",
-      conference_dates: "Start and (if more than one day) end.",
-      prior_conference_dates: "",
-      abstract_due: "If there are two abstract deadlines, the earlier, main one.",
-      late_abstract_due: "Only if the edition has a second, later abstract deadline (e.g. late-breaking or poster-only).",
+      conference_name: "", conference_acronym: "", url: "", category: "", subcategory: "",
+      format: "", remote_option: "", conference_dates: "",
+      abstract_due: "If there are two, the earlier, main one.",
+      late_abstract_due: "Only for a second, later round (e.g. late-breaking).",
       paper_due: "Full-paper deadline, for proceedings venues only.",
-      prior_abstract_due: "", prior_late_abstract_due: "", prior_paper_due: "",
-      registration: "e.g. Early bird: Jan 5 – Mar 1; Regular: Mar 2 – conference.",
-      prior_registration: "",
-      abstract_timezone: "e.g. AoE, ET, PT, CET, UTC.",
-      late_abstract_time: "", late_abstract_timezone: "", paper_time: "", paper_timezone: "",
-      abstract_time: "",
-      attendance: "Typical number of attendees per year. Sets the size bucket.",
-      attendance_year: "",
-      attendance_source: "Link to where the attendance figure is stated.",
-      cost: "e.g. Members $450, non-members $650, students $150.",
-      notes: "Anything else a reviewer should know, such as where you found the dates.",
+      abstract_time: "", abstract_timezone: "", late_abstract_time: "", late_abstract_timezone: "",
+      paper_time: "", paper_timezone: "",
+      attendance: "", attendance_year: "", attendance_source: "",
+      location: "", registration: "", cost: "",
+      deadline_extensions: "Past extensions of this conference's deadlines, if any. Entries more than 5 years old are not kept.",
+      notes: "Not displayed online (for internal use only).",
     };
 
     const $ = (id) => document.getElementById(id);
@@ -200,7 +237,8 @@
 
     let schema = null;
     let known = new Map();  // conference id -> row, for the duplicate check
-    let readers = [];       // [name, () => value] per rendered field
+    let readers = [];       // [name, () => value, input] per rendered field
+    let knownTags = { category: [], subcategory: [] }; // dropdown options
 
     function el(tag, attrs = {}, ...children) {
       const node = document.createElement(tag);
@@ -214,9 +252,123 @@
       return node;
     }
 
-    function renderField(f, subcategories) {
+    // A multi-value input: pick from a dropdown or type a new value (Enter or
+    // comma adds it). `options` lists the dropdown's values.
+    function tagPicker(id, options) {
+      const values = [];
+      const chips = el("div", { class: "chips" });
+      const select = el("select", { "aria-label": "Choose from the list" });
+      const text = el("input", { type: "text", id, autocomplete: "off", spellcheck: "false", placeholder: "or type a new one" });
+      const fill = () => select.replaceChildren(el("option", { value: "", text: "Choose…" }),
+        ...options.filter((v) => !values.includes(v)).map((v) => el("option", { value: v, text: v })));
+      const draw = () => {
+        chips.replaceChildren(...values.map((v) => {
+          const x = el("button", { type: "button", "aria-label": `Remove ${v}`, text: "×" });
+          x.addEventListener("click", () => { values.splice(values.indexOf(v), 1); draw(); });
+          return el("span", { class: "chip" }, v, x);
+        }));
+        fill();
+      };
+      const add = (v) => {
+        v = String(v || "").trim().toLowerCase();
+        if (v && !values.includes(v)) { values.push(v); draw(); }
+      };
+      select.addEventListener("change", () => { add(select.value); select.value = ""; });
+      const commit = () => { text.value.split(",").forEach(add); text.value = ""; };
+      text.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+      text.addEventListener("input", () => { if (text.value.includes(",")) commit(); });
+      text.addEventListener("blur", commit);
+      draw();
+      return {
+        node: el("div", {}, chips, el("div", { class: "picker" }, select, text)),
+        input: text,
+        read: () => [...values, ...text.value.split(",").map((t) => t.trim().toLowerCase()).filter((t) => t && !values.includes(t))],
+      };
+    }
+
+    // Deadline extension history: one line per extension (submission type,
+    // original date, extended date); "+" adds a line. Extended dates more than
+    // EXTENSION_YEARS old are not kept (database.EXTENSION_RETENTION_YEARS).
+    const EXTENSION_YEARS = 5;
+    const EXTENSION_KINDS = [["abstract", "Abstract"], ["late_abstract", "Late abstract"], ["paper", "Paper"]];
+    const extensionCutoff = () => {
+      const d = new Date();
+      d.setFullYear(d.getFullYear() - EXTENSION_YEARS);
+      return d.toLocaleDateString("en-CA");
+    };
+    function extensionList(id) {
+      const lines = [];
+      const list = el("div");
+      const addLine = () => {
+        const type = el("select", { "aria-label": "Submission type", id: lines.length ? undefined : id },
+          ...EXTENSION_KINDS.map(([v, t]) => el("option", { value: v, text: t })));
+        const original = el("input", { type: "date", "aria-label": "Original date", min: extensionCutoff() });
+        const extended = el("input", { type: "date", "aria-label": "Extended date", min: extensionCutoff() });
+        // The extended date's calendar opens after the original.
+        original.addEventListener("input", () => { extended.min = original.value || extensionCutoff(); });
+        const remove = el("button", { type: "button", "aria-label": "Remove this extension", title: "Remove", text: "×" });
+        const line = { type, original, extended, node: el("div", { class: "ext-row" }, type, original, extended, remove) };
+        remove.addEventListener("click", () => {
+          if (lines.length === 1) { original.value = extended.value = ""; type.value = "abstract"; return; }
+          lines.splice(lines.indexOf(line), 1);
+          line.node.remove();
+          if (!type.id) return;
+          lines[0].type.id = id;  // keep the label pointing at the first line
+        });
+        lines.push(line);
+        list.append(line.node);
+        return line;
+      };
+      addLine();
+      const plus = el("button", { type: "button", class: "ext-add", text: "+ Add an extension" });
+      plus.addEventListener("click", () => addLine().original.focus());
+      return {
+        node: el("div", {},
+          el("div", { class: "ext-head", "aria-hidden": "true" },
+            el("span", { text: "Submission type" }), el("span", { text: "Original date" }), el("span", { text: "Extended date" })),
+          list, plus),
+        input: lines[0].type,
+        // Lines with either date entered; problems() reports incomplete ones.
+        read: () => lines.filter((l) => l.original.value || l.extended.value)
+          .map((l) => ({ type: l.type.value, original: l.original.value, extended: l.extended.value })),
+        // Mark and describe incomplete or invalid lines.
+        check: () => {
+          const out = [];
+          const cutoff = extensionCutoff();
+          for (const l of lines) {
+            const o = l.original.value, x = l.extended.value;
+            if (!o && !x) continue;
+            if (!o || !x) { out.push("Deadline extension: enter both the original and the extended date."); (o ? l.extended : l.original).classList.add("invalid"); }
+            else if (x <= o) { out.push("Deadline extension: the extended date must be after the original."); l.extended.classList.add("invalid"); }
+            else if (x < cutoff) { out.push(`Deadline extension: entries more than ${EXTENSION_YEARS} years old are not kept.`); l.extended.classList.add("invalid"); }
+          }
+          return [...new Set(out)];
+        },
+      };
+    }
+    let extensionChecks = [];  // check() of each rendered extension list
+
+    // Upcoming / Prior (/ Stable) radio buttons. Until one is clicked they
+    // follow the dates: Prior when the entered meeting is already over.
+    function editionRadios(name) {
+      let touched = false;
+      const radios = EDITION_CHOICES[name].map(([value, text]) =>
+        [el("input", { type: "radio", name: `${name}-edition`, value, checked: value === "upcoming" }), text]);
+      radios.forEach(([r]) => r.addEventListener("change", () => { touched = true; }));
+      editions[name] = {
+        read: () => radios.find(([r]) => r.checked)[0].value,
+        follow: (past) => {
+          if (touched || radios.find(([r]) => r.checked)[0].value === "stable") return;
+          radios.find(([r]) => r.value === (past ? "prior" : "upcoming"))[0].checked = true;
+        },
+      };
+      return el("div", { class: "checks", role: "radiogroup", "aria-label": `Which edition the ${name} is for` },
+        ...radios.map(([r, text]) => el("label", {}, r, text)));
+    }
+
+    function renderField(f) {
       const id = `f-${f.name}`;
-      const required = f.name === "conference_name" || f.name === "subcategory";
+      const required = f.name === "conference_name";
       const wrap = el("div", { class: "field" });
       const label = el("label", { class: "name", for: id, text: LABELS[f.name] || humanize(f.name) });
       if (required) label.append(" ", el("span", { class: "req", text: "*" }));
@@ -224,10 +376,28 @@
       let input;
       let read;
 
-      if (f.kind === "dates") {
+      if (f.kind === "extensions") {
+        const ext = extensionList(id);
+        wrap.append(ext.node);
+        input = ext.input;
+        read = ext.read;
+        extensionChecks.push(ext.check);
+      } else if (f.name === "category" || f.name === "subcategory") {
+        const picker = tagPicker(id, knownTags[f.name]);
+        wrap.append(picker.node);
+        input = picker.input;
+        read = picker.read;
+      } else if (f.kind === "dates") {
         const start = el("input", { type: "date", id, "aria-label": "Start date" });
         const end = el("input", { type: "date", "aria-label": "End date" });
-        wrap.classList.add("range");
+        // The end date follows the start date (so its calendar opens there)
+        // until it is set by hand.
+        let endTouched = false;
+        end.addEventListener("input", () => { endTouched = !!end.value; });
+        start.addEventListener("input", () => {
+          end.min = start.value;
+          if (start.value && (!endTouched || !end.value || end.value < start.value)) end.value = start.value;
+        });
         wrap.append(el("div", { class: "pair" }, start, el("span", { text: "to" }), end));
         read = () => [start.value, end.value].filter(Boolean);
         input = start;
@@ -237,7 +407,8 @@
         read = () => input.value;
       } else if (f.kind === "int") {
         input = el("input", { type: "number", id, min: f.name === "attendance_year" ? 1900 : 1, step: 1,
-          max: f.name === "attendance_year" ? new Date().getFullYear() : undefined, inputmode: "numeric" });
+          max: f.name === "attendance_year" ? new Date().getFullYear() : undefined, inputmode: "numeric",
+          placeholder: PLACEHOLDERS[f.name] });
         wrap.append(input);
         read = () => input.value.trim();
       } else if (f.kind === "enum") {
@@ -254,50 +425,23 @@
         input = el("input", { type: "text", id, autocomplete: "off", spellcheck: "false" });
         wrap.append(input);
         read = () => input.value.split(",").map((t) => t.trim()).filter(Boolean);
-        if (f.name === "subcategory" && subcategories.length) {
-          // Existing tags matching what is being typed, one click to add.
-          const box = el("div", { class: "suggest" });
-          const refresh = () => {
-            const parts = input.value.split(",");
-            const term = parts[parts.length - 1].trim().toLowerCase();
-            const chosen = new Set(read().map((t) => t.toLowerCase()));
-            box.replaceChildren(...subcategories
-              .filter((t) => term && !chosen.has(t) && t.includes(term))
-              .slice(0, 10)
-              .map((t) => {
-                const b = el("button", { type: "button", text: t });
-                b.addEventListener("click", () => {
-                  const kept = parts.slice(0, -1).map((p) => p.trim()).filter(Boolean);
-                  if (term && !t.includes(term)) kept.push(parts[parts.length - 1].trim());
-                  input.value = [...kept, t].join(", ") + ", ";
-                  input.focus();
-                  refresh();
-                });
-                return b;
-              }));
-          };
-          input.addEventListener("input", refresh);
-          refresh();
-          wrap.append(box);
-        }
       } else if (/_time$/.test(f.name)) {
         input = el("input", { type: "time", id });
         wrap.append(input);
         read = () => input.value;
       } else if (/_timezone$/.test(f.name)) {
-        input = el("input", { type: "text", id, list: "timezones", autocomplete: "off", spellcheck: "false" });
+        input = el("input", { type: "text", id, list: "timezones", autocomplete: "off", spellcheck: "false",
+          placeholder: PLACEHOLDERS[f.name] });
         wrap.append(input);
         read = () => input.value.trim();
       } else {
         const isUrl = f.name === "url" || f.name === "attendance_source";
-        const long = f.name === "notes" || f.name === "cost";
-        input = long
+        input = f.name === "notes"
           ? el("textarea", { id, maxlength: 2000 })
           : el("input", { type: isUrl ? "url" : "text", id, maxlength: f.name === "conference_name" ? 300 : 2000,
-              placeholder: isUrl ? "https://" : undefined });
-        if (long || f.name === "conference_name") wrap.classList.add("wide");
-        wrap.append(input);
+              placeholder: isUrl ? "https://" : PLACEHOLDERS[f.name] });
         read = () => input.value.trim();
+        wrap.append(f.name in EDITION_CHOICES ? el("div", { class: "inline" }, input, editionRadios(f.name)) : input);
       }
 
       const hint = f.name in HINTS ? HINTS[f.name] : cliHint(f.description);
@@ -316,24 +460,28 @@
       return wrap;
     }
 
-    function render(subcategories) {
+    function render() {
       const byName = new Map(schema.fields.filter((f) => !EXCLUDED.has(f.name)).map((f) => [f.name, f]));
-      const placed = new Set(GROUPS.flatMap((g) => g.fields));
-      const groups = GROUPS.map((g) => ({ ...g, fields: [...g.fields] }));
-      // Fields added to `add` later but not yet laid out here.
-      groups[groups.length - 1].fields.push(...[...byName.keys()].filter((n) => !placed.has(n)));
+      const placed = new Set(ROWS.flat());
+      // Fields added to `add` later but not yet laid out here, before notes.
+      const rows = [...ROWS.slice(0, -1), ...[...byName.keys()].filter((n) => !placed.has(n)).map((n) => [n]), ROWS[ROWS.length - 1]];
 
-      const nodes = [];
-      for (const g of groups) {
-        const fields = g.fields.map((n) => byName.get(n)).filter(Boolean);
+      const set = el("fieldset");
+      for (const r of rows) {
+        const fields = r.map((n) => byName.get(n)).filter(Boolean);
         if (!fields.length) continue;
-        const set = el("fieldset", {}, el("legend", { text: g.title }));
-        if (g.note) set.append(el("p", { class: "hint", text: g.note, style: "margin:0 0 10px" }));
-        set.append(el("div", { class: "grid" }, ...fields.map((f) => renderField(f, subcategories))));
-        nodes.push(set);
+        const row = el("div", { class: "row", style: `--cols:${fields.length}` });
+        row.append(...fields.map((f) => renderField(f)));
+        set.append(row);
       }
-      nodes.push(el("datalist", { id: "timezones" }, ...schema.timezones.map((z) => el("option", { value: z }))));
-      $("groups").replaceChildren(...nodes);
+      set.append(el("datalist", { id: "timezones" }, ...schema.timezones.map((z) => el("option", { value: z }))));
+      // Edition radios follow the dates until clicked.
+      set.addEventListener("input", (e) => {
+        if (e.target.type === "radio") return;
+        const past = isPastEdition(collect());
+        for (const e of Object.values(editions)) e.follow(past);
+      });
+      $("groups").replaceChildren(set);
       $("submit-btn").disabled = false;
     }
 
@@ -346,6 +494,40 @@
       return record;
     }
 
+    // The edition the dates describe: the previous one when the meeting has
+    // ended and none of its deadlines is still ahead (the rule
+    // database.roll_past_editions applies), else the upcoming one.
+    function isPastEdition(record) {
+      const today = new Date().toLocaleDateString("en-CA"); // local YYYY-MM-DD
+      const dates = record.conference_dates || [];
+      const end = dates[1] || dates[0];
+      if (!end || end >= today) return false;
+      return !["abstract_due", "late_abstract_due", "paper_due"].some((k) => record[k] && record[k] >= today);
+    }
+
+    // The submitted record: the dates filed under the edition they describe,
+    // and Location / Registration / Cost under the edition their radio
+    // buttons name.
+    function toEditions(record) {
+      const out = { ...record };
+      const past = isPastEdition(record);
+      if (past) {
+        for (const [name, prior] of Object.entries(DATE_PRIOR_OF)) {
+          if (name in out) { out[prior] = out[name]; delete out[name]; }
+        }
+      }
+      for (const name of Object.keys(EDITION_CHOICES)) {
+        if (!(name in out) || !editions[name]) continue;
+        const edition = editions[name].read();
+        if (edition === "stable") out.stable_location = true;
+        if (edition === "prior" || (edition === "stable" && past)) {
+          out[`prior_${name}`] = out[name];
+          delete out[name];
+        }
+      }
+      return out;
+    }
+
     // The client-side checks mirror the server's (api/propose.js), so most
     // mistakes are caught before anything is sent.
     function problems(record) {
@@ -353,18 +535,16 @@
       const mark = (name) => readers.find((r) => r[0] === name)?.[2]?.classList.add("invalid");
       if (!record.conference_name) { out.push("Enter the conference's full name."); mark("conference_name"); }
       else if (known.has(idOf(record.conference_name))) { out.push("That conference is already listed."); mark("conference_name"); }
-      if (!record.subcategory) { out.push("Give at least one field, e.g. radiology."); mark("subcategory"); }
       for (const name of ["url", "attendance_source"]) {
         if (record[name] && !/^https?:\/\/[^\s/]+\.[^\s]+$/i.test(record[name])) { out.push(`${LABELS[name]}: enter a link starting with https://.`); mark(name); }
       }
-      for (const name of ["conference_dates", "prior_conference_dates"]) {
-        const d = record[name];
-        if (d && d.length === 2 && d[1] < d[0]) { out.push("A conference ends before it starts."); mark(name); }
-        if (d && d.length === 1 && !readers.find((r) => r[0] === name)[2].value) { out.push("Enter the conference's start date."); mark(name); }
-      }
+      const d = record.conference_dates;
+      if (d && d.length === 2 && d[1] < d[0]) { out.push("A conference ends before it starts."); mark("conference_dates"); }
+      if (d && d.length === 1 && !readers.find((r) => r[0] === "conference_dates")[2].value) { out.push("Enter the conference's start date."); mark("conference_dates"); }
       if (record.attendance !== undefined && !(Number.isInteger(record.attendance) && record.attendance >= 1)) { out.push("Attendance must be a whole number."); mark("attendance"); }
       const y = record.attendance_year;
       if (y !== undefined && !(Number.isInteger(y) && y >= 1900 && y <= new Date().getFullYear())) { out.push("Check the attendance year."); mark("attendance_year"); }
+      for (const check of extensionChecks) out.push(...check());
       return out;
     }
 
@@ -389,7 +569,7 @@
         const resp = await fetch("/api/propose", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ record, submitter: $("submitter").value.trim(), website: $("website").value }),
+          body: JSON.stringify({ record: toEditions(record), submitter: $("submitter").value.trim(), website: $("website").value }),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
@@ -411,9 +591,15 @@
         schema = await s.json();
         const rows = c.ok ? (await c.json()).conferences || [] : [];
         known = new Map(rows.map((r) => [r.id, r]));
-        const tags = new Set();
-        for (const r of rows) for (const t of String(r.subcategory || "").split(",")) if (t.trim()) tags.add(t.trim().toLowerCase());
-        render([...tags].sort());
+        // Dropdown options: the values already in the table (the suggested
+        // categories first), sorted.
+        const used = (col) => [...new Set(rows.flatMap((r) => String(r[col] || "").split(","))
+          .map((t) => t.trim().toLowerCase()).filter(Boolean))].sort();
+        knownTags = {
+          category: [...schema.categories, ...used("category").filter((t) => !schema.categories.includes(t))],
+          subcategory: used("subcategory"),
+        };
+        render();
         const prefill = new URLSearchParams(location.search).get("name");
         if (prefill) { $("f-conference_name").value = prefill; $("f-conference_name").dispatchEvent(new Event("input")); }
       } catch (err) {

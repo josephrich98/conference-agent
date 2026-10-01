@@ -55,11 +55,10 @@ with `@pytest.mark.llm`, so CI stays hermetic. Some tests run JavaScript through
 
 ## Rules that are easy to break
 
-- **Derived fields are never hand-set.** `category`, `size`, the `*_month`
-  columns, and `deadline_time` are computed (`SUBCATEGORY_TO_CATEGORY`,
-  `size_for_attendance`, the deadline-time formatters). Change the inputs or the
-  derivation, not the stored value. A new subcategory needs a
-  `SUBCATEGORY_TO_CATEGORY` entry (a test enforces seed coverage).
+- **Derived fields are never hand-set.** `size`, the `*_month` columns, and
+  `deadline_time` are computed (`size_for_attendance`, the deadline-time
+  formatters). Change the inputs or the derivation, not the stored value.
+  (`category` is an input, set independently of `subcategory`.)
 - **Python and JavaScript must stay in parity.** `web/search.py` ↔
   `web/static/search.js`, `calendar_sync.py` ↔ `web/static/calendar.js`,
   `deadline_time.py` ↔ the zone table in `calendar.js`, `web.search.keyword_search`

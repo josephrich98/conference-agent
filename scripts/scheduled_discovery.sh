@@ -8,9 +8,17 @@
 # backend: local Claude Code subscription, no API key) only re-researches series
 # whose official pages changed -- see conference_agent/refresh.py.
 #
+# Before the watch run it adds any "Add a conference" submissions merged into
+# origin/main (scripts/ingest_submissions.py). The watch run also moves finished
+# editions into the prior columns.
+#
 # If the run changes what the site shows, it redeploys the static site
 # (scripts/deploy_static.sh). The comparison is on the exported site data, not
 # the DB file, because every run updates per-row bookkeeping columns.
+#
+# After the redeploy it emails subscribers (updates and one-week deadline
+# reminders). If any step fails, the end of the log is emailed to
+# CONFERENCE_NOTIFY_EMAIL (scripts/alert_failure.py).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -70,8 +78,12 @@ run() {
   local before after status
   before="$(site_hash)" || return 1
 
-  python scripts/daily_update.py --cadence watch --backend claude-code
-  status=$?
+  # Merged form submissions. A failure is reported but does not stop the run.
+  status=0
+  python scripts/ingest_submissions.py || { echo "ERROR: submission ingest failed"; status=1; }
+  echo ""
+
+  python scripts/daily_update.py --cadence watch --backend claude-code || status=1
 
   # Deploy even after a partial failure: batches that succeeded are kept.
   after="$(site_hash)" || return 1
@@ -99,5 +111,12 @@ if [ "$STATUS" -eq 0 ]; then
   echo "=== Scheduled Discovery Complete: $(date +%Y-%m-%d_%H-%M-%S) ===" >> "$LOG_FILE"
 else
   echo "=== Scheduled Discovery FAILED (exit $STATUS): $(date +%Y-%m-%d_%H-%M-%S) ===" >> "$LOG_FILE"
+  # Email the end of the log. run() may have failed before activating the env.
+  {
+    if [ "${CONDA_DEFAULT_ENV:-}" != "conference_agent" ]; then
+      eval "$(conda shell.bash hook 2>/dev/null)" && conda activate conference_agent
+    fi
+    cd "$PROJECT_DIR" && python scripts/alert_failure.py "$LOG_FILE" "$STATUS"
+  } >> "$LOG_FILE" 2>&1
 fi
 exit "$STATUS"

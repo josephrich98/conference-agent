@@ -28,8 +28,9 @@ stamps ``last_checked`` across them via :func:`mark_subcategories_checked`.
 
 **Watch (per series, page-gated).** :func:`run_watch` is meant to run daily. It
 sorts series into tiers (:func:`watch_tier`: deadlines within two weeks either
-side are checked daily; a deadline or meeting within the next month, and series
-in the due window above, every two weeks), runs the agent-free page check
+side are checked daily; a deadline or meeting within the next month, series
+whose last edition ended less than ``CHECK_WINDOW_MIN_MONTHS`` ago, and series in
+the due window above, every two weeks), runs the agent-free page check
 (:mod:`conference_agent.page_watch`) on each series whose tier makes it due, and
 re-researches -- through the targeted :func:`discover.refresh_conferences`, not
 a whole-field run -- only the series whose pages changed, could not be read and
@@ -66,6 +67,7 @@ from conference_agent.database import (
     attendance_hints_for,
     get_engine,
     known_attendance_sources,
+    roll_past_editions,
 )
 from conference_agent.models import Conference, normalize_subcategories
 from conference_agent.page_watch import PageCheck
@@ -145,6 +147,23 @@ def in_stale_window(row: ConferenceRow, today: Optional[date] = None) -> bool:
     window_open = _add_months(anchor, CHECK_WINDOW_MIN_MONTHS)
     window_close = _add_months(anchor, CHECK_WINDOW_MAX_MONTHS)
     return window_open <= today <= window_close
+
+
+def in_recent_window(row: ConferenceRow, today: Optional[date] = None) -> bool:
+    """Whether ``row``'s last edition is over but the check window has not opened.
+
+    True when no future edition is on record and the latest edition's anchor
+    (:func:`edition_anchor`) is less than ``CHECK_WINDOW_MIN_MONTHS`` old. Many
+    series announce the next edition in these months, often right after the
+    meeting, so the watch cadence page-checks them (tier ``recent``).
+    """
+    today = today or date.today()
+    if _has_future_edition(row, today):
+        return False
+    anchor = edition_anchor(row)
+    if anchor is None:
+        return False
+    return today < _add_months(anchor, CHECK_WINDOW_MIN_MONTHS)
 
 
 def is_retired(row: ConferenceRow, today: Optional[date] = None) -> bool:
@@ -253,7 +272,7 @@ def mark_subcategories_checked(
 # --- Watch cadence: tiers, page checks, targeted re-research ------------------
 
 # Tier order doubles as priority when the per-run agent cap defers some series.
-WATCH_TIERS = ("daily", "soon", "stale", "initial")
+WATCH_TIERS = ("daily", "soon", "stale", "recent", "initial")
 
 
 def watch_tier(row: ConferenceRow, today: Optional[date] = None) -> Optional[str]:
@@ -265,6 +284,8 @@ def watch_tier(row: ConferenceRow, today: Optional[date] = None) -> Optional[str
       ``WATCH_SOON_WINDOW_DAYS`` days.
     - ``stale``: waiting on a next edition inside the check window
       (:func:`in_stale_window`).
+    - ``recent``: the last edition is over, but the check window has not opened
+      yet (:func:`in_recent_window`).
     - ``initial``: never researched and carrying no dates at all.
     """
     today = today or date.today()
@@ -276,6 +297,8 @@ def watch_tier(row: ConferenceRow, today: Optional[date] = None) -> Optional[str
         return "soon"
     if in_stale_window(row, today):
         return "stale"
+    if in_recent_window(row, today):
+        return "recent"
     if edition_anchor(row) is None and row.last_checked is None:
         return "initial"
     return None
@@ -460,6 +483,9 @@ def run_watch(
 ) -> WatchReport:
     """Run one watch cycle: plan, re-research what changed, record the outcome.
 
+    Before planning and after recording, finished upcoming editions are moved
+    into the prior slots (:func:`database.roll_past_editions`).
+
     Series flagged for research are taken in tier-priority order up to
     ``WATCH_MAX_AGENT_PER_RUN`` and re-researched ``WATCH_BATCH_SIZE`` at a time
     via ``refresh`` (default :func:`discover.refresh_conferences`); results are
@@ -468,6 +494,8 @@ def run_watch(
     retried next run. ``dry_run`` plans and logs without researching or writing.
     """
     today = today or date.today()
+    if not dry_run:
+        _roll(db_url, today, log)
     decisions = plan_watch(db_url, today, check)
     report = WatchReport(decisions=decisions)
 
@@ -537,4 +565,15 @@ def run_watch(
     )
 
     commit_watch(decisions, report.researched, db_url, today)
+    # Research can return an edition that has already ended as the upcoming one.
+    _roll(db_url, today, log)
     return report
+
+
+def _roll(db_url: str, today: date, log: Callable[[str], None]) -> None:
+    """Run :func:`database.roll_past_editions` and log what it changed."""
+    out = roll_past_editions(db_url, today)
+    if out["duplicate"]:
+        log(f"Merged duplicated prior/upcoming editions: {', '.join(out['duplicate'])}")
+    if out["rolled"]:
+        log(f"Moved finished editions to prior: {', '.join(out['rolled'])}")

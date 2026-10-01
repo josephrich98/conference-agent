@@ -12,9 +12,12 @@ edition's dates into the "upcoming" columns without creating a second RSNA row.
 
 from __future__ import annotations
 
+import re
+from datetime import date
 from typing import Iterable, List, Optional
 
 from sqlalchemy import (
+    Boolean,
     Date,
     Integer,
     String,
@@ -28,16 +31,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-from conference_agent.config import (
-    DEFAULT_DATABASE_URL,
-    HARDCODED_FORMATS,
-    SEED_CONFERENCES,
-    best_seed_url,
-    curated_seed_url,
-    seed_acronym_for_name,
-    seed_subcategories,
-    seed_subcategories_for,
-)
+from conference_agent.config import DEFAULT_DATABASE_URL
 from conference_agent.deadline_time import (
     KINDS,
     normalize_time,
@@ -45,10 +39,11 @@ from conference_agent.deadline_time import (
     parse_legacy_deadline_time,
 )
 from conference_agent.models import (
+    EDITION_SUFFIXES,
     Conference,
     RemoteOption,
-    categories_for_subcategories,
     name_id,
+    normalize_categories,
     normalize_formats,
     normalize_subcategories,
     size_for_attendance,
@@ -75,12 +70,9 @@ class ConferenceRow(Base):
     # any tag uniformly; the ``Conference`` model splits it back into a list. See
     # ``normalize_subcategories``.
     subcategory: Mapped[str] = mapped_column(String, index=True, nullable=False)
-    # Broad top-level category (one or more of ``models.CATEGORIES``) as a
-    # comma-joined string, *derived* from ``subcategory`` via
-    # ``models.SUBCATEGORY_TO_CATEGORY`` -- never accepted as input. Stored
-    # denormalized (like ``size``) so the search/sort can query it as a column,
-    # but only ever written by the derivation, so it can't drift from the
-    # subcategories. NULL when no subcategory maps to a category.
+    # Broad top-level category (usually one or more of ``models.CATEGORIES``,
+    # though a custom one is kept) as a comma-joined string. An input like
+    # ``subcategory``, set independently of it. NULL when none is recorded.
     category: Mapped[Optional[str]] = mapped_column(String, index=True)
 
     prior_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
@@ -97,6 +89,9 @@ class ConferenceRow(Base):
     # nothing at all, so a single Date column cannot represent it. Stored as text;
     # there is consequently no derived registration month.
     prior_registration: Mapped[Optional[str]] = mapped_column(Text)
+    # Location and cost are per edition too (see ``Conference.upcoming_location``).
+    prior_location: Mapped[Optional[str]] = mapped_column(Text)
+    prior_cost: Mapped[Optional[str]] = mapped_column(Text)
 
     upcoming_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_late_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
@@ -104,16 +99,19 @@ class ConferenceRow(Base):
     upcoming_start_date: Mapped[Optional[Date]] = mapped_column(Date, index=True)
     upcoming_end_date: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_registration: Mapped[Optional[str]] = mapped_column(Text)
+    upcoming_location: Mapped[Optional[str]] = mapped_column(Text)
+    upcoming_cost: Mapped[Optional[str]] = mapped_column(Text)
+    # The series meets in the same place every edition, so a prior edition's
+    # location is shown as current. NULL on rows predating the column = false.
+    stable_location: Mapped[Optional[bool]] = mapped_column(Boolean)
 
-    location: Mapped[Optional[str]] = mapped_column(Text)
     url: Mapped[Optional[str]] = mapped_column(Text)
     remote_option: Mapped[Optional[str]] = mapped_column(String, index=True)
     # Submission/presentation formats offered (abstract, paper, poster, oral) as a
-    # comma-joined string, mirroring ``category``. Stored as one column so the
+    # comma-joined string, mirroring ``subcategory``. Stored as one column so the
     # boolean search can substring-match any format uniformly; the ``Conference``
     # model splits it back into a list. Indexed for that filtering; NULL when unknown.
     format: Mapped[Optional[str]] = mapped_column(String, index=True)
-    cost: Mapped[Optional[str]] = mapped_column(Text)
     # Time of day (24-hour HH:MM) and zone each deadline kind closes at -- the
     # stored source of truth (see ``Conference.abstract_time`` etc.). Per series,
     # not per edition; the deadline columns themselves stay pure dates.
@@ -124,10 +122,19 @@ class ConferenceRow(Base):
     paper_time: Mapped[Optional[str]] = mapped_column(String)
     paper_timezone: Mapped[Optional[str]] = mapped_column(String)
     # The user-facing "Deadline time" text, *derived* from the six columns above
-    # (``Conference.deadline_time``) -- like ``size`` / ``category`` it is stored
+    # (``Conference.deadline_time``) -- like ``size`` it is stored
     # denormalized so search and the table can use it as a column, and is only ever
     # written by the derivation, never accepted as input.
     deadline_time: Mapped[Optional[str]] = mapped_column(Text)
+    # Observed deadline extensions per deadline kind, one "MM/DD/YYYY – MM/DD/YYYY"
+    # (original – extended) line each, newline-separated. Derived on write by
+    # ``_record_extensions`` when an update moves a deadline of the same edition
+    # later; never accepted as input, never researched by discovery, and not
+    # exported to the web table, API, or CSV. Entries more than
+    # ``EXTENSION_RETENTION_YEARS`` old are dropped. NULL when none was observed.
+    abstract_deadline_extension: Mapped[Optional[str]] = mapped_column(Text)
+    late_abstract_deadline_extension: Mapped[Optional[str]] = mapped_column(Text)
+    paper_deadline_extension: Mapped[Optional[str]] = mapped_column(Text)
     # Attendance is the objective input; ``size`` is the bucket derived from it
     # (see ``models.size_for_attendance``). ``size`` is stored denormalized so the
     # search/filter machinery can query it as a column, but it is only ever set by
@@ -142,7 +149,7 @@ class ConferenceRow(Base):
 
     # Bookkeeping for the per-conference auto-check policy (``refresh`` module):
     # the date discovery last covered this row. ``None`` means never checked,
-    # which makes a freshly seeded row eligible for an initial pass. Not part of
+    # which makes a newly added row eligible for an initial pass. Not part of
     # the ``Conference`` model -- it is row-level scheduling state, not conference
     # data -- so the conversion helpers below deliberately leave it untouched.
     last_checked: Mapped[Optional[Date]] = mapped_column(Date)
@@ -160,7 +167,7 @@ class ConferenceRow(Base):
 
     # Derived month-of-year fields (1-12), stored as real columns so they exist in
     # the database file itself (browsable/queryable outside the ORM). Like ``size``
-    # and ``category`` they are denormalized but never accepted as input:
+    # they are denormalized but never accepted as input:
     # ``_apply_model_to_row`` writes each from the ``Conference`` model's matching
     # ``*_month`` property -- the month of the upcoming date, falling back to the
     # prior one -- so they cannot drift from the dates. ``recompute_months``
@@ -170,6 +177,12 @@ class ConferenceRow(Base):
     abstract_month: Mapped[Optional[int]] = mapped_column(Integer)
     late_abstract_month: Mapped[Optional[int]] = mapped_column(Integer)
     paper_month: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Fields discovery may not change for this series: comma-joined stored
+    # column names (e.g. "url, subcategory, format"). Set by hand with
+    # ``add --pin`` / ``--unpin``; manual edits still apply. See
+    # ``PINNABLE_FIELDS`` and ``_restore_pins``. NULL when nothing is pinned.
+    pinned: Mapped[Optional[str]] = mapped_column(Text)
 
 
 # The dates the stored month columns are derived from, each preferring the
@@ -215,6 +228,173 @@ class IdAliasRow(Base):
     new_id: Mapped[str] = mapped_column(String, nullable=False)
 
 
+# --- Deadline extensions ---------------------------------------------------
+
+# A later date for the same edition's deadline counts as an extension only when
+# it moves the deadline by at most this many days (a larger jump is a new
+# edition or a correction) ...
+EXTENSION_MAX_DAYS = 120
+# ... and is observed no earlier than this many days before the original
+# deadline (extensions are announced near the deadline; a change seen months
+# ahead is far more likely a corrected date than an extension).
+EXTENSION_NOTICE_DAYS = 60
+# Entries whose extended date is older than this are dropped on write.
+EXTENSION_RETENTION_YEARS = 5
+_EXTENSION_DATE_FORMAT = "%m/%d/%Y"
+_EXTENSION_SEPARATOR = " – "
+
+
+def _extension_snapshot(row: "ConferenceRow") -> dict:
+    """The row's upcoming deadlines and start date, taken before a write."""
+    snap = {k: getattr(row, f"upcoming_{k}_deadline") for k in KINDS}
+    snap["start"] = row.upcoming_start_date
+    return snap
+
+
+def _extension_line_date(line: str) -> "date | None":
+    """The extended (last) date of one extension entry, or None if unreadable."""
+    from datetime import datetime
+
+    try:
+        text_ = line.rsplit(_EXTENSION_SEPARATOR, 1)[-1].strip()
+        return datetime.strptime(text_, _EXTENSION_DATE_FORMAT).date()
+    except ValueError:
+        return None
+
+
+def _prune_extensions(value: "str | None", today: date) -> "str | None":
+    """Drop blank, duplicate, and expired entries; None when nothing is left."""
+    cutoff = extension_cutoff(today)
+    kept: List[str] = []
+    for line in (value or "").splitlines():
+        line = line.strip()
+        if not line or line in kept:
+            continue
+        extended = _extension_line_date(line)
+        if extended is not None and extended < cutoff:
+            continue
+        kept.append(line)
+    return "\n".join(kept) or None
+
+
+def _record_extensions(
+    row: "ConferenceRow", before: dict, today: Optional[date] = None
+) -> bool:
+    """Append any deadline extension the write just made; prune old entries.
+
+    A deadline was extended when the upcoming edition is the same one as before
+    the write (its start date did not move by more than ``NEW_EDITION_GAP_DAYS``)
+    and its deadline moved later by at most ``EXTENSION_MAX_DAYS``, observed no
+    earlier than ``EXTENSION_NOTICE_DAYS`` before the original deadline. Returns
+    whether any extension column changed.
+    """
+    today = today or date.today()
+    old_start, new_start = before.get("start"), row.upcoming_start_date
+    same_edition = not (
+        old_start and new_start
+        and abs((new_start - old_start).days) > NEW_EDITION_GAP_DAYS
+    )
+    changed = False
+    for kind in KINDS:
+        column = f"{kind}_deadline_extension"
+        value = getattr(row, column)
+        old, new = before.get(kind), getattr(row, f"upcoming_{kind}_deadline")
+        if (
+            same_edition
+            and old and new
+            and 0 < (new - old).days <= EXTENSION_MAX_DAYS
+            and (old - today).days <= EXTENSION_NOTICE_DAYS
+        ):
+            line = (
+                f"{old.strftime(_EXTENSION_DATE_FORMAT)}{_EXTENSION_SEPARATOR}"
+                f"{new.strftime(_EXTENSION_DATE_FORMAT)}"
+            )
+            value = f"{value}\n{line}" if value else line
+        value = _prune_extensions(value, today)
+        if value != getattr(row, column):
+            setattr(row, column, value)
+            changed = True
+    return changed
+
+
+def extension_cutoff(today: Optional[date] = None) -> date:
+    """The oldest extended date kept: ``EXTENSION_RETENTION_YEARS`` before today."""
+    today = today or date.today()
+    try:
+        return today.replace(year=today.year - EXTENSION_RETENTION_YEARS)
+    except ValueError:  # Feb 29
+        return today.replace(year=today.year - EXTENSION_RETENTION_YEARS, day=28)
+
+
+def parse_deadline_extensions(value) -> List[tuple]:
+    """Parse entered extension history into ``(kind, original, extended)`` tuples.
+
+    ``value`` is a list of ``{"type", "original", "extended"}`` objects (the
+    ``add --json`` / website form shape), a list of ``[TYPE, ORIGINAL,
+    EXTENDED]`` triples (the repeated flag), or text with one ``TYPE ORIGINAL
+    EXTENDED`` entry per line or per ``;`` (a CSV cell). TYPE is abstract, late
+    abstract, or paper; the dates are ISO ``YYYY-MM-DD``. Raises ``ValueError``
+    on an unknown type, an unreadable date, or an extended date that is not
+    after the original.
+    """
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        value = [part.split() for part in re.split(r"[;\n]", value) if part.strip()]
+    if isinstance(value, dict):
+        value = [value]
+    entries = []
+    for item in value:
+        if isinstance(item, dict):
+            parts = [item.get("type") or item.get("kind"), item.get("original"), item.get("extended")]
+        else:
+            parts = list(item)
+            # "late abstract 2026-01-05 2026-01-12" splits the type in two.
+            if len(parts) == 4 and str(parts[0]).lower() == "late":
+                parts = [f"{parts[0]}_{parts[1]}", *parts[2:]]
+        if len(parts) != 3 or not all(parts):
+            raise ValueError(
+                f"deadline extension {item!r}: give a type, an original date, and an extended date."
+            )
+        kind = re.sub(r"[\s-]+", "_", str(parts[0]).strip().lower()).removesuffix("_deadline")
+        if kind not in KINDS:
+            raise ValueError(
+                f"deadline extension type '{parts[0]}' must be one of: "
+                + ", ".join(k.replace("_", " ") for k in KINDS) + "."
+            )
+        try:
+            original, extended = (_coerce_date(p) for p in parts[1:])
+        except ValueError:
+            raise ValueError(
+                f"deadline extension {item!r}: dates must be YYYY-MM-DD."
+            ) from None
+        if extended <= original:
+            raise ValueError(
+                f"deadline extension {original} – {extended}: the extended date must "
+                "be after the original."
+            )
+        entries.append((kind, original, extended))
+    return entries
+
+
+def _add_extensions(row: "ConferenceRow", entries, today: Optional[date] = None) -> bool:
+    """Append entered extension entries to the row's history; prune old ones."""
+    today = today or date.today()
+    changed = False
+    for kind, original, extended in parse_deadline_extensions(entries):
+        column = f"{kind}_deadline_extension"
+        line = (
+            f"{original.strftime(_EXTENSION_DATE_FORMAT)}{_EXTENSION_SEPARATOR}"
+            f"{extended.strftime(_EXTENSION_DATE_FORMAT)}"
+        )
+        current = getattr(row, column)
+        value = _prune_extensions(f"{current}\n{line}" if current else line, today)
+        if value != current:
+            setattr(row, column, value)
+            changed = True
+    return changed
+
+
 # --- Conversion helpers ----------------------------------------------------
 
 _DATE_FIELDS = (
@@ -236,16 +416,25 @@ _TIME_FIELDS = tuple(f"{k}_{part}" for k in KINDS for part in ("time", "timezone
 # (written separately, like ``size``), so it is not in this round-trip tuple.
 # ``prior_registration`` / ``upcoming_registration`` are free text (not dates), so
 # they ride along with the other text fields here rather than in ``_DATE_FIELDS``.
+# The free-text per-edition fields (registration, location, cost), each a
+# prior/upcoming pair.
+_EDITION_TEXT_FIELDS = tuple(
+    f"{edition}_{suffix}"
+    for suffix in ("registration", "location", "cost")
+    for edition in ("prior", "upcoming")
+)
 _TEXT_FIELDS = (
     "name",
     "subcategory",
-    "location",
     "url",
-    "cost",
     "attendance_source",
     "notes",
     "prior_registration",
     "upcoming_registration",
+    "prior_location",
+    "upcoming_location",
+    "prior_cost",
+    "upcoming_cost",
     *_TIME_FIELDS,
 )
 
@@ -256,21 +445,17 @@ def _row_to_model(row: ConferenceRow) -> Conference:
         "acronym": row.acronym,
         "name": row.name,
         "subcategory": row.subcategory,
+        "category": row.category,
         "format": row.format,
-        "location": row.location,
         "url": row.url,
-        "cost": row.cost,
         "notes": row.notes,
-        "prior_registration": row.prior_registration,
-        "upcoming_registration": row.upcoming_registration,
+        "stable_location": bool(row.stable_location),
         "remote_option": RemoteOption(row.remote_option) if row.remote_option else None,
         "attendance": row.attendance,
         "attendance_year": row.attendance_year,
         "attendance_source": row.attendance_source,
     }
-    for field in _DATE_FIELDS:
-        data[field] = getattr(row, field)
-    for field in _TIME_FIELDS:
+    for field in (*_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS):
         data[field] = getattr(row, field)
     return Conference(**data)
 
@@ -309,12 +494,11 @@ def _normalize_url(url: "str | None") -> "str | None":
 def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     """Copy all fields from a :class:`Conference` onto an ORM row."""
     row.acronym = conf.acronym
+    row.stable_location = conf.stable_location
     for field in _TEXT_FIELDS:
         setattr(row, field, getattr(conf, field))
     for field in _DATE_FIELDS:
         setattr(row, field, getattr(conf, field))
-    # Category is derived from the subcategories, never taken as input -- so it
-    # always matches. NULL when no subcategory maps to a category.
     row.category = conf.category or None
     # The display text is derived from the structured times (and which deadline
     # dates exist), never taken as input -- so it always matches.
@@ -329,7 +513,7 @@ def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     # Size is derived from attendance, never taken as input -- so it always matches.
     row.size = conf.size.value if conf.size else None
     # Month-of-year fields are derived from the dates, never taken as input (like
-    # size/category) -- write them from the model's computed properties so the
+    # size) -- write them from the model's computed properties so the
     # stored columns always match the dates.
     row.conference_month = conf.conference_month
     row.abstract_month = conf.abstract_month
@@ -381,15 +565,14 @@ def _migrate_category_to_subcategory(engine: Engine) -> bool:
     """Rename a legacy ``category`` column to ``subcategory`` in place.
 
     The granular tag column was renamed ``category`` -> ``subcategory`` when the
-    broad, derived ``category`` was introduced. ``_ensure_columns`` only *adds*
+    broad ``category`` was introduced. ``_ensure_columns`` only *adds*
     columns, so it cannot perform this rename; without it, a database created
     before the rename would have a ``category`` column (holding the granular tags)
     and no ``subcategory`` column, and every query would fail. Both SQLite (>=3.25)
     and PostgreSQL support ``ALTER TABLE ... RENAME COLUMN``.
 
     Idempotent: only renames when the table has the legacy ``category`` column and
-    no ``subcategory`` column yet. Returns ``True`` when a rename was performed (so
-    the caller can backfill the new derived ``category`` column afterward).
+    no ``subcategory`` column yet. Returns ``True`` when a rename was performed.
     """
     inspector = sa_inspect(engine)
     if not inspector.has_table(ConferenceRow.__tablename__):
@@ -440,6 +623,42 @@ def _migrate_registration_date_to_text(engine: Engine) -> None:
                     conn.execute(
                         text(f"ALTER TABLE {table} ALTER COLUMN {new} TYPE text")
                     )
+
+
+def _migrate_location_cost_to_editions(engine: Engine) -> None:
+    """Move the legacy single ``location`` / ``cost`` columns into edition slots.
+
+    Location and cost became per-edition pairs (``prior_*`` / ``upcoming_*``).
+    The old value described the edition the table showed, so it moves to the
+    upcoming slot when the row has any upcoming date and to the prior slot
+    otherwise; the legacy column is then dropped. Runs after
+    ``_ensure_columns`` has added the new columns. Idempotent: a no-op once the
+    legacy columns are gone.
+    """
+    inspector = sa_inspect(engine)
+    table = ConferenceRow.__tablename__
+    if not inspector.has_table(table):
+        return
+    columns = {col["name"] for col in inspector.get_columns(table)}
+    has_upcoming = " OR ".join(f"upcoming_{d} IS NOT NULL" for d in (
+        "abstract_deadline", "late_abstract_deadline", "paper_deadline", "start_date", "end_date",
+    ))
+    with engine.begin() as conn:
+        for legacy in ("location", "cost"):
+            if legacy not in columns:
+                continue
+            empty = (
+                f"{legacy} IS NOT NULL AND upcoming_{legacy} IS NULL "
+                f"AND prior_{legacy} IS NULL"
+            )
+            conn.execute(text(
+                f"UPDATE {table} SET upcoming_{legacy} = {legacy} "  # nosec B608
+                f"WHERE {empty} AND ({has_upcoming})"
+            ))
+            conn.execute(text(
+                f"UPDATE {table} SET prior_{legacy} = {legacy} WHERE {empty}"  # nosec B608
+            ))
+            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {legacy}"))
 
 
 def _migrate_unknown_remote_to_null(engine: Engine) -> None:
@@ -516,8 +735,8 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
         engine = create_engine(db_url, **kwargs)
         Base.metadata.create_all(engine)
         # Rename the legacy granular column before the additive reconcile adds the
-        # new derived ``category`` column alongside it.
-        migrated = _migrate_category_to_subcategory(engine)
+        # new ``category`` column alongside it.
+        _migrate_category_to_subcategory(engine)
         # Rename the legacy registration *date* columns to the new free-text
         # columns before the additive reconcile, so it sees them already present.
         _migrate_registration_date_to_text(engine)
@@ -539,15 +758,12 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
             <= {c["name"] for c in inspector.get_columns(ConferenceRow.__tablename__)}
         )
         _ensure_columns(engine)
+        _migrate_location_cost_to_editions(engine)
         _migrate_unknown_remote_to_null(engine)
         # Move rows keyed by the legacy acronym id onto their name id.
         _migrate_ids_to_names(engine)
         # Cache before any backfill helper, which calls get_engine reentrantly.
         _ENGINES[db_url] = engine
-        if migrated:
-            # The freshly added ``category`` column is empty after a rename; derive
-            # it from the (renamed) subcategory tags so search/sort work at once.
-            recompute_categories(db_url)
         if times_missing:
             # Parse the legacy free-text deadline times into the new columns.
             backfill_deadline_times(db_url)
@@ -558,19 +774,79 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
     return engine
 
 
+# Stored columns that can be pinned: every researched input. Derived columns
+# (size, months, deadline_time) follow their pinned inputs.
+PINNABLE_FIELDS = (
+    "acronym", "subcategory", "category", "format", "url", "remote_option",
+    "stable_location", "attendance", "attendance_year", "attendance_source", "notes",
+    *_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS,
+)
+
+
+def pinned_fields(row: ConferenceRow) -> List[str]:
+    """The row's pinned columns, in :data:`PINNABLE_FIELDS` order."""
+    names = {n.strip() for n in (row.pinned or "").split(",")}
+    return [f for f in PINNABLE_FIELDS if f in names]
+
+
+def _pin_snapshot(row: ConferenceRow) -> dict:
+    """The current values of the row's pinned columns."""
+    return {f: getattr(row, f) for f in pinned_fields(row)}
+
+
+def _restore_pins(row: ConferenceRow, snapshot: dict) -> bool:
+    """Put pinned values back after a discovery write and re-derive the columns
+    computed from them. Returns whether anything was restored."""
+    changed = [f for f, v in snapshot.items() if getattr(row, f) != v]
+    for field in changed:
+        setattr(row, field, snapshot[field])
+    if changed:
+        name = row.name
+        _apply_model_to_row(row, _row_to_model(row))
+        row.name = name
+    return bool(changed)
+
+
+def set_pins(
+    row_id: str,
+    pin: Iterable[str] = (),
+    unpin: Iterable[str] = (),
+    db_url: str = DEFAULT_DATABASE_URL,
+) -> List[str]:
+    """Pin and/or unpin stored columns of one series; returns its pinned columns.
+
+    Raises ``ValueError`` for an unknown id or a column not in
+    :data:`PINNABLE_FIELDS`.
+    """
+    pin, unpin = set(pin), set(unpin)
+    unknown = (pin | unpin) - set(PINNABLE_FIELDS)
+    if unknown:
+        raise ValueError(f"cannot pin: {', '.join(sorted(unknown))}")
+    engine = get_engine(db_url)
+    with Session(engine) as session:
+        row = session.get(ConferenceRow, row_id)
+        if row is None:
+            raise ValueError(f"no conference with id {row_id}")
+        current = (set(pinned_fields(row)) | pin) - unpin
+        row.pinned = ", ".join(f for f in PINNABLE_FIELDS if f in current) or None
+        session.commit()
+        return pinned_fields(row)
+
+
 def upsert_conferences(
-    conferences: Iterable[Conference], db_url: str = DEFAULT_DATABASE_URL
+    conferences: Iterable[Conference],
+    db_url: str = DEFAULT_DATABASE_URL,
+    manual: bool = False,
 ) -> int:
     """Insert or update conference rows, keyed on :attr:`Conference.id`.
 
     Idempotent: re-running discovery updates existing rows rather than
     duplicating them. Returns the number of rows written.
 
-    Flagship link floor: when a series has a hand-verified link in
-    ``config.SEED_CONFERENCE_LINKS`` (:func:`config.curated_seed_url`), that link
-    is kept regardless of what discovery found, so a refresh cannot regress a
-    curated deep link to a weaker model-found URL. Series without a curated entry
-    keep the discovered URL.
+    This is the discovery write path: a series' pinned columns keep their
+    values, and a run that reports no category or stable-location flag keeps
+    the stored one. ``manual=True`` (``add --update --overwrite``) replaces the
+    whole row as given instead.
     """
     engine = get_engine(db_url)
     written = 0
@@ -583,24 +859,21 @@ def upsert_conferences(
             # The stored name is the index: a run that reports it under another
             # spelling updates the row but never renames it (see ``match_row``).
             name = row.name
+            stable = bool(row.stable_location)
+            category = row.category
+            pins = {} if manual else _pin_snapshot(row)
+            before = _extension_snapshot(row)
             _apply_model_to_row(row, conf)
             row.name = name
-            seed = seed_acronym_for_name(name)
-            floor = curated_seed_url(seed)
-            if floor:
-                row.url = floor
-            # Subcategory floor: a seeded series' tags are curated and
-            # authoritative, so a discovery run cannot overwrite them with model
-            # free-text. The derived category is re-applied to match.
-            seed_subs = seed_subcategories_for(seed)
-            if seed_subs:
-                row.subcategory = ", ".join(seed_subs)
-                row.category = ", ".join(categories_for_subcategories(seed_subs)) or None
-            # Format floor: some conferences have hardcoded formats that override
-            # discovery, ensuring consistency across refreshes.
-            hardcoded_fmts = HARDCODED_FORMATS.get((seed or "").upper())
-            if hardcoded_fmts:
-                row.format = ", ".join(hardcoded_fmts)
+            if not manual:
+                # A run that reports no category keeps the stored one.
+                if not conf.categories:
+                    row.category = category
+                # A stable-location flag is usually set by hand; a run that does
+                # not report one keeps it (clear it with ``add --update``).
+                row.stable_location = conf.stable_location or stable
+                _restore_pins(row, pins)
+            _record_extensions(row, before)
             session.flush()
             written += 1
         session.commit()
@@ -619,21 +892,38 @@ def _coerce_date(value):
     return _date.fromisoformat(text)
 
 
+def _coerce_bool(value) -> Optional[bool]:
+    """Parse a flag from a record (bool, or yes/no/true/false text); None if unset."""
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "yes", "y", "1"):
+        return True
+    if text in ("false", "no", "n", "0"):
+        return False
+    return None
+
+
 # Fields a researched record may carry. Date fields are parsed from ISO strings;
 # the enum-backed fields are validated against their controlled vocabularies.
 # ``subcategory`` is handled separately (it may arrive as a list or a delimited
-# string and is normalized to the comma-joined form, with ``category`` derived
-# from it), so it is not in this tuple.
+# string and is normalized to the comma-joined form), as is ``category``, so
+# neither is in this tuple.
 _MERGEABLE_TEXT_FIELDS = (
     "name",
-    "location",
     "url",
-    "cost",
     "attendance_source",
     "notes",
     "prior_registration",
     "upcoming_registration",
+    "prior_location",
+    "upcoming_location",
+    "prior_cost",
+    "upcoming_cost",
 )
+# Legacy single-value keys (older exports and researched records) and the
+# edition slot they fill.
+_LEGACY_EDITION_KEYS = {"location": "upcoming_location", "cost": "upcoming_cost"}
 
 # Integer fields a researched record may carry. Parsed from int/numeric strings;
 # invalid values are silently ignored. ``size`` is not mergeable -- it is derived
@@ -644,11 +934,10 @@ _MERGEABLE_INT_FIELDS = ("attendance", "attendance_year")
 def _record_subcategory(record: dict):
     """The granular tag value from a record, checking the accepted keys in order.
 
-    Prefers ``subcategory`` / ``subcategories``; falls back to the legacy
-    ``category`` / ``categories`` keys so older CSV/JSON exports still ingest.
-    Returns the raw value (list or string), or ``None`` when none is present.
+    Accepts ``subcategory`` or ``subcategories``. Returns the raw value (list or
+    string), or ``None`` when none is present.
     """
-    for key in ("subcategory", "subcategories", "category", "categories"):
+    for key in ("subcategory", "subcategories"):
         value = record.get(key)
         if value not in (None, "", []):
             return value
@@ -680,14 +969,13 @@ def merge_records(
 
     Date fields accept ISO ``YYYY-MM-DD`` strings; ``remote_option`` is validated
     against its enum and silently ignored if invalid; ``attendance`` /
-    ``attendance_year`` are parsed as integers. The ``size`` bucket and the broad
-    ``category`` are never taken from a record -- size is recomputed from
-    ``attendance`` and category is derived from ``subcategory`` after merging, so
-    neither can disagree with what it is computed from. The granular tag arrives
-    under ``subcategory`` / ``subcategories`` (the legacy ``category`` /
-    ``categories`` keys are still accepted as aliases). A record that matches no
+    ``attendance_year`` are parsed as integers. The ``size`` bucket is never
+    taken from a record -- it is recomputed from ``attendance`` after merging, so
+    it cannot disagree with the figure. The granular tag arrives under
+    ``subcategory`` / ``subcategories`` and the broad one under ``category`` /
+    ``categories``. A record that matches no
     existing row is inserted (under the id of its name) only when it supplies a
-    ``name`` and a subcategory (otherwise skipped). An existing row's name is never changed here -- it is the index;
+    ``name`` (otherwise skipped). An existing row's name is never changed here -- it is the index;
     see :func:`rename_conference`. Returns the number of rows written.
     """
     engine = get_engine(db_url)
@@ -707,23 +995,43 @@ def merge_records(
             else:
                 continue
             if row is None:
-                if not (name and name_id(name) and _record_subcategory(record)):
+                if not (name and name_id(name)):
                     continue
-                row = ConferenceRow(id=name_id(name), acronym=acronym or name, name=name)
+                # A new series may arrive with only a name; the tag column is NOT NULL.
+                row = ConferenceRow(
+                    id=name_id(name), acronym=acronym or name, name=name, subcategory="",
+                )
                 session.add(row)
 
             changed = False
+            before = _extension_snapshot(row)
             for field in _DATE_FIELDS:
                 if field in record and record[field] not in (None, ""):
                     setattr(row, field, _coerce_date(record[field]))
                     changed = True
+            if _record_extensions(row, before):
+                changed = True
+            # Extension history entered by hand (`add`, the website form).
+            if _add_extensions(row, record.get("deadline_extensions")):
+                changed = True
             for field in _MERGEABLE_TEXT_FIELDS:
                 if field == "name":
                     continue  # the index; set on insert above, never merged
                 value = record.get(field)
+                if value in (None, ""):
+                    legacy_key = next(
+                        (k for k, f in _LEGACY_EDITION_KEYS.items() if f == field), None
+                    )
+                    value = record.get(legacy_key) if legacy_key else None
                 if value not in (None, ""):
                     setattr(row, field, str(value).strip())
                     changed = True
+            # stable_location is a flag, so an explicit false is a value (it
+            # clears the flag); only a missing or blank one leaves it alone.
+            stable = _coerce_bool(record.get("stable_location"))
+            if stable is not None and bool(row.stable_location) != stable:
+                row.stable_location = stable
+                changed = True
             for field in _MERGEABLE_INT_FIELDS:
                 value = record.get(field)
                 if value not in (None, ""):
@@ -759,6 +1067,14 @@ def merge_records(
                 if subs:
                     row.subcategory = ", ".join(subs)
                     changed = True
+            category = record.get("category")
+            if category in (None, "", []):
+                category = record.get("categories")
+            if category not in (None, "", []):
+                joined = ", ".join(normalize_categories(category))
+                if joined and row.category != joined:
+                    row.category = joined
+                    changed = True
             # Formats (abstract/paper/poster/oral): a list or a delimited string,
             # normalized to the canonical-ordered, comma-joined form. Accepts the
             # singular ``format`` key or the plural ``formats``. Only a non-empty
@@ -787,40 +1103,8 @@ def merge_records(
             if size_value != row.size:
                 row.size = size_value
                 changed = True
-            # Flagship link floor: a curated deep link wins over any URL a refresh
-            # merged in, mirroring upsert_conferences so neither write path can
-            # regress a verified link to a weaker homepage.
-            seed = seed_acronym_for_name(row.name)
-            floor = curated_seed_url(seed)
-            if floor and row.url != floor:
-                row.url = floor
-                changed = True
-            # Subcategory floor: a seeded series' tags are curated and
-            # authoritative, so they win over any tag the record carried (mirrors
-            # the url floor and upsert_conferences). Non-seed rows keep their own.
-            seed_subs = seed_subcategories_for(seed)
-            if seed_subs:
-                joined = ", ".join(seed_subs)
-                if row.subcategory != joined:
-                    row.subcategory = joined
-                    changed = True
-            # Category is always derived from the (possibly just-merged) subcategory,
-            # never taken from the record, so the stored bucket can't disagree with
-            # the tags. Recompute it whenever it would change.
-            category = ", ".join(categories_for_subcategories(normalize_subcategories(row.subcategory))) or None
-            if category != row.category:
-                row.category = category
-                changed = True
-            # Format floor: some conferences have hardcoded formats that override
-            # merge/discovery, ensuring consistency across refreshes.
-            hardcoded_fmts = HARDCODED_FORMATS.get((seed or "").upper())
-            if hardcoded_fmts:
-                hardcoded_format_str = ", ".join(hardcoded_fmts)
-                if row.format != hardcoded_format_str:
-                    row.format = hardcoded_format_str
-                    changed = True
             # The month columns are derived from the (possibly just-merged) dates,
-            # never taken from the record -- so, like size and category above, they
+            # never taken from the record -- so, like size above, they
             # are re-derived here rather than left carrying the month of a date the
             # merge has since replaced.
             # The display text is derived from the structured times and the dates,
@@ -851,17 +1135,23 @@ def merge_records(
     return written
 
 
-# Per-edition fields, as the suffix after ``prior_`` / ``upcoming_``.
-_EDITION_SUFFIXES = (
-    "abstract_deadline",
-    "late_abstract_deadline",
-    "paper_deadline",
-    "start_date",
-    "end_date",
-    "registration",
-)
+_EDITION_SUFFIXES = EDITION_SUFFIXES
 # Two start dates further apart than this belong to different editions.
 NEW_EDITION_GAP_DAYS = 180
+
+
+def _shift_to_prior(row: ConferenceRow) -> None:
+    """Move the upcoming edition into the prior slots and clear the upcoming ones.
+
+    A series with a stable location keeps its prior location when the moving
+    edition has none recorded, since the place is the same either way.
+    """
+    kept = row.prior_location if row.stable_location else None
+    for suffix in _EDITION_SUFFIXES:
+        setattr(row, f"prior_{suffix}", getattr(row, f"upcoming_{suffix}"))
+        setattr(row, f"upcoming_{suffix}", None)
+    if not row.prior_location:
+        row.prior_location = kept
 
 
 def _roll_editions(row: ConferenceRow, conf: Conference) -> None:
@@ -877,12 +1167,12 @@ def _roll_editions(row: ConferenceRow, conf: Conference) -> None:
     """
     old_up, new_up = row.upcoming_start_date, conf.upcoming_start_date
     if old_up and new_up and (new_up - old_up).days > NEW_EDITION_GAP_DAYS:
-        for suffix in _EDITION_SUFFIXES:
-            setattr(row, f"prior_{suffix}", getattr(row, f"upcoming_{suffix}"))
-            setattr(row, f"upcoming_{suffix}", None)
+        _shift_to_prior(row)
     old_prior, new_prior = row.prior_start_date, conf.prior_start_date
     if old_prior and new_prior and abs((new_prior - old_prior).days) > NEW_EDITION_GAP_DAYS:
         for suffix in _EDITION_SUFFIXES:
+            if suffix == "location" and row.stable_location:
+                continue  # the same place every edition
             setattr(row, f"prior_{suffix}", None)
 
 
@@ -895,10 +1185,16 @@ def _conference_to_record(conf: Conference) -> dict:
             record[field] = value
     if conf.subcategories:
         record["subcategories"] = conf.subcategories
+    if conf.categories:
+        record["categories"] = conf.categories
     if conf.formats:
         record["formats"] = conf.formats
     if conf.remote_option is not None:
         record["remote_option"] = conf.remote_option.value
+    # Only a positive flag is carried: a refresh that does not mention it must
+    # not clear one set by hand.
+    if conf.stable_location:
+        record["stable_location"] = True
     return record
 
 
@@ -913,7 +1209,8 @@ def apply_refreshed_conferences(
     blank. Each record is merged fill-only via :func:`merge_records`, after
     :func:`_roll_editions` realigns the edition slots when the refresh reports a
     new edition. Records for series not already in the table are skipped.
-    Returns the number of rows written.
+    A series' pinned columns are left as they are. Returns the number of rows
+    written.
     """
     conferences = list(conferences)
     engine = get_engine(db_url)
@@ -923,50 +1220,73 @@ def apply_refreshed_conferences(
             row = match_row(session, conf.name, conf.acronym, conf.subcategories)
             if row is None:
                 continue
+            pins = _pin_snapshot(row)
             _roll_editions(row, conf)
+            _restore_pins(row, pins)
             record = _conference_to_record(conf)
+            # The record's keys for the pinned columns (the tag lists travel
+            # under their plural names).
+            for field in pins:
+                record.pop(field, None)
+                record.pop({"subcategory": "subcategories", "category": "categories",
+                            "format": "formats"}.get(field, field), None)
             record["id"] = row.id
             records.append(record)
         session.commit()
     return merge_records(records, db_url=db_url)
 
 
-def seed_conferences(db_url: str = DEFAULT_DATABASE_URL, overwrite: bool = False) -> int:
-    """Populate the table from the static seed catalog (``config.SEED_CONFERENCES``).
+def roll_past_editions(
+    db_url: str = DEFAULT_DATABASE_URL, today: Optional[date] = None
+) -> dict:
+    """Move finished upcoming editions into the prior slots, by date alone.
 
-    Builds a minimal :class:`Conference` for every seed -- acronym, name,
-    subcategory, and the official URL -- leaving the deadline/date and
-    attendance/size fields empty. This makes the table usable without the discovery
-    API; a later discovery run fills the dates and attendance into the same rows in
-    place.
+    :func:`_roll_editions` only rolls when a refresh reports a new edition, so a
+    meeting that has ended stays in the upcoming slots until the next one is
+    announced. This pass needs no agent. Two repairs, in order:
 
-    Only *missing* rows are inserted by default, so seeding never clobbers data
-    already discovered; pass ``overwrite=True`` to also refresh existing rows'
-    seed-derived fields. Idempotent. Returns the number of rows written.
+    - **duplicate**: the prior and upcoming slots hold the same edition (equal
+      start dates). The prior slots fill any upcoming blanks and are cleared,
+      as :class:`Conference` does for new records.
+    - **rolled**: the upcoming meeting is over (its end date, or its start date
+      when no end is known, is before ``today``) and no upcoming deadline is
+      still ahead. The upcoming edition replaces the prior one, and the upcoming
+      slots are cleared.
+
+    The table, the derived months, and the deadline-time text all read
+    "upcoming, falling back to prior", so a roll does not change what they show.
+    Returns ``{"duplicate": [ids], "rolled": [ids]}``.
     """
+    today = today or date.today()
+    out: dict = {"duplicate": [], "rolled": []}
     engine = get_engine(db_url)
-    written = 0
     with Session(engine) as session:
-        for acronym, name, subcategory in SEED_CONFERENCES:
-            conf = Conference(
-                acronym=acronym,
-                name=name,
-                subcategory=subcategory,
-                url=best_seed_url(acronym),
-            )
-            row = match_row(session, conf.name, conf.acronym, conf.subcategories)
-            if row is None:
-                row = ConferenceRow(id=conf.id, name=conf.name)
-                session.add(row)
-            elif not overwrite:
+        for row in session.scalars(select(ConferenceRow)):
+            for kind in KINDS:
+                column = f"{kind}_deadline_extension"
+                pruned = _prune_extensions(getattr(row, column), today)
+                if pruned != getattr(row, column):
+                    setattr(row, column, pruned)
+            if row.prior_start_date and row.prior_start_date == row.upcoming_start_date:
+                for suffix in _EDITION_SUFFIXES:
+                    if getattr(row, f"upcoming_{suffix}") in (None, ""):
+                        setattr(row, f"upcoming_{suffix}", getattr(row, f"prior_{suffix}"))
+                    setattr(row, f"prior_{suffix}", None)
+                out["duplicate"].append(row.id)
+            end = row.upcoming_end_date or row.upcoming_start_date
+            if end is None or end >= today:
                 continue
-            name = row.name
-            _apply_model_to_row(row, conf)
-            row.name = name
-            session.flush()
-            written += 1
+            deadlines = (
+                row.upcoming_abstract_deadline,
+                row.upcoming_late_abstract_deadline,
+                row.upcoming_paper_deadline,
+            )
+            if any(d is not None and d >= today for d in deadlines):
+                continue
+            _shift_to_prior(row)
+            out["rolled"].append(row.id)
         session.commit()
-    return written
+    return out
 
 
 def distinct_subcategories(db_url: str = DEFAULT_DATABASE_URL) -> set[str]:
@@ -985,13 +1305,21 @@ def distinct_subcategories(db_url: str = DEFAULT_DATABASE_URL) -> set[str]:
     return subs
 
 
-def discovery_subcategories(db_url: str = DEFAULT_DATABASE_URL) -> list[str]:
-    """Every field a whole-table discovery run surveys, sorted.
+def distinct_categories(db_url: str = DEFAULT_DATABASE_URL) -> List[str]:
+    """The category tags currently present in the table, the suggested
+    ``models.CATEGORIES`` first in canonical order, then any custom ones sorted."""
+    engine = get_engine(db_url)
+    tags: set[str] = set()
+    with Session(engine) as session:
+        for joined in session.scalars(select(ConferenceRow.category)):
+            tags.update(normalize_categories(joined))
+    return normalize_categories(sorted(tags))
 
-    The subcategories present in the table, plus the seed fields (so a field
-    whose rows were all deleted, or a fresh database, is still covered).
-    """
-    return sorted(distinct_subcategories(db_url) | set(seed_subcategories()))
+
+def discovery_subcategories(db_url: str = DEFAULT_DATABASE_URL) -> list[str]:
+    """Every field a whole-table discovery run surveys: the subcategories in
+    the table, sorted."""
+    return sorted(distinct_subcategories(db_url))
 
 
 def recompute_sizes(db_url: str = DEFAULT_DATABASE_URL) -> int:
@@ -1011,29 +1339,6 @@ def recompute_sizes(db_url: str = DEFAULT_DATABASE_URL) -> int:
             value = size.value if size else None
             if value != row.size:
                 row.size = value
-                changed += 1
-        session.commit()
-    return changed
-
-
-def recompute_categories(db_url: str = DEFAULT_DATABASE_URL) -> int:
-    """Re-derive every row's stored ``category`` from its ``subcategory``.
-
-    ``category`` is denormalized (stored so the search/sort can use it as a column)
-    but only ever written from :func:`models.categories_for_subcategories` on
-    insert/merge. If the subcategory->category *map* changes, already-stored rows
-    keep their old bucket until rewritten -- this re-derives them all in place.
-    Idempotent. Returns the number of rows whose stored category changed.
-    """
-    engine = get_engine(db_url)
-    changed = 0
-    with Session(engine) as session:
-        for row in session.scalars(select(ConferenceRow)):
-            category = ", ".join(
-                categories_for_subcategories(normalize_subcategories(row.subcategory))
-            ) or None
-            if category != row.category:
-                row.category = category
                 changed += 1
         session.commit()
     return changed
@@ -1189,8 +1494,8 @@ def delete_conferences(ids: Iterable[str], db_url: str = DEFAULT_DATABASE_URL) -
     """Delete the rows with the given ids; returns the number removed.
 
     Only the manual ``conference-agent delete`` path calls this -- retired series
-    are otherwise never deleted (see ``refresh.is_retired``). A deleted seed series
-    returns on the next ``seed`` run, and discovery may find any series again.
+    are otherwise never deleted (see ``refresh.is_retired``). A field survey may
+    find a deleted series again.
     """
     engine = get_engine(db_url)
     removed = 0
