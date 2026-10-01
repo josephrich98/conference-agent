@@ -92,7 +92,7 @@ def test_unknown_conference_name_fails(tmp_path, calls, capsys):
     url = _db_url(tmp_path)
     _store(url)
     assert main(["--db", url, "discover", "--conference-name", "No Such Meeting"]) == 1
-    assert "list --names" in capsys.readouterr().err
+    assert "lookup --columns name" in capsys.readouterr().err
     assert calls["refresh"] == []
 
 
@@ -105,14 +105,14 @@ def test_options_lists_valid_values(tmp_path, calls, capsys):
         assert flag in out
     assert all(f"  {c}\n" in out for c in CATEGORIES)
     assert "  optics" in out and "  massive\n" in out
-    assert "list --names" in out
+    assert "lookup --columns name" in out
     assert calls == {"survey": [], "refresh": []}
 
 
-def test_list_names(tmp_path, capsys):
+def test_lookup_names(tmp_path, capsys):
     url = _db_url(tmp_path)
     _store(url)
-    assert main(["--db", url, "list", "--names"]) == 0
+    assert main(["--db", url, "lookup", "--columns", "name"]) == 0
     assert capsys.readouterr().out.splitlines() == ["Zeta Imaging Meeting", "Zeta Optics Workshop"]
 
 

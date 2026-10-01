@@ -1,25 +1,65 @@
 # conference_agent
 
 Website: https://conferenceagent.vercel.app
+Database: data/conferences.db
 
 Conference database for artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. 
 
 ## Install
 
 ```bash
-
 pip install git+https://github.com/josephrich98/conference-agent
 ```
+
+The base install is enough to query the database and add or delete entries
+(`lookup`, `add`, `delete`). To run the discovery agent, install the `discover`
+extra:
+
+```bash
+pip install "conference_agent[discover] @ git+https://github.com/josephrich98/conference-agent"
+```
+
+It adds the Anthropic SDK (used by the `api` backend) and the page-fetching
+helpers. The default `claude-code` backend also requires the `claude` CLI.
 
 ## Usage
 
 ```bash
+conference-agent lookup    # query the database
 conference-agent discover  # run the discovery agent to update conference information
 conference-agent add       # add/update a conference manually
 conference-agent delete    # delete a conference manually
 ```
 
 Each entry is indexed by the conference_name column.
+
+### conference-agent lookup
+
+Query the database for conferences:
+
+```bash
+conference-agent lookup --query "subcategory:radiology AND size:massive"
+```
+
+Query the database for conferences, only returning specific columns:
+
+```bash
+conference-agent lookup --query "subcategory:radiology AND size:massive" \
+  --columns conference_name acronym conference_dates location
+```
+
+View the entire database
+
+```bash
+conference-agent lookup
+```
+
+View all unique values of a column:
+
+```bash
+conference-agent lookup --columns conference_name
+```
+
 
 ### conference-agent discover
 
@@ -121,6 +161,28 @@ conference-agent add --delete \
   ...
 ```
 
+### conference-agent lookup
+
+List the unique values of one or more columns (alphabetical by default). With
+no arguments, it prints every value of every column across all conferences:
+
+```bash
+conference-agent lookup                         # all values of every column
+conference-agent lookup --columns subcategory   # all values in one column
+```
+
+Add `--query` to restrict the values to matching conferences. It uses the same
+search as the website: the boolean query first, then a forgiving keyword match
+when that finds nothing.
+
+```bash
+conference-agent lookup --columns acronym conference_month \
+  --query "subcategory:radiology AND size:massive"
+```
+
+`--sort` takes `alphabetical` (default), `reversealphabetical`, `increasing`, or
+`decreasing` (the last two order numbers, dates, and size by value).
+
 ## Scheduled updates
 
 A local cron job runs `scripts/scheduled_discovery.sh` every day at 2 AM PST. It
@@ -162,9 +224,6 @@ rest), and `all`. The AWS SAM stack can schedule those via EventBridge Scheduler
 (`EnableScheduledRefresh=true`; see `DEPLOY_AWS.md`), but that stack is torn
 down.
 
-See `TAXONOMY.md` for the field map and cadence policy.
-
-
 ## Data access (for agents and scripts)
 
 The live site is static, so the data is available as one credential-free JSON
@@ -179,6 +238,6 @@ order), `fields` (the queryable fields, aliases, and controlled vocabularies),
 and `conferences` (one object per conference series). Filter it client-side.
 
 For server-side boolean search, CSV export, and a subscribable `.ics` feed, run
-the FastAPI backend locally with `conference-agent serve` (requires
+the FastAPI backend locally with `uvicorn web.app:app` (requires
 `pip install -e ".[web]"`). Its endpoints are documented in
 [`DEPLOY.md`](DEPLOY.md#rest-api-fastapi-backend).

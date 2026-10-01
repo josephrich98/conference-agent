@@ -2,15 +2,12 @@
 
 Subcommands:
   discover  — run the discovery agent and store results (optionally email a summary)
-  seed      — populate the table from the static seed catalog (no API needed)
   add       — manually add conferences from flags, a CSV, or JSON (no API);
               `add --update` changes existing ones, `add --fields` prints the
               field vocabulary it accepts
   delete    — delete a conference manually
-  list      — print the stored conference table
   lookup    — print the unique values of columns, optionally over a search
               (the website's boolean query, falling back to its keyword match)
-  serve     — launch the web table interface (boolean search + calendar export)
 """
 
 from __future__ import annotations
@@ -388,15 +385,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_discover.add_argument("--email", action="store_true", help="Email a summary when finished")
 
-    p_seed = sub.add_parser(
-        "seed", help="Populate the table from the static seed catalog (no API needed)"
-    )
-    p_seed.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Refresh seed-derived fields on existing rows too (default: insert missing only)",
-    )
-
     p_add = sub.add_parser(
         "add",
         help="Manually add conferences (no API): one via flags, or many via "
@@ -518,7 +506,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete a conference manually",
         description="Delete a conference, matched by --conference-name (fails if "
         "the name does not exist). A deleted seed series returns on the next "
-        "`seed` run, and discovery may find any series again.",
+        "static build, and discovery may find any series again.",
     )
     p_delete.add_argument(
         "--conference-name",
@@ -528,17 +516,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_delete.add_argument(
         "-y", "--yes", action="store_true", help="Skip the confirmation prompt."
-    )
-
-    p_list = sub.add_parser("list", help="Print the stored conference table")
-    p_list.add_argument("--category", help="Filter by broad category (e.g. medicine)")
-    p_list.add_argument("--subcategory", help="Filter by subcategory (e.g. radiology)")
-    p_list.add_argument("--size", help="Filter by size (massive/large/medium/small)")
-    p_list.add_argument(
-        "--names",
-        action="store_true",
-        help="Print only the conference names (the values `discover --conference-name` "
-        "and `add --update` accept), one per line",
     )
 
     p_lookup = sub.add_parser(
@@ -577,10 +554,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also search retired series (no new edition in the check window)",
     )
 
-    p_serve = sub.add_parser("serve", help="Launch the web table interface")
-    p_serve.add_argument("--host", default="127.0.0.1")
-    p_serve.add_argument("--port", type=int, default=8000)
-
     return parser
 
 
@@ -595,7 +568,7 @@ def _print_discover_options(db_url: str) -> None:
         print()
 
     print("--conference-name:")
-    print("  any stored series' full name; list them with `conference-agent list --names`")
+    print("  any stored series' full name; list them with `conference-agent lookup --columns name`")
     print()
     block("--category", CATEGORIES)
     subs = discovery_subcategories(db_url)
@@ -639,7 +612,7 @@ def _discover_targets(args, errors: list[str]) -> list:
             if conf is None:
                 errors.append(
                     f"no stored conference named '{name}' "
-                    "(see `conference-agent list --names`)."
+                    "(see `conference-agent lookup --columns name`)."
                 )
             elif conf not in named:
                 named.append(conf)
@@ -729,15 +702,6 @@ def _cmd_discover(args) -> int:
 
         sent = notify_refresh(conferences, written)
         print("Summary email sent." if sent else "Email skipped (SMTP not configured).")
-    return 0
-
-
-def _cmd_seed(args) -> int:
-    from conference_agent.database import seed_conferences
-
-    written = seed_conferences(db_url=args.db, overwrite=args.overwrite)
-    verb = "Wrote" if args.overwrite else "Inserted"
-    print(f"{verb} {written} seed conference row(s).")
     return 0
 
 
@@ -1041,6 +1005,33 @@ _DERIVED_FIELDS = (
     ("conference_month", "Derived from conference_dates (upcoming, else prior)"),
 )
 
+# Input fields with no web-table column of their own, and where (if anywhere)
+# their value surfaces on the site. Every other input field is its own column.
+_NOT_DISPLAYED = {
+    "conference_acronym": "integrated into Conference",
+    "conference_name": "integrated into Conference",
+    "new_conference_name": "renames the Conference entry",
+    "url": "integrated into Conference (as its link)",
+    "attendance_year": "integrated into Attendance, e.g. 45,000 (2025)",
+    "attendance_source": "stored for provenance only",
+    "notes": "stored only",
+    "abstract_time": "integrated into Deadline time",
+    "abstract_timezone": "integrated into Deadline time",
+    "late_abstract_time": "integrated into Deadline time",
+    "late_abstract_timezone": "integrated into Deadline time",
+    "paper_time": "integrated into Deadline time",
+    "paper_timezone": "integrated into Deadline time",
+    "prior_abstract_due": "integrated into Abstract due (shown when no upcoming date)",
+    "prior_late_abstract_due": (
+        "integrated into Late abstract due (shown when no upcoming date)"
+    ),
+    "prior_paper_due": "integrated into Paper due (shown when no upcoming date)",
+    "prior_registration": "integrated into Registration (shown when no upcoming value)",
+    "prior_conference_dates": (
+        "integrated into Conference dates (shown when no upcoming dates)"
+    ),
+}
+
 # How each field kind is written on the command line / in a file.
 _KIND_VALUE = {
     "text": "text",
@@ -1069,6 +1060,7 @@ def _print_fields(as_json: bool) -> int:
                     # One of the two identity fields is required per row.
                     "required": f.column in ("conference_acronym", "conference_name"),
                     "description": f.help,
+                    "website": _NOT_DISPLAYED.get(f.column, "own column"),
                 }
                 for f in specs
             ],
@@ -1077,57 +1069,29 @@ def _print_fields(as_json: bool) -> int:
         print(json.dumps(payload, indent=2))
         return 0
 
-    from tabulate import tabulate
+    import shutil
+    import textwrap
 
-    table = [[_flag_for(f.column), f.column, _KIND_VALUE[f.kind], f.help] for f in specs]
+    width = min(shutil.get_terminal_size((100, 24)).columns, 100)
+    bold, dim, reset = ("\033[1m", "\033[2m", "\033[0m") if sys.stdout.isatty() else ("",) * 3
+
+    def entry(name: str, description: str, note: str = "") -> None:
+        print(f"  {bold}{name}{reset}")
+        for line in textwrap.wrap(description, width - 6):
+            print(f"      {line}")
+        if note:
+            print(f"      {dim}Not displayed on website — {note}{reset}")
+        print()
+
     print(
-        "Fields accepted by `conference-agent add`. The same names work three "
-        "ways:\n  a --flag, a --csv header column, or a --json record key.\n"
+        "Fields accepted by `conference-agent add`. Each name works as a --flag "
+        "(underscores\nbecome dashes), a --csv header column, or a --json record key.\n"
     )
-    print(tabulate(table, headers=["Flag", "Name", "Value", "Meaning"], tablefmt="github"))
-    print("\nDerived columns (never accepted as input -- computed on write):\n")
-    print(
-        tabulate(
-            [[n, d] for n, d in _DERIVED_FIELDS],
-            headers=["Column", "Derived from"],
-            tablefmt="github",
-        )
-    )
-    return 0
-
-
-def _cmd_list(args) -> int:
-    from tabulate import tabulate
-
-    from conference_agent.database import query_conferences
-
-    rows = query_conferences(
-        subcategory=args.subcategory, category=args.category, size=args.size, db_url=args.db
-    )
-    if not rows:
-        print("No conferences stored. Run `conference-agent discover` first.")
-        return 0
-    if args.names:
-        for name in sorted({c.name for c in rows}, key=str.casefold):
-            print(name)
-        return 0
-
-    table = [
-        [
-            c.acronym,
-            c.category,
-            c.subcategory,
-            c.size.value if c.size else "",
-            c.attendance_display or "",
-            c.upcoming_abstract_deadline or "",
-            c.upcoming_start_date or "",
-            c.conference_month_name or "",
-            c.remote_option.value if c.remote_option else "",
-        ]
-        for c in rows
-    ]
-    headers = ["Acronym", "Category", "Subcategory", "Size", "Attendance", "Abstract due", "Upcoming", "Conf. month", "Remote"]
-    print(tabulate(table, headers=headers, tablefmt="github"))
+    for f in specs:
+        entry(f.column, f.help, _NOT_DISPLAYED.get(f.column, ""))
+    print("Derived columns (never accepted as input; computed on write):\n")
+    for name, description in _DERIVED_FIELDS:
+        entry(name, description)
     return 0
 
 
@@ -1212,23 +1176,13 @@ def _cmd_lookup(args) -> int:
     return 0
 
 
-def _cmd_serve(args) -> int:
-    import uvicorn
-
-    uvicorn.run("web.app:app", host=args.host, port=args.port)
-    return 0
-
-
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {
         "discover": _cmd_discover,
-        "seed": _cmd_seed,
         "add": _cmd_add,
         "delete": _cmd_delete,
-        "list": _cmd_list,
         "lookup": _cmd_lookup,
-        "serve": _cmd_serve,
     }
     try:
         return handlers[args.command](args)

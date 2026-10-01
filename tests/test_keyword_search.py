@@ -2,8 +2,9 @@
 
 When the exact boolean search matches nothing (or the text does not parse), the
 page ranks rows with ``keywordSearch``, which tolerates typos, inflections, and
-filler words. It has no Python counterpart, so it is exercised through Node.
-Skipped automatically when ``node`` is unavailable (e.g. on the Python-only CI).
+filler words. ``web.search.keyword_search`` is its Python port (used by
+``conference-agent lookup``); the parity test below pins the two together. The JS
+tests run through Node and are skipped automatically when ``node`` is unavailable (e.g. on the Python-only CI).
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from web.search import keyword_search, keyword_terms
 
 _NODE = shutil.which("node")
 _RUNNER = Path(__file__).parent / "js" / "run_keyword.js"
@@ -127,3 +130,22 @@ def test_synonyms_months_and_years(run):
 
 def test_no_match_returns_empty(run):
     assert run("zzzzqqq")["zzzzqqq"]["ids"] == []
+
+
+_PARITY_QUERIES = (
+    "pediatric radiology conferences in europe",
+    "radiology AND NOT virtual",
+    'subcategory:radiolgy "machine learning"',
+    "conference_dates:>=2026-06-01",
+    "the conferences",
+    "radiolgy", "nuerology", "radiological", "pediatrics", "stats",
+    "ai december", "cancer: immunotherapy", "chicago 2027", "online neuro",
+    "big usa", "zzzzqqq", "Vienna", "statistical boston",
+)
+
+
+def test_python_port_matches_js(run):
+    out = run(*_PARITY_QUERIES)
+    for q in _PARITY_QUERIES:
+        assert keyword_terms(q) == out[q]["terms"], q
+        assert [r["id"] for r in keyword_search(q, _ROWS)] == out[q]["ids"], q

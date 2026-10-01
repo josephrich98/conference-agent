@@ -491,6 +491,18 @@ def _extract(client, research_text: str, model: str, max_tokens: int) -> List[Co
 # --- Claude Code CLI backend ----------------------------------------------
 
 
+def _anthropic_client():
+    """Return an Anthropic client for the ``api`` backend, or raise a helpful error."""
+    try:
+        import anthropic  # imported lazily: only the `api` backend needs it
+    except ImportError as exc:
+        raise RuntimeError(
+            "The 'api' backend needs the anthropic package. Install it with "
+            "pip install 'conference_agent[discover]'."
+        ) from exc
+    return anthropic.Anthropic()
+
+
 def _claude_cli_path() -> str:
     """Locate the ``claude`` CLI or raise a helpful error."""
     path = shutil.which("claude")
@@ -649,10 +661,8 @@ def discover_conferences(
         return _extract_via_cli(research_text, model)
 
     # backend == "api"
-    import anthropic  # imported lazily so non-discovery code paths don't need it
-
     resolved_model = model or ANTHROPIC_MODEL
-    client = anthropic.Anthropic()
+    client = _anthropic_client()
     research_text = _research(client, subs, resolved_model, max_tokens, attendance_hints)
     if not research_text.strip():
         return []
@@ -747,10 +757,8 @@ def refresh_conferences(
             return []
         found = _extract_via_cli(research_text, model)
     else:
-        import anthropic
-
         resolved_model = model or ANTHROPIC_MODEL
-        client = anthropic.Anthropic()
+        client = _anthropic_client()
         research_text = _research_loop(client, system, prompt, resolved_model, max_tokens)
         if not research_text.strip():
             return []

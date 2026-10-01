@@ -31,8 +31,7 @@ conference's deadlines and dates as a credential-free iCalendar (`.ics`) feed.
 Discovery is seeded
 across medicine (radiology and ~18 other specialties), genomics/bioinformatics,
 and data science; the seed list (`SEED_CONFERENCES` in `config.py`) is the lever
-for adding fields, the standing refresh subcategories are derived from it, and
-`TAXONOMY.md` documents the field map and cadence policy.
+for adding fields, and the standing refresh subcategories are derived from it.
 
 ## Status
 
@@ -92,13 +91,13 @@ for the design.
     each series' subscriber-facing fields against the last run's snapshot
     (`data/notify_state.json`) and emails that series' subscribers the changes
     plus its updated `.ics`, with signed unsubscribe links
-  - `cli.py` — command-line entry point (`discover` / `seed` / `add` /
-    `delete` / `list` / `serve`). A bare `discover` surveys every field
+  - `cli.py` — command-line entry point (`discover` / `add` /
+    `delete` / `lookup`). A bare `discover` surveys every field
     (`database.discovery_subcategories`: table tags ∪ seed fields), one agent run
     per field; `--subcategory` / `--category` narrow the survey, while
     `--conference-name` / `--size` switch to re-checking matching stored series
     via `discover.refresh_conferences` (no new rows); `discover --options` lists
-    the valid filter values and `list --names` the stored names. `_SCALAR_FIELDS` + `_COMPOSITE_FIELDS` is the single
+    the valid filter values and `lookup --columns name` the stored names. `_SCALAR_FIELDS` + `_COMPOSITE_FIELDS` is the single
     registry defining what `add` accepts; it generates the argparse flags, the
     `--csv`/`--json` column vocabulary, and the `add --fields` reference output, so a
     new field is added in one place and every input path picks it up. Entries
@@ -141,9 +140,7 @@ for the design.
 - `.github/workflows/` — `ci.yml` only (lint + offline tests). The scheduled
   refresh workflows (`weekly_update`/`monthly_update`/`auto_check`) were replaced
   by EventBridge Scheduler in the AWS SAM stack (see `infra/template.yaml`)
-- `TAXONOMY.md` — the field taxonomy (domains → fields → flagship seeds) and the
-  refresh-cadence policy
-- `DEPLOY.md` — AWS deployment walkthrough (FastAPI + Lambda + PostgreSQL)
+- `DEPLOY.md` — deploy guide: the static Vercel path (live) and the legacy AWS stack
 
 ## Development Setup
 
@@ -154,8 +151,9 @@ conda activate conference_agent
 ```
 
 ```bash
-pip install -e ".[dev]"            # core + test tooling
-pip install -e ".[discover]"       # add fetch/parse helpers for the agent
+pip install -e .                   # core: lookup / add / delete (no discovery)
+pip install -e ".[dev]"            # core + test tooling (includes web + discover)
+pip install -e ".[discover]"       # discovery: anthropic (api backend) + fetch/parse helpers
 pip install -e ".[web]"            # FastAPI web table + calendar feed
 ```
 
@@ -303,9 +301,11 @@ dependencies there rather than installing ad hoc.
   nothing (or the text does not parse) the page falls back to
   `keywordSearch` in `web/static/search.js`, a forgiving, relevance-ranked
   keyword match (prefix/stem/typo tolerant, filler words dropped, rows matching
-  more terms first). The fallback is browser-only, so the boolean grammar, its
-  Python parity, and the API are unchanged; `tests/test_keyword_search.py`
-  covers it via Node. An "✨ AI search" button next to Search (or Ctrl+Enter)
+  more terms first). The fallback is not in the API; its Python port,
+  `web.search.keyword_search`, serves `conference-agent lookup` (unique column
+  values over the same search), so the boolean grammar, its Python parity, and
+  the API are unchanged; `tests/test_keyword_search.py` covers it via Node and
+  pins the Python port to it. An "✨ AI search" button next to Search (or Ctrl+Enter)
   sends the same box's text to the natural-language translator. Categorical
   column headers (category, subcategory, format, size, remote, the four month
   columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or

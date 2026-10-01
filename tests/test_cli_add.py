@@ -653,3 +653,19 @@ def test_add_new_conference_not_prompted(tmp_path, monkeypatch):
     code = main(["--db", url, "add", "--conference", "ZZT - Test Imaging Conference", "--subcategory", "radiology"])
     assert code == 0
     assert _by_id(url)["ZZT"].name == "Test Imaging Conference"
+
+
+def test_fields_text_flags_columns_hidden_on_website(capsys):
+    from conference_agent.cli import _COMPOSITE_FIELDS, _NOT_DISPLAYED, _SCALAR_FIELDS
+
+    columns = {f.column for f in list(_SCALAR_FIELDS) + list(_COMPOSITE_FIELDS)}
+    assert set(_NOT_DISPLAYED) <= columns
+
+    assert main(["add", "--fields"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    i = lines.index("  attendance_year")
+    assert "Not displayed on website — integrated into Attendance" in lines[i + 2]
+    # A field with its own column carries no note.
+    j = lines.index("  location")
+    assert lines[j + 2] == ""
