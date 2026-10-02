@@ -3,16 +3,16 @@
 Website: https://conferenceagent.vercel.app
 Database: data/conferences.db
 
-Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. 
+Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics.
 
 Features:
-- Keep up to date with conference news such as venue announcements, submission deadline posting, and submission deadline extension
+- Keep up to date with conference news such as venue announcements, submission deadline posting, and submission deadline extension via calendar events and email reminders
 - Organize conferences by category and subcategory, size, submission deadlines, and more
-- Search with keywords, boolean logic, or AI
+- Search with keywords, boolean logic, or plain English
 - Sort conferences by those with the nearest submission deadlines, color-coded by timeframe
 - See deadline times in your current timezone
 - View conferences that have a history of extending deadlines
-- Add new conferences or edit existing conference information with a form or command-line
+- Add new conferences or edit existing conferences with a form or command-line interface
 
 ## Install
 

@@ -277,8 +277,12 @@ dependencies there rather than installing ad hoc.
   rejected. The add form's "Deadline extension history" (below the paper
   deadline) collects these as rows of type / original date / extended date,
   with a + button for more. On the site, `web/app.py` `_EXTENSION_COLUMNS` carries them in
-  each serialized row only so `index.html` (`extensionMark`) can put a ⏩ after
-  an extended deadline date, with the past extensions on hover or tap. `database._record_extensions`
+  each serialized row only so `index.html` can mark the deadline dates:
+  `extensionMark` puts a ⏩ after a date whose series has an extension whose
+  extended date has already passed (that history on hover or tap; an extension
+  still in progress is not history, so a lone current one shows no ⏩), and
+  `extendedMark` adds a superscript + when the displayed date is itself an
+  extended date (the extension is already granted). `database._record_extensions`
   runs in both write paths (`upsert_conferences`, `merge_records`) and appends
   a line when an upcoming deadline moves later for the same edition (start date
   within `NEW_EDITION_GAP_DAYS`), by at most `EXTENSION_MAX_DAYS` (120), and is

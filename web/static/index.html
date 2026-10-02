@@ -255,6 +255,8 @@
     .from-prior { color: var(--date-old); }
     /* A deadline the series has extended before (hover, or tap, for the dates). */
     .ext-mark { cursor: help; margin-left: 3px; font-size: 0.85em; user-select: none; }
+    /* The displayed deadline is an already-granted extension. */
+    .ext-plus { cursor: help; font-weight: 700; margin-left: 1px; }
     .ext-note { display: block; font-size: 0.85em; white-space: pre-line; }
     .ext-note[hidden] { display: none; }
     .size { font-weight: 600; text-transform: capitalize; }
@@ -721,20 +723,47 @@
     function dateOrPrior(upcoming, prior, spec, extensions) {
       const value = upcoming || prior;
       if (!value) return '<span class="muted">—</span>';
-      const [mark, note] = extensionMark(extensions);
-      if (!mark) return dateSpan(value, value, spec);
-      return `<span class="nobreak">${dateSpan(value, value, spec)}${mark}</span>${note}`;
+      const lines = extensionLines(extensions);
+      const plus = extendedMark(value, lines);
+      const [mark, note] = extensionMark(lines);
+      if (!mark && !plus) return dateSpan(value, value, spec);
+      return `<span class="nobreak">${dateSpan(value, value, spec)}${plus}${mark}</span>${note}`;
+    }
+
+    // The recorded extensions (newline-separated "MM/DD/YYYY – MM/DD/YYYY",
+    // original – extended) as [line, originalIso, extendedIso] triples.
+    function extensionLines(extensions) {
+      const iso = (d) => {
+        const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d.trim());
+        return m ? `${m[3]}-${m[1]}-${m[2]}` : "";
+      };
+      return String(extensions || "").split("\n").map((l) => l.trim()).filter(Boolean)
+        .map((l) => {
+          const [orig = "", ext = ""] = l.split(" – ");
+          return [l, iso(orig), iso(ext)];
+        });
+    }
+
+    // A superscript + on a displayed deadline that is itself an extended date,
+    // so a reader knows the extension has already been granted.
+    function extendedMark(value, lines) {
+      const hit = lines.find(([, , ext]) => ext === value);
+      if (!hit) return "";
+      const text = `Extended deadline (originally ${hit[0].split(" – ")[0]})`;
+      return `<sup class="ext-plus" title="${escapeHtml(text)}" aria-label="${escapeHtml(text)}">+</sup>`;
     }
 
     // A small marker after a deadline the series has extended before: the
-    // recorded extensions (newline-separated "original – extended" lines) show on
-    // hover, and a tap or click toggles them inline. Returns [marker, note], both
-    // empty when there are none.
-    function extensionMark(extensions) {
-      const lines = String(extensions || "").split("\n").map((l) => l.trim()).filter(Boolean);
-      if (!lines.length) return ["", ""];
-      const text = `Past deadline extension${lines.length > 1 ? "s" : ""}:\n` +
-        lines.map((l) => l.replace(" – ", " → ")).join("\n");
+    // recorded extensions show on hover, and a tap or click toggles them inline.
+    // An extension whose extended date has not yet passed is not history, so the
+    // marker and its list cover only extensions whose extended date has passed
+    // (the + covers a current one). Returns [marker, note], both empty otherwise.
+    function extensionMark(lines) {
+      const today = ymd(new Date());
+      const past = lines.filter(([, , ext]) => ext && ext < today);
+      if (!past.length) return ["", ""];
+      const text = `Past deadline extension${past.length > 1 ? "s" : ""}:\n` +
+        past.map(([l]) => l.replace(" – ", " → ")).join("\n");
       return [
         `<span class="ext-mark" role="button" tabindex="0" title="${escapeHtml(text)}" ` +
           `aria-label="${escapeHtml(text)}">⏩</span>`,
@@ -1639,7 +1668,7 @@
           `</table>` +
           `<p class="muted" style="margin:6px 0 0">A deadline turns <span class="date-recent">red</span> the moment its time passes (its Deadline time, or the end of the day in AoE when none is given).</p>` +
           `<p class="muted" style="margin:10px 0 0">Location and Cost show the upcoming edition's value, or the previous edition's in <span class="from-prior">orange</span> until the next is published (a conference held in the same place every year is not marked).</p>` +
-          `<p class="muted" style="margin:10px 0 0">A ⏩ after a deadline means the conference has extended that deadline before. Click or tap it to show the extension history (original → extended date); hovering also shows it.</p>`;
+          `<p class="muted" style="margin:10px 0 0">A ⏩ after a deadline means the conference has extended that deadline in the past. Click or tap it to show the extension history (original → extended date); hovering also shows it. A superscript <b>+</b> means the date shown is already an extended deadline, so a further extension should not be expected.</p>`;
       } catch (e) { /* non-fatal */ }
     }
 

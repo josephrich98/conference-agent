@@ -1204,7 +1204,8 @@ _NOT_DISPLAYED = {
         "integrated into Conference dates (shown when no upcoming dates)"
     ),
     "deadline_extensions": (
-        "a ⏩ after an extended deadline date, with the past extensions on hover"
+        "a ⏩ after a deadline with a past extension (history on hover), and a"
+        " superscript + when the date shown is itself an extended deadline"
     ),
 }
 
