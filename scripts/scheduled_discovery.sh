@@ -10,7 +10,8 @@
 #
 # Before the watch run it adds any "Add or edit a conference" submissions merged into
 # origin/main (scripts/ingest_submissions.py). The watch run also moves finished
-# editions into the prior columns.
+# editions into the prior columns. After it, the airports near any new or
+# changed location are looked up (`conference-agent discover --airports`).
 #
 # If the run changes what the site shows, it redeploys the static site
 # (scripts/deploy_static.sh). The comparison is on the exported site data, not
@@ -84,6 +85,11 @@ run() {
   echo ""
 
   python scripts/daily_update.py --cadence watch --backend claude-code || status=1
+
+  # Airports near any location that is new or changed (geocoding + OurAirports;
+  # no agent). A lookup that cannot reach its service is retried next run.
+  echo ""
+  conference-agent discover --airports || { echo "ERROR: airport lookup failed"; status=1; }
 
   # Deploy even after a partial failure: batches that succeeded are kept.
   after="$(site_hash)" || return 1

@@ -87,6 +87,17 @@ for the design.
     **watch** cadence (`run_watch`, the scheduled job): tiers series by deadline
     proximity, runs the agent-free page check, and re-researches only changed
     series via the targeted `discover.refresh_conferences`
+  - `airports.py` — the Airports column and the venue flag: geocodes a
+    location (OpenStreetMap Nominatim, cached in `data/geocode_cache.json`),
+    decides whether it is a specific venue or only a city, and lists the
+    commercial airports (OurAirports, cached in `data/airports.csv`) within
+    100 road miles (OSRM, cached in
+    `data/drive_cache.json`; the nearest one when none is), marking all but the
+    main ones minor (`mark_minor`, by Wikidata passenger counts cached in
+    `data/airport_traffic.json` and road miles); `refresh_airports` fills
+    rows whose location changed, and `parse_airports` / `format_airports` handle
+    the stored `CODE | Name | N mi[ | minor]` lines (see the design decision
+    below)
   - `page_watch.py` — agent-free change detection: fetches a conference's link
     plus a few same-site dates pages and fingerprints the set of dates mentioned
   - `notify.py` — email summary after a discovery / daily refresh
@@ -107,7 +118,10 @@ for the design.
     are indexed by `conference_name` (see the name-index design decision): `add`
     fails if the name exists, `add --update` and `delete` fail
     if it does not, and any conflict in a batch writes nothing.
-    `--update --new-conference-name` renames a series (its id follows)
+    `--update --new-conference-name` renames a series (its id follows).
+    `discover --airports` looks up the Airports column instead of running the
+    agent, for rows whose location changed (`--airports all` for every row;
+    the discover filters narrow it)
 - `web/` — FastAPI app + static single-page table (`search.py` boolean-query
   language, `nl_query.py` optional natural-language → boolean-query translation
   via a local Ollama model, `app.py` REST API, `static/index.html`, `handler.py`
@@ -124,8 +138,7 @@ for the design.
 - `scripts/seo_pages.py` — prerenders crawlable per-conference (`/c/<id>/`, with
   `Event` JSON-LD) and per-field (`/field/<tag>/`) pages, `sitemap.xml`,
   `robots.txt`, and the home page's browse links; called by `build_static.py`
-  (the table itself is JS-rendered, so crawlers need these). The payload's
-  `generated` date is the "Last updated" shown in the header. Vercel Web
+  (the table itself is JS-rendered, so crawlers need these). Vercel Web
   Analytics (`/_vercel/insights/script.js`) must be enabled in the project dashboard.
 - `web/vercel/` — the Vercel Functions behind the table's ✉️ subscribe button
   (`api/subscribe.js`, `confirm.js`, `unsubscribe.js`, `subscriptions.js`,
@@ -139,7 +152,8 @@ for the design.
   meeting has ended and no deadline is ahead (the `roll_past_editions` rule),
   else under the upcoming ones. Location, Registration, and Cost each have
   Upcoming / Prior radio buttons beside them (Location also Stable, which sets
-  `stable_location`); until clicked they follow the dates. Category(s) and
+  `stable_location`); until clicked they follow the dates. (Airports are not
+  a form field: they are looked up from the location.) Category(s) and
   Subcategory(s) are independent pickers: a dropdown of the values in use (plus
   the suggested categories) or a typed custom value. An "Edit an existing
   conference" box above the form searches the listed names and acronyms as you
@@ -304,6 +318,62 @@ dependencies there rather than installing ad hoc.
   columns are migrated on open (`database._migrate_location_cost_to_editions`:
   the value moves to the upcoming slot when the row has an upcoming date, else
   to the prior one).
+- **Nearby airports and venue map links are derived from the location.** The
+  Airports column (right of Location) lists the commercial airports (scheduled
+  passenger service and an IATA code, from OurAirports) within
+  `airports.AIRPORT_RADIUS_MILES` (100) road miles of the displayed location
+  (upcoming, else prior; `database.displayed_location`), each shown as
+  "CODE (N mi)", nearest first; when none is that close, the single nearest
+  airport is listed (searched beyond the radius when no airport is within 100
+  straight-line miles; `FALLBACK_CANDIDATES`). Road miles come from the public
+  OSRM server (no key; `airports._Router`, cached in `data/drive_cache.json`).
+  OurAirports places an airport mid-field, which OSRM snaps to airside service
+  roads, so the slow (< 12 mph) steps ending a route are measured once per
+  airport and subtracted (about 3 miles at O'Hare). An airport with no road
+  route keeps its straight-line miles. Driving times are not shown, since
+  traffic makes free-flow times misleading.
+  The location is geocoded with Nominatim, trying a parenthetical venue folded
+  in, then the full text, then dropping leading comma-separated parts toward the
+  city; a match wider than 150 miles that is not a city (a state or country)
+  is not used, and a value naming no single place ("TBA", "Virtual", several
+  cities joined by `;` or ` / `) gets no airports. Distances run from the venue,
+  or for a city-only location from the city's center (Nominatim's point for the
+  city, the same place a map search for it shows). The same lookup sets
+  `location_venue`: true when the full location (not a fallback) matched a
+  specific place rather than a city or boundary, and its first part is not
+  itself the name of a settlement (a `featureType=settlement` search: "Hengqin,
+  China" matches a railway station but is a town). The table links a venue
+  location to Google Maps, and each airport to Google Maps directions from the
+  airport to the location (the venue, or the city center). Each list has at
+  least one **main** airport; the rest are stored as **minor**
+  (`airports.mark_minor`). By its largest Wikidata passenger count from the
+  last ten years, an airport is a hub (≥ `HUB_AIRPORT_PASSENGERS`, 10 million),
+  major (≥ `MAJOR_AIRPORT_PASSENGERS`, 500,000; or OurAirports'
+  `large_airport` class when Wikidata has none), or neither. The main airports
+  are those of the best tier present no farther by road than
+  `max(1.5 × nearest, nearest + 10 mi)` of that tier's nearest (an airport with
+  no road route is minor when any has one), plus any hub within 75 miles with
+  at least twice the passengers of the busiest of those (`BUSIER_HUB_*`). So
+  Cold Spring Harbor gets LGA and JFK (28 and 30 mi; Newark, about 45, is
+  minor), McCormick Place gets Midway and O'Hare (11 and 21 mi), Seoul gets
+  Gimpo and Incheon, and Hinxton gets Stansted and Heathrow (19 and 69 mi). The column hides minor
+  airports unless the ⚙ box in its header ("Include all airports", remembered
+  per browser, default off) is checked, and the `/c/<id>/` pages list only the
+  main ones (the former `| small` marker still parses as minor). Airports are automatic only:
+  they follow from the location, so there is no `add` field or form input (a
+  wrong list is fixed by making the location more specific); `airports` in a
+  CSV export is accepted on re-import and ignored. Three columns hold this, none
+  on the `Conference` model and none researched by discovery: `airports` (one
+  `CODE | Name | N mi[ | minor]` line each; a table, CSV, and search column,
+  `airports:ORD`, which matches minor airports too), `airports_location` (the
+  location they were found for), and `location_venue` (serialized for the table
+  only, like the deadline times). Every write path (`upsert_conferences`,
+  `merge_records`, `roll_past_editions`) runs `database._sync_airports`, which
+  clears all three when the displayed location no longer equals
+  `airports_location`, so a stale list is never shown; `airports.refresh_airports`
+  (`conference-agent discover --airports`, run by the daily job) then looks the new
+  location up. A lookup that cannot reach a service leaves the row for the next
+  run.
 - **Controlled vocabularies.** `ConferenceSize` (`massive`/`large`/`medium`/`small`) and
   `RemoteOption` (`in-person`/`virtual`/`hybrid`; an unknown option is NULL) are enums, not free
   text, so the table and queries can filter/color consistently.
@@ -522,7 +592,8 @@ dependencies there rather than installing ad hoc.
   meeting is over (and with no deadline still ahead) into the prior slots and
   merges an edition stored in both slots (the `Conference` model collapses the
   same duplicate on input). Before the watch run the job ingests merged
-  submissions; if any step fails it emails the log tail via
+  submissions, and after it runs `conference-agent discover --airports` for new or
+  changed locations; if any step fails it emails the log tail via
   `scripts/alert_failure.py`. It redeploys (via
   `scripts/deploy_static.sh`) only when the exported site data changed; the DB
   file itself changes every run from bookkeeping columns, so it is not the

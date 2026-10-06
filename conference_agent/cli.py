@@ -278,7 +278,7 @@ def _build_record(fields: dict) -> dict:
     ``--csv`` header, and the ``--json`` record keys -- to their (string or list)
     values. Run ``conference-agent add --fields`` to print the full vocabulary.
     The raw stored field names are accepted as aliases too, so a table CSV export
-    round-trips (the derived ``size``, ``category`` and ``*_month`` columns are
+    round-trips (the derived ``size``, ``*_month``, and ``airports`` columns are
     accepted but ignored on write). Returns a dict keyed by stored field names,
     suitable for ``merge_records`` / ``Conference``.
     """
@@ -386,7 +386,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--subcategory / --category limit the survey to those fields. "
         "--conference-name / --size instead re-check matching stored series only "
         "(no new series are added); any --subcategory / --category also narrows "
-        "that selection. Run `discover --options` for the valid values.",
+        "that selection. --airports looks up the Airports column instead of "
+        "running the agent. Run `discover --options` for the valid values.",
     )
     p_discover.add_argument(
         "--options",
@@ -432,6 +433,19 @@ def build_parser() -> argparse.ArgumentParser:
         "api, or Claude Code's configured model for --backend claude-code).",
     )
     p_discover.add_argument("--email", action="store_true", help="Email a summary when finished")
+    p_discover.add_argument(
+        "--airports",
+        nargs="?",
+        const="changed",
+        choices=["changed", "all"],
+        help="Instead of running the agent, look up the airports near each "
+        "conference's location (OpenStreetMap Nominatim + OurAirports; needs "
+        "network access) and whether it is a specific venue. 'changed' (the "
+        "default) looks up only locations that changed since the last lookup; "
+        "'all' looks up every location again. --conference-name / --size / "
+        "--subcategory / --category limit the series covered. The scheduled job "
+        "runs this after each refresh.",
+    )
 
     p_add = sub.add_parser(
         "add",
@@ -695,6 +709,30 @@ def _discover_targets(args, errors: list[str]) -> list:
     return rows
 
 
+def _discover_airports(args) -> int:
+    """`discover --airports`: fill the Airports column (no agent run)."""
+    from conference_agent.airports import refresh_airports
+
+    ids = None
+    if args.conference_name or args.size or args.subcategory or args.category:
+        errors: list[str] = []
+        targets = _discover_targets(args, errors)
+        if errors:
+            for message in errors:
+                print(f"Error: {message}", file=sys.stderr)
+            return 1
+        if not targets:
+            print("No stored conferences match those filters.")
+            return 0
+        ids = [conf.id for conf in targets]
+    counts = refresh_airports(db_url=args.db, ids=ids, force=args.airports == "all")
+    print(
+        f"Looked up {counts['updated']} location(s); {counts['not_found']} not found "
+        f"(no airports); {counts['failed']} failed (retried next run)."
+    )
+    return 1 if counts["failed"] else 0
+
+
 def _cmd_discover(args) -> int:
     import os
 
@@ -710,6 +748,9 @@ def _cmd_discover(args) -> int:
     if args.options:
         _print_discover_options(args.db)
         return 0
+
+    if args.airports:
+        return _discover_airports(args)
 
     if args.backend == "api" and not os.environ.get(ANTHROPIC_API_KEY_ENV):
         print(
@@ -1173,6 +1214,11 @@ _DERIVED_FIELDS = (
     ("late_abstract_month", "Derived from late_abstract_due (upcoming, else prior)"),
     ("paper_month", "Derived from paper_due (upcoming, else prior)"),
     ("conference_month", "Derived from conference_dates (upcoming, else prior)"),
+    (
+        "airports",
+        "Looked up from the location by `conference-agent discover --airports` "
+        "(again whenever the location changes)",
+    ),
 )
 
 # Input fields with no web-table column of their own, and where (if anywhere)
@@ -1339,6 +1385,8 @@ def _lookup_values(rows: list[dict], column: str, sort: str) -> list:
             continue
         if column in _LOOKUP_TAG_COLUMNS:
             values.update(t.strip() for t in str(value).split(",") if t.strip())
+        elif column == "airports":
+            values.update(t.strip() for t in str(value).split("\n") if t.strip())
         else:
             values.add(value)
     if sort in ("alphabetical", "reversealphabetical"):

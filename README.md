@@ -160,6 +160,13 @@ conference-agent discover \
   --size massive
 ```
 
+To update airports specifically:
+
+```bash
+conference-agent disvoer \
+  --airports
+```
+
 Using Claude API rather than Claude code subscription:
 
 ```bash

@@ -25,6 +25,7 @@ const TEXT_FIELDS = {
   subcategory: ["subcategory"],
   format: ["format"],
   location: ["upcoming_location", "prior_location"],
+  airports: ["airports"],
   size: ["size"],
   remote: ["remote_option"],
   cost: ["upcoming_cost", "prior_cost"],

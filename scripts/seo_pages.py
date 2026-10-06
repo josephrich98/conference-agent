@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import quote
 
+from conference_agent.airports import parse_airports
 from conference_agent.models import CATEGORIES
 
 SITE_URL = "https://conferenceagent.vercel.app"
@@ -160,6 +161,13 @@ def _upcoming_location(row: dict) -> Optional[str]:
     return row.get("prior_location") if row.get("stable_location") else None
 
 
+def _airports_text(row: dict) -> Optional[str]:
+    """The nearby main airports as "MDW (11 mi), ORD (21 mi)", or None (minor
+    airports are left out, as on the table by default)."""
+    items = [f"{a.code} ({a.miles} mi)" for a in parse_airports(row.get("airports")) if not a.minor]
+    return ", ".join(items) or None
+
+
 def conference_page(row: dict, generated: str) -> tuple[str, str]:
     """Return ``(path, html)`` for one conference series."""
     path = f"/c/{slugify(row['id'])}/"
@@ -176,6 +184,8 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Conference dates", _date_range(row.get("upcoming_start_date"), row.get("upcoming_end_date"))),
         ("Registration", row.get("upcoming_registration")),
         ("Location", _upcoming_location(row)),
+        # Airports belong to the displayed location: here when it is this one.
+        ("Nearby airports", _airports_text(row) if _upcoming_location(row) else None),
         ("Attendance format", row.get("remote_option")),
         ("Cost", row.get("upcoming_cost")),
         ("Submission types", row.get("format")),
@@ -194,6 +204,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Conference dates", _date_range(row.get("prior_start_date"), row.get("prior_end_date"))),
         ("Registration", row.get("prior_registration")),
         ("Location", row.get("prior_location")),
+        ("Nearby airports", None if _upcoming_location(row) else _airports_text(row)),
         ("Cost", row.get("prior_cost")),
     ]
 

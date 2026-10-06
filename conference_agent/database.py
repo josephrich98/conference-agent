@@ -104,6 +104,17 @@ class ConferenceRow(Base):
     # The series meets in the same place every edition, so a prior edition's
     # location is shown as current. NULL on rows predating the column = false.
     stable_location: Mapped[Optional[bool]] = mapped_column(Boolean)
+    # Commercial airports near the displayed location (``displayed_location``),
+    # one "CODE | Name | N mi[ | minor]" line each, nearest by road first (``airports``
+    # module). Derived from the location by ``airports.refresh_airports``; never
+    # entered by hand or researched by discovery. ``airports_location`` is the location
+    # they were found for and ``location_venue`` whether it geocoded to a specific
+    # place rather than a city; ``_sync_airports`` clears all three when the
+    # location changes, so a stale list is never shown and the next lookup
+    # re-runs. NULL when not (yet) looked up.
+    airports: Mapped[Optional[str]] = mapped_column(Text)
+    airports_location: Mapped[Optional[str]] = mapped_column(Text)
+    location_venue: Mapped[Optional[bool]] = mapped_column(Boolean)
 
     url: Mapped[Optional[str]] = mapped_column(Text)
     remote_option: Mapped[Optional[str]] = mapped_column(String, index=True)
@@ -393,6 +404,29 @@ def _add_extensions(row: "ConferenceRow", entries, today: Optional[date] = None)
             setattr(row, column, value)
             changed = True
     return changed
+
+
+# --- Airports --------------------------------------------------------------
+
+
+def displayed_location(row: "ConferenceRow") -> Optional[str]:
+    """The location the table shows: the upcoming edition's, else the prior one's."""
+    value = (row.upcoming_location or row.prior_location or "").strip()
+    return value or None
+
+
+def _sync_airports(row: "ConferenceRow") -> bool:
+    """Clear the airports and venue flag when the displayed location changed.
+
+    Returns whether anything was cleared. ``airports.refresh_airports`` then
+    looks the new location up.
+    """
+    if row.airports_location == displayed_location(row):
+        return False
+    if row.airports is None and row.airports_location is None and row.location_venue is None:
+        return False
+    row.airports = row.airports_location = row.location_venue = None
+    return True
 
 
 # --- Conversion helpers ----------------------------------------------------
@@ -874,6 +908,7 @@ def upsert_conferences(
                 row.stable_location = conf.stable_location or stable
                 _restore_pins(row, pins)
             _record_extensions(row, before)
+            _sync_airports(row)
             session.flush()
             written += 1
         session.commit()
@@ -1088,6 +1123,10 @@ def merge_records(
                 if joined and row.format != joined:
                     row.format = joined
                     changed = True
+            # Airports belong to the displayed location: a changed location
+            # clears them, and the next lookup re-runs.
+            if _sync_airports(row):
+                changed = True
             remote = record.get("remote_option")
             if remote not in (None, ""):
                 try:
@@ -1285,6 +1324,8 @@ def roll_past_editions(
                 continue
             _shift_to_prior(row)
             out["rolled"].append(row.id)
+        for row in session.scalars(select(ConferenceRow)):
+            _sync_airports(row)
         session.commit()
     return out
 

@@ -68,6 +68,11 @@ _EXTENSION_COLUMNS = [
     f"{kind}_deadline_extension" for kind in ("abstract", "late_abstract", "paper")
 ]
 
+# Whether the displayed location is a specific place rather than a city (see
+# ``ConferenceRow.location_venue``). Carried so the table can link a venue to a
+# map; not a table column.
+_PLACE_COLUMNS = ["location_venue"]
+
 # Columns that may be used for sorting.
 _SORTABLE = {
     "acronym",
@@ -143,13 +148,14 @@ def get_db_url() -> str:
 def _row_to_dict(row: ConferenceRow) -> dict:
     """Serialize a row to a JSON-friendly dict (dates as ISO strings)."""
     out: dict = {}
-    for col in (*_RESULT_COLUMNS, *_TIME_COLUMNS, *_EXTENSION_COLUMNS):
+    for col in (*_RESULT_COLUMNS, *_TIME_COLUMNS, *_EXTENSION_COLUMNS, *_PLACE_COLUMNS):
         value = getattr(row, col)
         if hasattr(value, "isoformat"):
             value = value.isoformat()
         out[col] = value
     # NULL (a row predating the column) means false.
     out["stable_location"] = bool(out["stable_location"])
+    out["location_venue"] = bool(out["location_venue"])
     return out
 
 

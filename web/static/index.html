@@ -8,7 +8,7 @@
   <link rel="canonical" href="https://conferenceagent.vercel.app/">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Conference Agent: Conference Agent Database">
-  <meta property="og:description" content="Conference database for artificial intelligence, medicine, and genomics, with calendar events and email reminders.">
+  <meta property="og:description" content="Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics. Keep track of submission deadlines with calendar events and email reminders.">
   <meta property="og:url" content="https://conferenceagent.vercel.app/">
   <style>
     :root {
@@ -237,6 +237,10 @@
     /* Free-text columns that otherwise wrap into tall, narrow cells. */
     table.results td[data-col="conference"] { min-width: 160px; }
     table.results td[data-col="location"] { min-width: 150px; }
+    table.results td[data-col="airports"] { min-width: 130px; }
+    .airport { white-space: nowrap; }
+    td a.map-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
+    td a.map-link:hover { color: var(--accent); }
     table.results td[data-col="cost"] { min-width: 170px; }
     table.results td[data-col="registration"] { min-width: 220px; }
     .conf-name { font-weight: 600; }
@@ -371,7 +375,7 @@
       font-size: 13px;
     }
     #filter-pop[hidden] { display: none; }
-    #time-pop {
+    .opt-pop {
       position: absolute;
       z-index: 20;
       padding: 6px 8px;
@@ -381,8 +385,8 @@
       box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
       font-size: 13px;
     }
-    #time-pop[hidden] { display: none; }
-    #time-pop label { display: flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+    .opt-pop[hidden] { display: none; }
+    .opt-pop label { display: flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
     #filter-pop .fp-head { padding: 2px 4px 8px; color: var(--muted); }
     #filter-pop .fp-head b { color: var(--text); }
     #fp-search {
@@ -451,7 +455,7 @@
   <header>
     <div class="header-text">
       <h1>Conference Agent</h1>
-      <p class="subtitle">Conference database for artificial intelligence, medicine, and genomics. Keep up to date with due dates with calendar events and email reminders. <span id="last-updated" class="muted"></span></p>
+      <p class="subtitle">Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics. Keep track of submission deadlines with calendar events and email reminders.</p>
     </div>
     <div class="header-links">
     <a class="add-link" href="add/" aria-label="Add or edit a conference"><span class="long-label">Add or edit a conference</span><span class="short-label">Add/Edit</span></a>
@@ -507,8 +511,12 @@
 
   <div id="toast"></div>
 
-  <div id="time-pop" hidden role="dialog" aria-label="Deadline time display">
+  <div id="time-pop" class="opt-pop" hidden role="dialog" aria-label="Deadline time display">
     <label><input type="checkbox" id="tp-military" /><span>Military time (24-hour)</span></label>
+  </div>
+
+  <div id="airport-pop" class="opt-pop" hidden role="dialog" aria-label="Airports display">
+    <label><input type="checkbox" id="ap-small" /><span>Include all airports</span></label>
   </div>
 
   <div id="filter-pop" hidden role="dialog" aria-label="Filter by value">
@@ -588,6 +596,7 @@
       { key: "conference_month", field: "conference_month", label: "Conference month", sort: "conference_month", facet: monthFacet("conference_month") },
       { key: "upcoming_dates", field: "conference_dates", label: "Conference dates", sort: "upcoming_start_date" },
       { key: "location", field: "location", label: "Location", sort: "upcoming_location" },
+      { key: "airports", field: "airports", label: "Airports", sort: null },
       { key: "registration", field: "registration", label: "Registration", sort: null },
       { key: "cost", field: "cost", label: "Cost", sort: null },
       { key: "cal", label: "Calendar", sort: null,
@@ -823,6 +832,58 @@
       return `<span class="from-prior" title="Previous edition">${escapeHtml(prior)}</span>`;
     }
 
+    // Google Maps links. A location that geocoded to a specific place (a venue,
+    // not just a city; `location_venue`) links to it on the map. Each nearby
+    // airport links to directions from it to the location: the venue, or for a
+    // city its center (where Google Maps puts the city).
+    const attr = (s) => escapeHtml(s).replace(/"/g, "&quot;");
+    const mapsSearch = (q) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+    const mapsDirections = (from, to) =>
+      `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}`;
+    const mapLink = (href, text, title) =>
+      `<a class="map-link" href="${attr(href)}" target="_blank" rel="noopener noreferrer" title="${attr(title)}">${text}</a>`;
+
+    function locationCell(r) {
+      const html = editionText(r.upcoming_location, r.prior_location, r.stable_location);
+      const place = r.upcoming_location || r.prior_location;
+      return r.location_venue && place ? mapLink(mapsSearch(place), html, "Show on Google Maps") : html;
+    }
+
+    // Whether the Airports column lists minor airports (little traffic, or
+    // much farther than the nearest main one), chosen in its header's ⚙ box
+    // and remembered per browser. Off by default.
+    const SMALL_AIRPORTS_KEY = "conference-agent.small-airports";
+    let smallAirports = false;
+    try { smallAirports = localStorage.getItem(SMALL_AIRPORTS_KEY) === "1"; } catch (e) { /* storage blocked */ }
+
+    // The stored airports: one "CODE | Name | N mi" line each, nearest by
+    // road first, with "| minor" after a minor airport ("| small" is its
+    // former spelling; a "| N min" driving time is a former field).
+    function parseAirports(text) {
+      return String(text || "").split("\n").map((line) => {
+        const [code = "", name = "", miles = "", ...rest] = line.split("|").map((x) => x.trim());
+        const size = rest.filter((x) => !/^\d+ min$/.test(x))[0] || "";
+        return name ? { code, name, miles: parseInt(miles, 10), minor: size === "minor" || size === "small" } : null;
+      }).filter(Boolean);
+    }
+
+    function airportsCell(r) {
+      const all = parseAirports(r.airports);
+      const list = smallAirports ? all : all.filter((a) => !a.minor);
+      if (!list.length) {
+        const note = all.length ? ' title="Only minor airports: check Include all airports in the ⚙ box"' : "";
+        return `<span class="muted"${note}>—</span>`;
+      }
+      const place = r.upcoming_location || r.prior_location;
+      const to = r.location_venue ? "the venue" : "the city center";
+      return list.map((a) => {
+        const airport = `${a.name} (${a.code})`;
+        const title = `${a.name}${a.minor ? " (minor airport)" : ""}: directions to ${to}`;
+        const link = mapLink(mapsDirections(airport, place), escapeHtml(a.code), title);
+        return `<span class="airport">${link} <span class="muted">(${escapeHtml(a.miles)} mi)</span></span>`;
+      }).join(", ");
+    }
+
     // Registration is free text: show the upcoming edition's value, falling back
     // to the prior edition's, else a muted dash.
     function textOrPrior(upcoming, prior) {
@@ -904,19 +965,22 @@
           });
           th.appendChild(fb);
         }
-        if (col.key === "deadline_time") {
-          // Not a value filter: a small box with the 12/24-hour display choice.
+        if (col.key in OPTION_POPS) {
+          // Not a value filter: a small box of display choices for the column
+          // (12/24-hour times; whether to list all airports).
           const tb = document.createElement("button");
           tb.className = "filt";
           tb.textContent = "⚙";
-          tb.title = "Time display";
-          tb.setAttribute("aria-label", "Deadline time display options");
+          tb.title = OPTION_POPS[col.key].title;
+          tb.setAttribute("aria-label", `${col.label} display options`);
+          tb.dataset.opt = col.key;
           tb.addEventListener("click", (e) => {
             e.stopPropagation(); // not a sort click
             $("columns-panel").hidden = true;
             closeFilter();
+            const same = tp && tp.key === col.key;
             if (tp) closeTimePop();
-            else openTimePop(tb);
+            if (!same) openTimePop(tb, col.key);
           });
           th.appendChild(tb);
         }
@@ -1004,7 +1068,8 @@
           <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month, r.upcoming_start_date || r.prior_start_date)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
-          <td data-col="location">${editionText(r.upcoming_location, r.prior_location, r.stable_location)}</td>
+          <td data-col="location">${locationCell(r)}</td>
+          <td data-col="airports">${airportsCell(r)}</td>
           <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="cost">${editionText(r.upcoming_cost, r.prior_cost)}</td>
           <td data-col="cal" class="cal-cell">
@@ -1191,24 +1256,35 @@
       $("filter-pop").hidden = true;
     }
 
-    // The Deadline time column's display box: one checkbox, "Military time".
-    let tp = null; // the header button the open box hangs from
-    function openTimePop(btn) {
-      tp = btn;
-      $("tp-military").checked = militaryTime;
-      $("time-pop").hidden = false;
+    // Column display boxes (the header ⚙): Deadline time's "Military time"
+    // and Airports' "Include all airports".
+    const OPTION_POPS = {
+      deadline_time: { pop: "time-pop", title: "Time display", sync: () => { $("tp-military").checked = militaryTime; } },
+      airports: { pop: "airport-pop", title: "Airport display", sync: () => { $("ap-small").checked = smallAirports; } },
+    };
+    let tp = null; // the open box: { key, btn } (the header button it hangs from)
+    function openTimePop(btn, key) {
+      tp = { key, btn };
+      OPTION_POPS[key].sync();
+      $(OPTION_POPS[key].pop).hidden = false;
       placeTimePop();
     }
     function placeTimePop() {
-      const pop = $("time-pop");
-      const b = tp.getBoundingClientRect();
+      const pop = $(OPTION_POPS[tp.key].pop);
+      const b = tp.btn.getBoundingClientRect();
       const maxLeft = window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8;
       pop.style.left = `${Math.max(window.scrollX + 8, Math.min(window.scrollX + b.left, maxLeft))}px`;
       pop.style.top = `${window.scrollY + b.bottom + 4}px`;
     }
     function closeTimePop() {
+      if (tp) $(OPTION_POPS[tp.key].pop).hidden = true;
       tp = null;
-      $("time-pop").hidden = true;
+    }
+    // After a re-render rebuilds the header, re-anchor the open box to its new ⚙.
+    function reanchorOptionPop() {
+      if (!tp) return;
+      const btn = document.querySelector(`th .filt[data-opt="${tp.key}"]`);
+      if (btn) { tp.btn = btn; placeTimePop(); } else closeTimePop();
     }
 
     // Keep the checked values. With a search typed, only the checked values
@@ -1579,7 +1655,6 @@
         const payload = await resp.json();
         DATA.conferences = payload.conferences || [];
         DATA.columns = payload.columns || [];
-        if (payload.generated) $("last-updated").textContent = `Last updated ${payload.generated}.`;
         DATA.fields = payload.fields || [];
         DATA.byId = {};
         for (const r of DATA.conferences) DATA.byId[r.id] = r;
@@ -1668,7 +1743,8 @@
           `</table>` +
           `<p class="muted" style="margin:6px 0 0">A deadline turns <span class="date-recent">red</span> the moment its time passes (its Deadline time, or the end of the day in AoE when none is given).</p>` +
           `<p class="muted" style="margin:10px 0 0">Location and Cost show the upcoming edition's value, or the previous edition's in <span class="from-prior">orange</span> until the next is published (a conference held in the same place every year is not marked).</p>` +
-          `<p class="muted" style="margin:10px 0 0">A ⏩ after a deadline means the conference has extended that deadline in the past. Click or tap it to show the extension history (original → extended date); hovering also shows it. A superscript <b>+</b> means the date shown is already an extended deadline, so a further extension should not be expected.</p>`;
+          `<p class="muted" style="margin:10px 0 0">A location that is a specific venue (not just a city) links to Google Maps. Airports lists the commercial airports within 100 road miles of the location (from the venue, or from the city center when only a city is given; road distance from OpenStreetMap), nearest first, or the nearest one when none is that close, and links each to directions. By default it shows the main airports: those of the busiest kind nearby (10 million or more passengers a year, else 500,000 or more), leaving out any much farther than the nearest of them unless it is a far busier hub, so every list has at least one. The rest are shown when "Include all airports" is checked in the column's ⚙ box.</p>` +
+          `<p class="muted" style="margin:10px 0 0">A ⏩ after a deadline means the conference has extended that deadline in the past. Click, tap, or hover to show the extension history. A superscript <b>+</b> means the date shown is an extended deadline.</p>`;
       } catch (e) { /* non-fatal */ }
     }
 
@@ -1773,7 +1849,7 @@
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".columns-menu")) $("columns-panel").hidden = true;
       if (fp && !e.target.closest("#filter-pop")) closeFilter();
-      if (tp && !e.target.closest("#time-pop")) closeTimePop();
+      if (tp && !e.target.closest(".opt-pop")) closeTimePop();
       if (np && !e.target.closest("#notify-pop")) closeNotify();
       if (cp && !e.target.closest("#cal-pop")) closeCal();
     });
@@ -1811,9 +1887,13 @@
       militaryTime = e.target.checked;
       try { localStorage.setItem(MILITARY_KEY, militaryTime ? "1" : "0"); } catch (err) { /* storage blocked */ }
       search(); // re-render the rows in the chosen format; the box stays open
-      // The header is rebuilt, so re-anchor the open box to the new ⚙ button.
-      tp = [...document.querySelectorAll('th .filt[aria-label^="Deadline time"]')][0] || null;
-      if (tp) placeTimePop(); else closeTimePop();
+      reanchorOptionPop();
+    });
+    $("ap-small").addEventListener("change", (e) => {
+      smallAirports = e.target.checked;
+      try { localStorage.setItem(SMALL_AIRPORTS_KEY, smallAirports ? "1" : "0"); } catch (err) { /* storage blocked */ }
+      search();
+      reanchorOptionPop();
     });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) recolorDates(); });
     document.addEventListener("keydown", (e) => {

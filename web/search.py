@@ -64,7 +64,8 @@ Presence test (field is set / not set)::
 The query fields mirror the table's column headers exactly: ``conference``,
 ``category`` (one of the ten top-level buckets), ``subcategory`` (the specific
 field), ``format`` (any of abstract / paper / poster / oral),
-``location``, ``size``, ``attendance``, ``remote``, ``cost``, ``registration`` (free text — a
+``location``, ``airports`` (free text — the codes and names of the airports
+near the location, e.g. ``airports:ORD``), ``size``, ``attendance``, ``remote``, ``cost``, ``registration`` (free text — a
 substring match), ``deadline_time`` (free text — the time of day and zone
 submissions close, e.g. ``deadline_time:AoE``), ``abstract_due``, ``late_abstract_due`` (the second, later
 abstract deadline some series publish — a poster-only deadline or a
@@ -126,6 +127,7 @@ RESULT_COLUMNS = [
     "upcoming_location",
     "prior_location",
     "stable_location",
+    "airports",
     "upcoming_registration",
     "prior_registration",
     "upcoming_cost",
@@ -154,6 +156,9 @@ _TEXT_FIELDS = {
     # Location and cost are per edition: a substring match across both slots,
     # like registration.
     "location": ("upcoming_location", "prior_location"),
+    # Airports near the displayed location, "CODE | Name | N mi" lines (e.g.
+    # ``airports:ORD``).
+    "airports": ("airports",),
     "size": ("size",),
     "remote": ("remote_option",),
     "cost": ("upcoming_cost", "prior_cost"),
@@ -211,6 +216,7 @@ _FIELD_TYPES = {
     "subcategory": "string",
     "format": "cat: " + ", ".join(CONFERENCE_FORMATS),
     "location": "string",
+    "airports": "string",
     "size": "cat: " + ", ".join(t.value for t in ConferenceSize),
     "attendance": "int: count, e.g. 5000 or 5k",
     "remote": "cat: " + ", ".join(o.value for o in RemoteOption),
@@ -296,6 +302,7 @@ _FIELD_DESCRIPTIONS = {
     "subcategory": "specific field(s) the conference covers; one or more per series",
     "format": "submission types accepted (abstract, paper, poster, oral)",
     "location": "city and country of the upcoming (or most recent) meeting",
+    "airports": "commercial airports within 100 road miles of the location (code and name), nearest first",
     "size": "bucket from annual attendance: massive 10,000+, large 1,000-9,999, medium 250-999, small under 250; "
     "compare by rank, e.g. size>=large",
     "attendance": "most recent annual attendance, e.g. attendance>=5000",
