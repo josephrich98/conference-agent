@@ -519,6 +519,10 @@
     <label><input type="checkbox" id="ap-small" /><span>Include all airports</span></label>
   </div>
 
+  <div id="past-pop" class="opt-pop" hidden role="dialog" aria-label="Past dates">
+    <label title="When sorting a deadline or Conference dates column ascending"><input type="checkbox" id="pp-past" /><span>Include past deadlines</span></label>
+  </div>
+
   <div id="filter-pop" hidden role="dialog" aria-label="Filter by value">
     <div class="fp-head">Show rows where <b id="fp-title"></b> is</div>
     <input id="fp-search" type="text" autocomplete="off" spellcheck="false" placeholder="Search values" aria-label="Search values" />
@@ -689,6 +693,39 @@
     const monthStart = () => (monthFromJanuary ? 1 : NOW.getMonth() + 1);
     const dayStart = () => (monthFromJanuary ? 1 : NOW.getDate());
 
+    // An ascending sort on a deadline or Conference dates column hides the rows
+    // whose shown date (upcoming, else prior) is before today, so the list starts
+    // with what is still ahead; "Include past deadlines" in those columns' ⚙ box
+    // (remembered per browser, default off) keeps them. Rows with no date stay,
+    // sorted last. A meeting counts as past only once its last day is.
+    const PAST_KEY = "conference-agent.include-past";
+    let includePast = false;
+    try { includePast = localStorage.getItem(PAST_KEY) === "1"; } catch (e) { /* storage blocked */ }
+    const PAST_DATE = {
+      upcoming_abstract_deadline: (r) => r.upcoming_abstract_deadline || r.prior_abstract_deadline,
+      upcoming_late_abstract_deadline: (r) => r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline,
+      upcoming_paper_deadline: (r) => r.upcoming_paper_deadline || r.prior_paper_deadline,
+      upcoming_start_date: (r) => (r.upcoming_start_date
+        ? r.upcoming_end_date || r.upcoming_start_date
+        : r.prior_end_date || r.prior_start_date),
+    };
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const todayIso = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    };
+    let pastDay = todayIso(); // the day the rows were last filtered for
+    // The rows to drop under the current sort, or null when none are dropped.
+    function pastFilter() {
+      const date = PAST_DATE[state.sort];
+      if (includePast || !date || state.order !== "asc") return null;
+      const today = todayIso();
+      return (r) => {
+        const d = date(r);
+        return Boolean(d) && String(d).slice(0, 10) < today;
+      };
+    }
+
     // CSS class for a date relative to a three-month window around now. `at` is
     // the instant (ms) the date has passed: the end of its deadline time, or of the
     // day in AoE when it has none (see ConferenceCalendar.deadlineInstant). So a
@@ -785,6 +822,12 @@
     // a day), and when the tab becomes visible again after sleeping in the background.
     let recolorTimer = null;
     function recolorDates() {
+      // A new day: re-run the search so an ascending date sort drops the dates
+      // that are now past (search() re-renders, which recolors and re-arms).
+      if (pastDay !== todayIso()) {
+        pastDay = todayIso();
+        if (pastFilter()) { search(); return; }
+      }
       const now = Date.now();
       for (const el of document.querySelectorAll("[data-at]")) {
         el.className = dateClass(el.dataset.date, Number(el.dataset.at), now);
@@ -1112,6 +1155,15 @@
         const filtered = predicate ? pool.filter(predicate) : pool;
         rows = ConferenceSearch.sortRows(filtered, state.sort, state.order, monthStart(), dayStart());
         status = `${plural(rows.length)}.`;
+        const past = pastFilter();
+        if (past) {
+          const kept = rows.filter((r) => !past(r));
+          if (kept.length < rows.length) {
+            status = `${plural(kept.length)} (${rows.length - kept.length} with past dates hidden; `
+              + "check Include past deadlines in the column's ⚙ box).";
+            rows = kept;
+          }
+        }
       } catch (e) {
         queryError = e.message; // QueryError, like the API's 400 detail
         status = `Query error: ${queryError}`;
@@ -1123,6 +1175,8 @@
         if (hits.length) {
           byRelevance = state.relevance;
           rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order, monthStart(), dayStart());
+          const past = byRelevance ? null : pastFilter();
+          if (past) rows = rows.filter((r) => !past(r));
           const why = queryError ? `Not a valid boolean query (${queryError})` : "No exact matches";
           status = `${why} — showing ${plural(rows.length)} matching some of your keywords` +
             (byRelevance ? ", most relevant first" : "") +
@@ -1262,6 +1316,10 @@
       deadline_time: { pop: "time-pop", title: "Time display", sync: () => { $("tp-military").checked = militaryTime; } },
       airports: { pop: "airport-pop", title: "Airport display", sync: () => { $("ap-small").checked = smallAirports; } },
     };
+    // The four date columns share one "Include past deadlines" box.
+    for (const key of ["upcoming_abstract_deadline", "upcoming_late_abstract_deadline", "upcoming_paper_deadline", "upcoming_dates"]) {
+      OPTION_POPS[key] = { pop: "past-pop", title: "Past dates", sync: () => { $("pp-past").checked = includePast; } };
+    }
     let tp = null; // the open box: { key, btn } (the header button it hangs from)
     function openTimePop(btn, key) {
       tp = { key, btn };
@@ -1892,6 +1950,12 @@
     $("ap-small").addEventListener("change", (e) => {
       smallAirports = e.target.checked;
       try { localStorage.setItem(SMALL_AIRPORTS_KEY, smallAirports ? "1" : "0"); } catch (err) { /* storage blocked */ }
+      search();
+      reanchorOptionPop();
+    });
+    $("pp-past").addEventListener("change", (e) => {
+      includePast = e.target.checked;
+      try { localStorage.setItem(PAST_KEY, includePast ? "1" : "0"); } catch (err) { /* storage blocked */ }
       search();
       reanchorOptionPop();
     });

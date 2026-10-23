@@ -466,7 +466,12 @@ dependencies there rather than installing ad hoc.
   pre-checked. The chosen values are
   browser-only state held apart from the search box and ANDed with it, so they
   survive an AI search and the boolean grammar (which has no exact-match
-  operator for text) stays unchanged. A "Browse by field" bar above the search box (one
+  operator for text) stays unchanged. An ascending sort on Abstract / Late abstract /
+  Paper due or Conference dates hides rows whose shown date (upcoming, else
+  prior; a meeting's last day) is before today, and the status line counts
+  them; the ⚙ box on those four headers has "Include past deadlines"
+  (remembered per browser, default off) to keep them. Descending sorts and
+  relevance order are unaffected, and rows with no date stay (sorted last). A "Browse by field" bar above the search box (one
   card per category with rows, then the chosen category's subcategories as
   chips: every subcategory tagging a series in that category) sets those
   same category / subcategory filters, and the page mirrors them and the
