@@ -9,7 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const { keywordSearch, keywordTerms } = require(
-  path.resolve(__dirname, "../../web/static/search.js")
+  path.resolve(__dirname, "../../conference_agent/web/static/search.js")
 );
 
 const rows = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));

@@ -6,7 +6,7 @@ static Vercel bundle copies index.html verbatim, so it must never carry the tag.
 
 from __future__ import annotations
 
-import web.app as appmod
+import conference_agent.web.app as appmod
 
 
 def _render(monkeypatch, ga_id):

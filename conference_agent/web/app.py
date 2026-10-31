@@ -8,7 +8,7 @@ Endpoints:
 
 Run locally with::
 
-    uvicorn web.app:app --reload
+    uvicorn conference_agent.web.app:app --reload
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from conference_agent.database import (
     late_abstract_date_expr,
     paper_date_expr,
 )
-from web.nl_query import LLMUnavailable, TranslationError, translate
-from web.search import RESULT_COLUMNS, QueryError, build_filter, field_help
+from conference_agent.web.nl_query import LLMUnavailable, TranslationError, translate
+from conference_agent.web.search import RESULT_COLUMNS, QueryError, build_filter, field_help
 
 app = FastAPI(title="Conference Agent", description="Curated conference table + calendar sync.")
 
@@ -98,7 +98,7 @@ _SORTABLE = {
 _SORT_ALIASES = {"location": "upcoming_location"}
 
 # Size sorts by magnitude, not alphabetically: ascending is massive -> small.
-# Mirrors ``SIZE_SORT_RANK`` in web/static/search.js.
+# Mirrors ``SIZE_SORT_RANK`` in conference_agent/web/static/search.js.
 _SIZE_SORT_RANK = {"massive": 1, "large": 2, "medium": 3, "small": 4}
 
 # Date sort columns (and location) fall back to the prior edition's value, matching what the
@@ -134,7 +134,7 @@ def _rolling_month(month_col, day_col, month: int, day: int = 1):
     The month sorts roll from today rather than January 1, so ascending lists
     what comes next first (on Oct 15: Oct 15-31, Nov, ..., Sep, Oct 1-14). A
     month without a day counts as the 1st. NULL months stay NULL. Mirrors
-    ``rollingMonth`` in web/static/search.js.
+    ``rollingMonth`` in conference_agent/web/static/search.js.
     """
     day_col = func.coalesce(day_col, 1)
     return (month_col * 31 + day_col - (month * 31 + day) + 372) % 372
@@ -295,7 +295,7 @@ def api_translate(
 ):
     """Translate a natural-language request into a boolean query (local LLM).
 
-    Backed by a free, local Ollama model (see ``web.nl_query``); no API key and
+    Backed by a free, local Ollama model (see ``conference_agent.web.nl_query``); no API key and
     no external network call. Returns the compiled boolean ``query`` so the UI
     can show it, let the user edit it, and run the normal ``/api/search``. The
     feature is optional: when the model is unavailable this returns 503 and the

@@ -1,6 +1,6 @@
 """Add merged "Add or edit a conference" submissions to the database.
 
-The site's form (``web/static/add.html`` -> ``api/propose``) opens a pull request
+The site's form (``conference_agent/web/static/add.html`` -> ``api/propose``) opens a pull request
 that adds ``submissions/<id>-<date>-<rand>.json``, an ``add --json`` record, or,
 for an edit of a listed conference, ``submissions/<id>-<date>-<rand>.update.json``
 (the name plus only the changed fields).

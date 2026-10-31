@@ -2,8 +2,8 @@
 
 Ascending size runs massive -> small, so within a bucket the larger attendance
 comes first; descending reverses both. Rows without a size stay last either way.
-Checked for both the API (``web/app.py``) and the static site
-(``web/static/search.js``, via Node; skipped when ``node`` is unavailable).
+Checked for both the API (``conference_agent/web/app.py``) and the static site
+(``conference_agent/web/static/search.js``, via Node; skipped when ``node`` is unavailable).
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-import web.app as appmod
+import conference_agent.web.app as appmod
 from conference_agent.database import upsert_conferences
 from conference_agent.models import Conference, size_for_attendance
 
-_SEARCH_JS = Path(__file__).parent.parent / "web" / "static" / "search.js"
+_SEARCH_JS = Path(__file__).parent.parent / "conference_agent" / "web" / "static" / "search.js"
 
 # Acronyms run opposite to attendance within each bucket, so an alphabetical
 # tie-break would give the wrong order.

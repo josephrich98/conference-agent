@@ -45,6 +45,7 @@ from conference_agent.models import (
     name_id,
     normalize_categories,
     normalize_formats,
+    normalize_guidelines,
     normalize_subcategories,
     size_for_attendance,
 )
@@ -157,6 +158,14 @@ class ConferenceRow(Base):
     attendance_source: Mapped[Optional[str]] = mapped_column(Text)
     size: Mapped[Optional[str]] = mapped_column(String, index=True)
     notes: Mapped[Optional[str]] = mapped_column(Text)
+    # Abstract / full-paper submission requirements: free text (a paragraph or
+    # "- " bullet lines), per series. See ``Conference.abstract_guidelines``.
+    abstract_guidelines: Mapped[Optional[str]] = mapped_column(Text)
+    paper_guidelines: Mapped[Optional[str]] = mapped_column(Text)
+    # The date the guidelines pass (``discover --guidelines``) last researched
+    # this row: row-level scheduling state like ``last_checked``, not on the
+    # model. NULL means never researched.
+    guidelines_checked: Mapped[Optional[Date]] = mapped_column(Date)
 
     # Bookkeeping for the per-conference auto-check policy (``refresh`` module):
     # the date discovery last covered this row. ``None`` means never checked,
@@ -446,6 +455,8 @@ _DATE_FIELDS = (
 # The six structured deadline-time columns (a time and a zone per deadline kind).
 # ``deadline_time`` is derived from them, so it is not in this tuple.
 _TIME_FIELDS = tuple(f"{k}_{part}" for k in KINDS for part in ("time", "timezone"))
+# The free-text submission requirements (per series).
+GUIDELINE_FIELDS = ("abstract_guidelines", "paper_guidelines")
 # ``subcategory`` is the stored granular column; ``category`` is derived from it
 # (written separately, like ``size``), so it is not in this round-trip tuple.
 # ``prior_registration`` / ``upcoming_registration`` are free text (not dates), so
@@ -469,6 +480,7 @@ _TEXT_FIELDS = (
     "upcoming_location",
     "prior_cost",
     "upcoming_cost",
+    *GUIDELINE_FIELDS,
     *_TIME_FIELDS,
 )
 
@@ -489,7 +501,7 @@ def _row_to_model(row: ConferenceRow) -> Conference:
         "attendance_year": row.attendance_year,
         "attendance_source": row.attendance_source,
     }
-    for field in (*_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS):
+    for field in (*_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS, *GUIDELINE_FIELDS):
         data[field] = getattr(row, field)
     return Conference(**data)
 
@@ -813,7 +825,7 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
 PINNABLE_FIELDS = (
     "acronym", "subcategory", "category", "format", "url", "remote_option",
     "stable_location", "attendance", "attendance_year", "attendance_source", "notes",
-    *_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS,
+    *_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS, *GUIDELINE_FIELDS,
 )
 
 
@@ -895,6 +907,7 @@ def upsert_conferences(
             name = row.name
             stable = bool(row.stable_location)
             category = row.category
+            guidelines = {f: getattr(row, f) for f in GUIDELINE_FIELDS}
             pins = {} if manual else _pin_snapshot(row)
             before = _extension_snapshot(row)
             _apply_model_to_row(row, conf)
@@ -903,6 +916,11 @@ def upsert_conferences(
                 # A run that reports no category keeps the stored one.
                 if not conf.categories:
                     row.category = category
+                # The survey does not research guidelines (a dedicated pass
+                # does), so one it does not report keeps the stored text.
+                for field, value in guidelines.items():
+                    if getattr(conf, field) is None:
+                        setattr(row, field, value)
                 # A stable-location flag is usually set by hand; a run that does
                 # not report one keeps it (clear it with ``add --update``).
                 row.stable_location = conf.stable_location or stable
@@ -955,6 +973,7 @@ _MERGEABLE_TEXT_FIELDS = (
     "upcoming_location",
     "prior_cost",
     "upcoming_cost",
+    *GUIDELINE_FIELDS,
 )
 # Legacy single-value keys (older exports and researched records) and the
 # edition slot they fill.
@@ -1058,6 +1077,8 @@ def merge_records(
                         (k for k, f in _LEGACY_EDITION_KEYS.items() if f == field), None
                     )
                     value = record.get(legacy_key) if legacy_key else None
+                if field in GUIDELINE_FIELDS:
+                    value = normalize_guidelines(value)
                 if value not in (None, ""):
                     setattr(row, field, str(value).strip())
                     changed = True
@@ -1503,6 +1524,87 @@ def known_attendance_sources(
         if c.attendance_source and label not in out:
             out[label] = {"source": c.attendance_source, "year": c.attendance_year}
     return out
+
+
+def guidelines_targets(
+    db_url: str = DEFAULT_DATABASE_URL,
+    today: Optional[date] = None,
+    ids: "Optional[Iterable[str]]" = None,
+    force: bool = False,
+) -> List[Conference]:
+    """Series whose submission guidelines are due for research, soonest first.
+
+    Only series with a submission deadline still ahead are covered (guidelines
+    for a closed call are of no use). Among those, a series is due when it was
+    never researched, when it has no guidelines and was last researched at
+    least ``GUIDELINES_RETRY_DAYS`` ago (the call may not have been posted), or
+    when it was last researched at least ``GUIDELINES_RECHECK_DAYS`` ago (a new
+    call may change the rules). ``force`` makes every series with a deadline
+    ahead due; ``ids`` narrows the selection.
+    """
+    from conference_agent.config import GUIDELINES_RECHECK_DAYS, GUIDELINES_RETRY_DAYS
+
+    today = today or date.today()
+    wanted = set(ids) if ids is not None else None
+    engine = get_engine(db_url)
+    due: list = []
+    with Session(engine) as session:
+        for row in session.query(ConferenceRow).all():
+            if wanted is not None and row.id not in wanted:
+                continue
+            ahead = [
+                d
+                for k in KINDS
+                if (d := getattr(row, f"upcoming_{k}_deadline")) and d >= today
+            ]
+            if not ahead:
+                continue
+            checked = row.guidelines_checked
+            age = (today - checked).days if checked else None
+            empty = not (row.abstract_guidelines or row.paper_guidelines)
+            if (
+                force
+                or age is None
+                or (empty and age >= GUIDELINES_RETRY_DAYS)
+                or age >= GUIDELINES_RECHECK_DAYS
+            ):
+                due.append((min(ahead), row.name, _row_to_model(row)))
+    return [conf for _, _, conf in sorted(due, key=lambda t: (t[0], t[1]))]
+
+
+def record_guidelines(
+    found: "dict[str, dict]",
+    researched: Iterable[str],
+    db_url: str = DEFAULT_DATABASE_URL,
+    today: Optional[date] = None,
+) -> int:
+    """Store researched guidelines and stamp ``guidelines_checked``.
+
+    ``found`` maps a row id to ``{"abstract_guidelines": ..., "paper_guidelines":
+    ...}``; a blank value keeps the stored text, and a pinned field is left as
+    it is. Every id in ``researched`` is stamped, found or not, so a call that is
+    not posted yet is retried only after ``GUIDELINES_RETRY_DAYS``. Returns the
+    number of rows whose guidelines changed.
+    """
+    today = today or date.today()
+    engine = get_engine(db_url)
+    changed = 0
+    with Session(engine) as session:
+        for row_id in researched:
+            row = resolve_row(session, row_id)
+            if row is None:
+                continue
+            pinned = set(pinned_fields(row))
+            updated = False
+            for field in GUIDELINE_FIELDS:
+                value = normalize_guidelines((found.get(row_id) or {}).get(field))
+                if value and field not in pinned and value != getattr(row, field):
+                    setattr(row, field, value)
+                    updated = True
+            row.guidelines_checked = today
+            changed += updated
+        session.commit()
+    return changed
 
 
 def query_conferences(

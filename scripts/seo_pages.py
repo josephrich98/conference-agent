@@ -168,6 +168,30 @@ def _airports_text(row: dict) -> Optional[str]:
     return ", ".join(items) or None
 
 
+def _guidelines_html(text: str) -> str:
+    """Guideline text as HTML: paragraphs, with "- " (or "* " / "• ") lines as a
+    list. Mirrors ``guidelinesCell`` in conference_agent/web/static/index.html."""
+    out: list[str] = []
+    items: list[str] = []
+
+    def flush() -> None:
+        if items:
+            out.append("<ul>" + "".join(f"<li>{_e(i)}</li>" for i in items) + "</ul>")
+            items.clear()
+
+    for raw in str(text).split("\n"):
+        line = raw.strip()
+        bullet = re.match(r"^[-*•]\s+(.*)$", line)
+        if bullet:
+            items.append(bullet.group(1))
+            continue
+        flush()
+        if line:
+            out.append(f"<p>{_e(line)}</p>")
+    flush()
+    return "".join(out)
+
+
 def conference_page(row: dict, generated: str) -> tuple[str, str]:
     """Return ``(path, html)`` for one conference series."""
     path = f"/c/{slugify(row['id'])}/"
@@ -225,6 +249,9 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
     )
     if prior_tbl:
         parts.append(f"<h2>Prior edition</h2>{prior_tbl}")
+    for heading, key in (("Abstract guidelines", "abstract_guidelines"), ("Paper guidelines", "paper_guidelines")):
+        if row.get(key):
+            parts.append(f"<h2>{heading}</h2>{_guidelines_html(row[key])}")
     parts.append(_feed_links(path, f"{label}'s deadlines and dates"))
     parts.append(
         f'<p><a href="/?q={_e(label)}">Add {_e(label)} to your calendar or get update emails</a> '
@@ -293,6 +320,38 @@ def field_page(tag: str, rows: list[dict], generated: str) -> tuple[str, str]:
     return path, _page(title, desc, path, body)
 
 
+def _llms_txt(generated: str) -> str:
+    """The ``llms.txt`` guide that points AI agents at the static JSON data."""
+    return f"""# Conference Agent
+
+> A database of academic and professional conferences (medicine, genomics,
+> artificial intelligence, and more) with submission deadlines, dates, locations,
+> costs, and registration windows. Static JSON, no API key. Data generated {generated}.
+
+To answer a question about a conference's deadline, dates, location, or cost, read
+its JSON instead of searching the web.
+
+- [One conference]({SITE_URL}/c/<id>/data.json): full row. `<id>` is the name slug,
+  e.g. american-urological-association-annual-meeting.
+- [Whole catalog]({SITE_URL}/data/conferences.json): `conferences` list (match
+  `acronym` or `name` to find the `id`; acronyms are not unique) and `fields` metadata.
+- [Calendar feeds]({SITE_URL}/calendar.ics): also `/c/<id>/calendar.ics` and `/field/<tag>/calendar.ics`.
+- [Sitemap]({SITE_URL}/sitemap.xml): lists every `/c/<id>/` page.
+
+## Fields
+
+- `upcoming_abstract_deadline`, `upcoming_late_abstract_deadline`,
+  `upcoming_paper_deadline` (ISO dates; `prior_*` counterparts hold the last edition).
+- `abstract_time` (24-hour HH:MM) with `abstract_timezone` (ET, AoE, UTC, ...);
+  likewise `late_abstract_*` and `paper_*`. `deadline_time` is the display text.
+- `upcoming_start_date`, `upcoming_end_date`, `upcoming_location`,
+  `upcoming_registration`, `upcoming_cost`, `url`, `category`, `subcategory`.
+
+Prefer `upcoming_*` over `prior_*`. Deadlines can change, so cite the generated
+date and link the conference's `url` for confirmation.
+"""
+
+
 def write_pages(rows: list[dict], out_dir: Path, generated: str) -> dict:
     """Write all SEO pages, sitemap, and robots.txt; return link HTML for the home page."""
     for sub in ("c", "field"):
@@ -320,6 +379,7 @@ def write_pages(rows: list[dict], out_dir: Path, generated: str) -> dict:
         + "</urlset>\n"
     )
     (out_dir / "sitemap.xml").write_text(sitemap, encoding="utf-8")
+    (out_dir / "llms.txt").write_text(_llms_txt(generated), encoding="utf-8")
     (out_dir / "robots.txt").write_text(
         f"User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: {SITE_URL}/sitemap.xml\n", encoding="utf-8"
     )

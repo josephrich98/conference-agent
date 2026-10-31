@@ -7,7 +7,7 @@
  */
 const path = require("path");
 const { localDeadlineTime } = require(
-  path.resolve(__dirname, "../../web/static/calendar.js")
+  path.resolve(__dirname, "../../conference_agent/web/static/calendar.js")
 );
 
 let input = "";

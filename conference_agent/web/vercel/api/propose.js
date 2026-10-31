@@ -30,6 +30,8 @@ const MAX_PER_DAY = 100;
 const EXCLUDED = new Set(["new_conference_name", "deadline_time"]);
 const EDIT_ONLY = new Set(["new_conference_name"]);
 const MAX_TEXT = 2000;
+// The abstract / paper guidelines run longer than the other text fields.
+const MAX_LONG_TEXT = 4000;
 const MAX_TAGS = 20;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -97,9 +99,9 @@ function extensions(value) {
   });
 }
 
-function text(name, value) {
+function text(name, value, max = MAX_TEXT) {
   const s = String(value).trim();
-  if (s.length > MAX_TEXT) throw new InputError(`${name} is too long.`);
+  if (s.length > max) throw new InputError(`${name} is too long.`);
   return s;
 }
 
@@ -155,7 +157,7 @@ function cleanRecord(raw, schema, edit = false) {
       if (!schema.remote_options.includes(s)) throw new InputError(`${label}: unknown option.`);
       out[name] = s;
     } else {
-      const s = text(label, value);
+      const s = text(label, value, /_guidelines$/.test(name) ? MAX_LONG_TEXT : MAX_TEXT);
       if (!s) continue;
       if (URL_FIELDS.has(name) && !isHttpUrl(s)) throw new InputError(`${label}: enter an http(s) link.`);
       if (/_time$/.test(name) && !TIME_RE.test(s)) throw new InputError(`${label}: use HH:MM (24-hour).`);

@@ -1,13 +1,15 @@
 """Command-line interface for conference_agent.
 
 Subcommands:
-  discover  — run the discovery agent and store results (optionally email a summary)
+  discover  — run the discovery agent and store results (optionally email a summary);
+              `discover --guidelines` researches the submission guidelines
   add       — manually add conferences from flags, a CSV, or JSON (no API);
               `add --update` changes existing ones, `add --fields` prints the
               field vocabulary it accepts
   delete    — delete a conference manually
   lookup    — print the unique values of columns, optionally over a search
               (the website's boolean query, falling back to its keyword match)
+  info      — print one conference's row (or chosen columns) by id or acronym
 """
 
 from __future__ import annotations
@@ -17,22 +19,28 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Optional, Sequence
 
 from conference_agent.config import (
     ANTHROPIC_API_KEY_ENV,
     DEFAULT_DATABASE_URL,
 )
-from conference_agent.discover import DEFAULT_BACKEND, DISCOVERY_BACKENDS
+from conference_agent.discover import (
+    DEFAULT_BACKEND,
+    DISCOVERY_BACKENDS,
+    BackendUnavailableError,
+)
 from conference_agent.models import (
     CATEGORIES,
     CONFERENCE_FORMATS,
     ConferenceSize,
     RemoteOption,
+    name_id,
     normalize_categories,
     normalize_subcategories,
 )
-from web.search import RESULT_COLUMNS
+from conference_agent.web.search import RESULT_COLUMNS
 
 # --- Field registry --------------------------------------------------------
 #
@@ -165,6 +173,18 @@ _SCALAR_FIELDS = (
         "'11:59 PM ET' (applied to every deadline the conference has) or one "
         "'abstract: 5 PM ET' / 'paper: 23:59 AoE' entry per line. Parsed into the "
         "structured fields; any explicit *_time / *_timezone value wins",
+    ),
+    _Field(
+        "abstract_guidelines", "abstract_guidelines", "text",
+        "Abstract submission requirements, free text: a paragraph or one '- ' "
+        "bullet per line (word or character limit, required structure, figures, "
+        "number of submissions, ...)",
+    ),
+    _Field(
+        "paper_guidelines", "paper_guidelines", "text",
+        "Full-paper submission requirements, free text: a paragraph or one '- ' "
+        "bullet per line (page limit, template, anonymization, supplementary "
+        "material, ...). Leave unset for abstract-only meetings",
     ),
     _Field(
         "prior_abstract_due", "prior_abstract_deadline", "date",
@@ -370,24 +390,45 @@ _LOOKUP_SORTS = ("alphabetical", "reversealphabetical", "increasing", "decreasin
 _SIZE_ORDER = {s.value: i for i, s in enumerate(reversed(list(ConferenceSize)))}
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="conference-agent",
-        description="Compile conferences into a table and export them as a calendar feed.",
-    )
-    parser.add_argument("--db", default=DEFAULT_DATABASE_URL, help="SQLAlchemy database URL")
-    sub = parser.add_subparsers(dest="command", required=True)
+# `lookup` and `info` are read-only, so by default they search the live site's
+# published snapshot (see `conference_agent.live`) rather than a local copy.
+_READ_COMMANDS = ("lookup", "info")
+_LOCAL_HELP = (
+    "Search the local database (--db, default %s) instead of the live site."
+    % DEFAULT_DATABASE_URL
+)
+_REFRESH_HELP = (
+    "Check the live site for a newer catalog even if it was already checked today "
+    "(by default it is checked once a day and the cached copy is used after that)."
+)
 
+
+_MAINTAINER_COMMANDS = ("discover", "add", "delete")
+
+
+def is_development_install() -> bool:
+    """Whether the package runs from a source checkout (e.g. ``pip install -e .``).
+
+    The maintainer commands (`add`, `delete`, `discover`) edit the database the
+    live site is built from, so they come only with a clone of the repository;
+    a regular ``pip install`` provides just `lookup` and `info`.
+    """
+    root = Path(__file__).resolve().parent.parent
+    return (root / "pyproject.toml").is_file()
+
+
+def _add_maintainer_parsers(sub) -> None:
+    """Register the `discover`, `add`, and `delete` subcommands."""
     p_discover = sub.add_parser(
         "discover",
-        help="Discover conferences and store them",
         description="Search for conferences and store them. With no filter, every "
         "subcategory in the table is surveyed (one agent run per field). "
         "--subcategory / --category limit the survey to those fields. "
         "--conference-name / --size instead re-check matching stored series only "
         "(no new series are added); any --subcategory / --category also narrows "
         "that selection. --airports looks up the Airports column instead of "
-        "running the agent. Run `discover --options` for the valid values.",
+        "running the agent, and --guidelines researches the Abstract / Paper "
+        "guidelines columns. Run `discover --options` for the valid values.",
     )
     p_discover.add_argument(
         "--options",
@@ -446,11 +487,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--subcategory / --category limit the series covered. The scheduled job "
         "runs this after each refresh.",
     )
+    p_discover.add_argument(
+        "--guidelines",
+        nargs="?",
+        const="due",
+        choices=["due", "all"],
+        help="Instead of surveying, research the Abstract / Paper guidelines "
+        "(submission requirements) of series with a submission deadline still "
+        "ahead. 'due' (the default) covers those never researched, those with "
+        "no guidelines last researched 14+ days ago, and those last researched "
+        "120+ days ago, at most 15 per run, soonest deadline first; 'all' covers "
+        "every series with a deadline ahead, with no cap. --conference-name / "
+        "--size / --subcategory / --category limit the series covered. The "
+        "scheduled job runs this after each refresh.",
+    )
 
     p_add = sub.add_parser(
         "add",
-        help="Manually add conferences (no API): one via flags, or many via "
-        "--csv / --json; --update changes existing ones",
         description="Add or update conferences without the discovery "
         "agent. Entries are indexed by --conference-name: `add` fails if the name "
         "already exists, and --update fails if it does not. "
@@ -584,7 +637,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_delete = sub.add_parser(
         "delete",
-        help="Delete a conference manually",
         description="Delete a conference, matched by --conference-name (fails if "
         "the name does not exist). A field survey may find it again.",
     )
@@ -597,6 +649,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_delete.add_argument(
         "-y", "--yes", action="store_true", help="Skip the confirmation prompt."
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="conference-agent",
+        description="Search the conference table at https://conferenceagent.vercel.app.",
+        epilog="The maintainer commands (add, delete, discover) edit a local database "
+        "and come only with a development install; see DEVELOPMENT.md at "
+        "https://github.com/josephrich98/conference-agent.",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="SQLAlchemy database URL (default: %s). `lookup` and `info` read the "
+        "live site instead unless --db or --local is given." % DEFAULT_DATABASE_URL,
+    )
+    # The maintainer commands exist only in a development install; even there
+    # they are registered without `help`, which keeps them out of the listing,
+    # and `metavar` keeps them out of the usage line.
+    sub = parser.add_subparsers(dest="command", required=True, metavar="{lookup,info}")
+    if is_development_install():
+        _add_maintainer_parsers(sub)
 
     p_lookup = sub.add_parser(
         "lookup",
@@ -631,8 +705,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_lookup.add_argument(
         "--include-retired",
         action="store_true",
-        help="Also search retired series (no new edition in the check window)",
+        help="Also search retired series (no new edition in the check window). "
+        "The live site omits them, so this needs --local or --db.",
     )
+    p_lookup.add_argument("--local", action="store_true", help=_LOCAL_HELP)
+    p_lookup.add_argument("--refresh", action="store_true", help=_REFRESH_HELP)
+
+    p_info = sub.add_parser(
+        "info",
+        help="Print one conference's row, or just the requested columns",
+        description="Print the stored row of one conference, found by its id (the "
+        "unique name slug) or its acronym. When an acronym is shared by several "
+        "series, the matching ids are listed so you can rerun with one. Without "
+        "columns the whole row is printed; otherwise only those columns.",
+    )
+    p_info.add_argument("identifier", metavar="ID", help="Conference id or acronym")
+    p_info.add_argument(
+        "columns",
+        nargs="*",
+        metavar="COL",
+        help="Columns to print (default: the entire row). Choices: "
+        + ", ".join(_LOOKUP_COLUMNS),
+    )
+    p_info.add_argument("--local", action="store_true", help=_LOCAL_HELP)
+    p_info.add_argument("--refresh", action="store_true", help=_REFRESH_HELP)
 
     return parser
 
@@ -733,6 +829,48 @@ def _discover_airports(args) -> int:
     return 1 if counts["failed"] else 0
 
 
+def _discover_guidelines(args) -> int:
+    """`discover --guidelines`: research the submission guidelines columns."""
+    from conference_agent.config import GUIDELINES_BATCH_SIZE, GUIDELINES_MAX_PER_RUN
+    from conference_agent.database import guidelines_targets, record_guidelines
+    from conference_agent.discover import research_guidelines
+
+    ids = None
+    if args.conference_name or args.size or args.subcategory or args.category:
+        errors: list[str] = []
+        matched = _discover_targets(args, errors)
+        if errors:
+            for message in errors:
+                print(f"Error: {message}", file=sys.stderr)
+            return 1
+        ids = [conf.id for conf in matched]
+    force = args.guidelines == "all"
+    targets = guidelines_targets(db_url=args.db, ids=ids, force=force)
+    if not force and len(targets) > GUIDELINES_MAX_PER_RUN:
+        print(f"{len(targets) - GUIDELINES_MAX_PER_RUN} series deferred to the next run.")
+        targets = targets[:GUIDELINES_MAX_PER_RUN]
+    if not targets:
+        print("No series with a deadline ahead is due for a guidelines check.")
+        return 0
+    print(f"Researching submission guidelines for {len(targets)} series.")
+    updated = failed = 0
+    for start in range(0, len(targets), GUIDELINES_BATCH_SIZE):
+        batch = targets[start:start + GUIDELINES_BATCH_SIZE]
+        print("Researching: " + ", ".join(_label(c) for c in batch))
+        try:
+            found = research_guidelines(batch, backend=args.backend, model=args.model)
+        except BackendUnavailableError:
+            raise  # a setup problem fails every batch alike
+        except RuntimeError as exc:
+            # Leave the batch unstamped so the next run retries it.
+            print(f"Error: {exc}", file=sys.stderr)
+            failed += len(batch)
+            continue
+        updated += record_guidelines(found, [c.id for c in batch], db_url=args.db)
+    print(f"Updated the guidelines of {updated} series; {failed} failed (retried next run).")
+    return 1 if failed else 0
+
+
 def _cmd_discover(args) -> int:
     import os
 
@@ -758,6 +896,9 @@ def _cmd_discover(args) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if args.guidelines:
+        return _discover_guidelines(args)
 
     conferences: list = []
     written = 0
@@ -1406,7 +1547,7 @@ def _cmd_lookup(args) -> int:
 
     from conference_agent.database import ConferenceRow, get_engine
     from conference_agent.refresh import is_retired
-    from web.search import QueryError, build_filter, keyword_search
+    from conference_agent.web.search import QueryError, build_filter, keyword_search
 
     columns = list(dict.fromkeys(args.columns or _LOOKUP_COLUMNS))
     unknown = [c for c in columns if c not in _LOOKUP_COLUMNS]
@@ -1463,17 +1604,159 @@ def _cmd_lookup(args) -> int:
     return 0
 
 
+def _cmd_info(args) -> int:
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import Session
+
+    from conference_agent.database import ConferenceRow, get_engine, resolve_row
+
+    columns = list(dict.fromkeys(args.columns or _LOOKUP_COLUMNS))
+    unknown = [c for c in columns if c not in _LOOKUP_COLUMNS]
+    if unknown:
+        print(
+            f"Error: unknown column(s): {', '.join(unknown)}. "
+            f"Valid columns: {', '.join(_LOOKUP_COLUMNS)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    key = args.identifier.strip()
+    with Session(get_engine(args.db)) as session:
+        row = resolve_row(session, key) or resolve_row(session, name_id(key))
+        if row is None:
+            matches = list(
+                session.scalars(
+                    select(ConferenceRow)
+                    .where(func.lower(ConferenceRow.acronym) == key.lower())
+                    .order_by(ConferenceRow.id)
+                )
+            )
+            if not matches:
+                print(
+                    f"Error: no conference with id or acronym {key!r} "
+                    "(list ids with `conference-agent lookup --columns id`).",
+                    file=sys.stderr,
+                )
+                return 1
+            if len(matches) > 1:
+                print(
+                    f"Error: acronym {key!r} matches {len(matches)} conferences. "
+                    "Specify one by id:",
+                    file=sys.stderr,
+                )
+                for m in matches:
+                    print(f"  {m.id}  ({m.name})", file=sys.stderr)
+                print(
+                    f"Rerun, e.g.: conference-agent info {matches[0].id}", file=sys.stderr
+                )
+                return 1
+            row = matches[0]
+        values = {col: getattr(row, col) for col in RESULT_COLUMNS} | {
+            col: getattr(row, f"upcoming_{col}") or getattr(row, f"prior_{col}")
+            for col in _LOOKUP_DISPLAYED
+        }
+
+    def text(value) -> str:
+        if value is None or value == "":
+            return ""
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+    if len(columns) == 1 and args.columns:
+        print(text(values[columns[0]]))
+        return 0
+    for column in columns:
+        value = text(values[column])
+        if "\n" in value:
+            print(f"{column}:")
+            for line in value.split("\n"):
+                print(f"  {line}")
+        else:
+            print(f"{column}: {value}")
+    return 0
+
+
+def _check_local_database(args: argparse.Namespace) -> Optional[str]:
+    """Prepare a local SQLite ``--db`` file, or explain why it cannot be used.
+
+    The default URL is relative to the working directory, so a pip-installed
+    CLI run elsewhere has no ``data/`` folder: SQLite would fail with an opaque
+    "unable to open database file". `add` (which may start a new database) gets
+    the folder created; the other commands need existing rows, so a missing
+    folder is reported instead of creating an empty database in a new one.
+    """
+    from sqlalchemy.engine import make_url
+
+    try:
+        url = make_url(args.db)
+    except Exception:
+        return f"invalid --db URL {args.db!r}"
+    if url.get_backend_name() != "sqlite" or url.database in (None, "", ":memory:"):
+        return None
+    path = Path(url.database)
+    if path.parent.is_dir():
+        return None
+    if args.command == "add":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return None
+    hint = (
+        "omit --local to read the live site, or pass --db"
+        if args.command in _READ_COMMANDS
+        else "pass --db (or set CONFERENCE_DATABASE_URL), or create one with `conference-agent add`"
+    )
+    return f"no local database at {path.resolve()}; {hint}."
+
+
+def _maintainer_command_requested(argv: Optional[Sequence[str]]) -> Optional[str]:
+    """Return the maintainer command named in ``argv``, if any."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--db")
+    pre.add_argument("command", nargs="?")
+    known, _ = pre.parse_known_args(argv)
+    return known.command if known.command in _MAINTAINER_COMMANDS else None
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    if not is_development_install():
+        command = _maintainer_command_requested(argv)
+        if command:
+            print(
+                f"Error: `{command}` is a maintainer command, available only in a "
+                "development install (git clone "
+                "https://github.com/josephrich98/conference-agent, then "
+                "pip install -e .); see DEVELOPMENT.md there.",
+                file=sys.stderr,
+            )
+            return 2
     args = build_parser().parse_args(argv)
+    if args.command in _READ_COMMANDS and args.db is None and not args.local:
+        from conference_agent.live import LiveDataError, live_database_url
+
+        if getattr(args, "include_retired", False):
+            print(
+                "Warning: the live site omits retired series; use --local to include them.",
+                file=sys.stderr,
+            )
+        try:
+            args.db = live_database_url(refresh=args.refresh)
+        except LiveDataError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    elif args.db is None:
+        args.db = DEFAULT_DATABASE_URL
+    error = _check_local_database(args)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     handlers = {
         "discover": _cmd_discover,
         "add": _cmd_add,
         "delete": _cmd_delete,
         "lookup": _cmd_lookup,
+        "info": _cmd_info,
     }
     try:
         return handlers[args.command](args)
-    except NotImplementedError as exc:
+    except (NotImplementedError, BackendUnavailableError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

@@ -2,7 +2,7 @@
 
 Turns a plain-English request ("big virtual radiology conferences with an
 abstract deadline after June") into the boolean query language understood by
-:mod:`web.search` (``subcategory:radiology AND size:large AND remote:virtual AND
+:mod:`conference_agent.web.search` (``subcategory:radiology AND size:large AND remote:virtual AND
 abstract_due:>=2026-06``), so a user can search without learning the syntax.
 
 The translation runs against a free, local `Ollama <https://ollama.com>`_ server
@@ -15,10 +15,10 @@ Design notes
 ------------
 - **The field catalog is derived, never hand-copied.** The system prompt lists
   the queryable fields and their controlled vocabularies straight from
-  :func:`web.search.field_help`, so adding a field or vocabulary value updates
+  :func:`conference_agent.web.search.field_help`, so adding a field or vocabulary value updates
   the prompt automatically.
 - **Output is validated, with one repair round.** The model's query is compiled
-  with :func:`web.search.build_filter`; if it does not parse, the parse error is
+  with :func:`conference_agent.web.search.build_filter`; if it does not parse, the parse error is
   fed back for a single correction attempt. A query that still fails to parse is
   reported rather than returned, so the search box is never populated with a
   string that would error.
@@ -34,7 +34,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from conference_agent import config
-from web.search import QueryError, build_filter, field_help
+from conference_agent.web.search import QueryError, build_filter, field_help
 
 
 class LLMUnavailable(RuntimeError):
@@ -203,7 +203,7 @@ def translate(
 
     Raises :class:`LLMUnavailable` if the local model cannot be reached and
     :class:`TranslationError` if its output cannot be coerced into a query that
-    :func:`web.search.build_filter` accepts (after one repair round).
+    :func:`conference_agent.web.search.build_filter` accepts (after one repair round).
     """
     text = (natural_language or "").strip()
     if not text:

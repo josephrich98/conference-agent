@@ -46,8 +46,10 @@ from conference_agent.models import (
     CATEGORIES,
     Conference,
     RemoteOption,
+    name_id,
     normalize_categories,
     normalize_formats,
+    normalize_guidelines,
     normalize_subcategories,
 )
 
@@ -520,15 +522,23 @@ def _extract(client, research_text: str, model: str, max_tokens: int) -> List[Co
 # --- Claude Code CLI backend ----------------------------------------------
 
 
+class BackendUnavailableError(RuntimeError):
+    """A discovery backend's prerequisite (package, CLI, or key) is missing."""
+
+
 def _anthropic_client():
     """Return an Anthropic client for the ``api`` backend, or raise a helpful error."""
     try:
         import anthropic  # imported lazily: only the `api` backend needs it
     except ImportError as exc:
-        raise RuntimeError(
+        raise BackendUnavailableError(
             "The 'api' backend needs the anthropic package. Install it with "
             "pip install 'conference_agent[discover]'."
         ) from exc
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise BackendUnavailableError(
+            "The 'api' backend needs ANTHROPIC_API_KEY set in the environment."
+        )
     return anthropic.Anthropic()
 
 
@@ -536,11 +546,11 @@ def _claude_cli_path() -> str:
     """Locate the ``claude`` CLI or raise a helpful error."""
     path = shutil.which("claude")
     if not path:
-        raise RuntimeError(
+        raise BackendUnavailableError(
             "The 'claude' CLI was not found on PATH. Install Claude Code "
             "(https://docs.claude.com/claude-code) to use the default "
-            "'claude-code' backend, or pass backend='api' to use the Anthropic "
-            "API instead."
+            "'claude-code' backend, or use the 'api' backend (`--backend api`) "
+            "to call the Anthropic API instead."
         )
     return path
 
@@ -825,4 +835,167 @@ def _match_targets(found: Iterable[Conference], targets: List[Conference]) -> Li
             target = same[0] if len(same) == 1 else None
         if target is not None:
             out.append(conf.model_copy(update={"name": target.name}))
+    return out
+
+
+# --- Submission guidelines ---------------------------------------------------
+
+# How the guideline text is written, shared by the research and extraction
+# prompts so both describe the same format.
+_GUIDELINES_FORMAT = """\
+Write each as either a short paragraph or bullet lines that each start with \
+"- ", one per line; prefer bullets for three or more distinct requirements. \
+Keep each under about 1,000 characters, and end it with one line naming the \
+call it comes from, e.g. "Per the 2027 call for abstracts." (the upcoming \
+edition's call when it is published, otherwise the most recent edition's, and \
+say so)."""
+
+_GUIDELINES_SYSTEM = """\
+You are a research assistant that records the submission requirements of \
+academic and professional conferences. Use web search to read each \
+conference's official call for abstracts, call for papers, abstract \
+submission instructions, and author guidelines.
+
+For each conference, report:
+- the ABSTRACT guidelines: the word or character limit (and whether the title, \
+  authors, or spaces count), the title length limit, the required structure or \
+  headings (e.g. Background / Methods / Results / Conclusions), whether figures \
+  or tables are allowed, limits on the number of submissions or authors, the \
+  submission system or template, the presentation types offered (oral vs \
+  poster), fees, and originality, embargo, or prior-publication rules -- \
+  whatever the official source states. For a paper-only venue whose "abstract" \
+  is only a registration step before the full paper, describe that step briefly.
+- the PAPER guidelines: the requirements for a full paper / manuscript \
+  submission -- page limit, whether references or appendices count, the \
+  template (LaTeX / Word style), anonymization (double-blind), supplementary \
+  material, dual-submission policy, and the proceedings or journal track. Most \
+  clinical / medical-society meetings take abstracts only: report no paper \
+  guidelines for a conference without a full-paper track.
+
+""" + _GUIDELINES_FORMAT + """
+
+State only what an official source says; do not guess or add generic advice. \
+Say so when a conference publishes no guidelines. Report every conference under \
+its full name exactly as listed, one conference at a time."""
+
+_GUIDELINES_PROMPT = """\
+Find the abstract and full-paper submission guidelines of ONLY these \
+conferences (today is {today}):
+{targets}"""
+
+_GUIDELINES_EXTRACT_SYSTEM = """\
+Convert the research notes into one record per conference: its full name \
+exactly as the notes give it, its abstract_guidelines, and its \
+paper_guidelines. Use "" for a field the notes give no guidelines for (and for \
+paper_guidelines when the conference has no full-paper track). Keep the \
+requirements the notes state and nothing else; do not invent values. """ + _GUIDELINES_FORMAT
+
+
+class _ExtractedGuidelines(BaseModel):
+    name: str
+    acronym: str = ""
+    abstract_guidelines: str = Field(
+        default="", description="Abstract submission requirements, or ''"
+    )
+    paper_guidelines: str = Field(
+        default="", description="Full-paper submission requirements, or ''"
+    )
+
+
+class _ExtractedGuidelinesList(BaseModel):
+    conferences: List[_ExtractedGuidelines]
+
+
+def _describe_guidelines_target(conf: Conference) -> str:
+    """One line per target: identity, link, and the upcoming deadlines."""
+    deadlines = [
+        f"{label} {value.isoformat()}"
+        for label, value in (
+            ("abstract", conf.upcoming_abstract_deadline),
+            ("late abstract", conf.upcoming_late_abstract_deadline),
+            ("paper", conf.upcoming_paper_deadline),
+        )
+        if value
+    ]
+    link = f" -- {conf.url}" if conf.url else ""
+    formats = f"; formats: {conf.format}" if conf.format else ""
+    return (
+        f"- {conf.acronym} -- {conf.name}{link}\n"
+        f"  upcoming deadlines: {', '.join(deadlines) or 'none recorded'}{formats}"
+    )
+
+
+def research_guidelines(
+    targets: Iterable[Conference],
+    backend: str = DEFAULT_BACKEND,
+    model: Optional[str] = None,
+    max_tokens: int = 16000,
+    today: Optional[date] = None,
+) -> dict:
+    """Research the abstract and paper submission guidelines of ``targets``.
+
+    Two phases like :func:`discover_conferences` (web-search research, then a
+    structured extraction), but with prompts about the call for abstracts /
+    papers only. Returns ``{target id: {"abstract_guidelines": str | None,
+    "paper_guidelines": str | None}}`` for the targets the research matched
+    (by name id, else by a unique acronym).
+    """
+    if backend not in DISCOVERY_BACKENDS:
+        raise ValueError(
+            f"Unknown discovery backend {backend!r}; expected one of "
+            f"{', '.join(DISCOVERY_BACKENDS)}."
+        )
+    targets = list(targets)
+    if not targets:
+        return {}
+    prompt = _GUIDELINES_PROMPT.format(
+        today=(today or date.today()).isoformat(),
+        targets="\n".join(_describe_guidelines_target(t) for t in targets),
+    )
+    if backend == "claude-code":
+        research_text = _research_text_via_cli(_GUIDELINES_SYSTEM, prompt, model)
+        if not research_text.strip():
+            return {}
+        payload = _run_claude_cli(
+            research_text,
+            append_system=_GUIDELINES_EXTRACT_SYSTEM,
+            tools=[],
+            json_schema=_ExtractedGuidelinesList.model_json_schema(),
+            model=model,
+            timeout=_CLI_EXTRACT_TIMEOUT,
+        )
+        data = payload.get("structured_output")
+        parsed = _ExtractedGuidelinesList.model_validate(data) if data else None
+    else:
+        resolved_model = model or ANTHROPIC_MODEL
+        client = _anthropic_client()
+        research_text = _research_loop(client, _GUIDELINES_SYSTEM, prompt, resolved_model, max_tokens)
+        if not research_text.strip():
+            return {}
+        response = client.messages.parse(
+            model=resolved_model,
+            max_tokens=max_tokens,
+            system=_GUIDELINES_EXTRACT_SYSTEM,
+            messages=[{"role": "user", "content": research_text}],
+            output_format=_ExtractedGuidelinesList,
+        )
+        parsed = response.parsed_output
+    if not parsed:
+        return {}
+
+    by_id = {t.id: t for t in targets}
+    by_acronym: dict = {}
+    for t in targets:
+        by_acronym.setdefault(t.acronym.strip().upper(), []).append(t)
+    out: dict = {}
+    for item in parsed.conferences:
+        target = by_id.get(name_id(item.name)) if item.name.strip() else None
+        if target is None:
+            same = by_acronym.get(item.acronym.strip().upper(), [])
+            target = same[0] if len(same) == 1 else None
+        if target is not None:
+            out[target.id] = {
+                "abstract_guidelines": normalize_guidelines(item.abstract_guidelines),
+                "paper_guidelines": normalize_guidelines(item.paper_guidelines),
+            }
     return out

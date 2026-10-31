@@ -183,6 +183,8 @@
       ["late_abstract_due", "late_abstract_time", "late_abstract_timezone"],
       ["paper_due", "paper_time", "paper_timezone"],
       ["deadline_extensions"],
+      ["abstract_guidelines"],
+      ["paper_guidelines"],
       ["conference_dates"],
       ["location"],
       ["registration"],
@@ -227,6 +229,8 @@
       paper_due: "Paper deadline",
       conference_dates: "Conference dates",
       deadline_extensions: "Deadline extension history",
+      abstract_guidelines: "Abstract guidelines",
+      paper_guidelines: "Paper guidelines",
     };
     const PLACEHOLDERS = {
       conference_name: "e.g. Radiological Society of North America Annual Meeting",
@@ -237,6 +241,8 @@
       cost: "e.g. Members $450, non-members $650, students $150",
       abstract_timezone: "e.g. AoE, ET, CET", late_abstract_timezone: "e.g. AoE, ET, CET",
       paper_timezone: "e.g. AoE, ET, CET",
+      abstract_guidelines: "e.g.\n- 300 words maximum, excluding title and authors\n- Structured: Background, Methods, Results, Conclusions\n- One figure or table allowed",
+      paper_guidelines: "e.g.\n- 8 pages plus unlimited references, conference LaTeX template\n- Double-blind: anonymize the submission",
     };
     // Short help for the form; other fields show their `add --fields` text.
     const HINTS = {
@@ -250,6 +256,8 @@
       attendance: "", attendance_year: "", attendance_source: "",
       location: "Nearby airports are looked up from the location automatically.", registration: "", cost: "",
       deadline_extensions: "Past extensions of this conference's deadlines, if any. Entries more than 5 years old are not kept.",
+      abstract_guidelines: "Abstract requirements: a paragraph, or one requirement per line starting with \"- \".",
+      paper_guidelines: "Full-paper requirements, for proceedings venues only.",
       notes: "Not displayed online (for internal use only).",
     };
 
@@ -486,8 +494,10 @@
         read = () => input.value.trim();
       } else {
         const isUrl = f.name === "url" || f.name === "attendance_source";
-        input = f.name === "notes"
-          ? el("textarea", { id, maxlength: 2000 })
+        const long = f.name === "notes" || /_guidelines$/.test(f.name);
+        input = long
+          ? el("textarea", { id, maxlength: f.name === "notes" ? 2000 : 4000,
+              placeholder: PLACEHOLDERS[f.name] || "", rows: f.name === "notes" ? undefined : 5 })
           : el("input", { type: isUrl ? "url" : "text", id, maxlength: f.name === "conference_name" ? 300 : 2000,
               placeholder: isUrl ? "https://" : PLACEHOLDERS[f.name] });
         read = () => input.value.trim();
@@ -625,6 +635,7 @@
         conference_dates: [row[`${ed}_start_date`], row[`${ed}_end_date`]].filter(Boolean),
         abstract_due: row[`${ed}_abstract_deadline`], late_abstract_due: row[`${ed}_late_abstract_deadline`],
         paper_due: row[`${ed}_paper_deadline`], notes: row.notes,
+        abstract_guidelines: row.abstract_guidelines, paper_guidelines: row.paper_guidelines,
         deadline_extensions: EXTENSION_KINDS.flatMap(([type]) =>
           String(row[`${type}_deadline_extension`] || "").split("\n").map((line) => {
             const [original, extended] = line.split(/\s+[–-]\s+/).map(isoOf);

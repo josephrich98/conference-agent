@@ -1,7 +1,7 @@
 /*
  * Natural-language → boolean-query translation, in the browser.
  *
- * This is the static-site counterpart of `web/nl_query.py`. The Python version
+ * This is the static-site counterpart of `conference_agent/web/nl_query.py`. The Python version
  * runs the translation against a local Ollama server; this version runs a small
  * instruction model entirely in the browser over WebGPU via WebLLM
  * (https://github.com/mlc-ai/web-llm) — no API key, no backend, no network
@@ -33,7 +33,7 @@
   const WEBLLM_URL = "https://esm.run/@mlc-ai/web-llm";
   const MODEL_ID = "Qwen2.5-1.5B-Instruct-q4f16_1-MLC";
 
-  // --- Prompt (ported verbatim from web/nl_query.py) -----------------------
+  // --- Prompt (ported verbatim from conference_agent/web/nl_query.py) -----------------------
 
   // A compact field reference built from the same field_help() data the Python
   // prompt uses (each entry's `type` already carries the controlled vocabulary

@@ -48,7 +48,7 @@ code is plain SQLAlchemy; only the connection string differs from local SQLite.
 
 ### REST API (FastAPI backend)
 
-Served by this stack or locally with `uvicorn web.app:app` (not by the static
+Served by this stack or locally with `uvicorn conference_agent.web.app:app` (not by the static
 site). Interactive docs are at `/docs`.
 
 | Endpoint | Purpose |

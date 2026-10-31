@@ -16,7 +16,7 @@ shaped as a Lambda handler. It uses the ``api`` discovery backend, so it needs
 a NAT route) and writes to the shared RDS database via ``CONFERENCE_DATABASE_URL``.
 Email notification is intentionally omitted (no SMTP in this deployment).
 
-Referenced by the SAM template as ``Handler: web.refresh_handler.handler``.
+Referenced by the SAM template as ``Handler: conference_agent.web.refresh_handler.handler``.
 """
 
 from __future__ import annotations

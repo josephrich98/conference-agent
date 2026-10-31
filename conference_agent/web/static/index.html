@@ -243,6 +243,12 @@
     td a.map-link:hover { color: var(--accent); }
     table.results td[data-col="cost"] { min-width: 170px; }
     table.results td[data-col="registration"] { min-width: 220px; }
+    table.results td[data-col="abstract_guidelines"],
+    table.results td[data-col="paper_guidelines"] { min-width: 300px; }
+    .guidelines { max-height: 9.5em; overflow-y: auto; font-size: 12px; line-height: 1.4; }
+    .guidelines p { margin: 0 0 4px; }
+    .guidelines ul { margin: 0 0 4px; padding-left: 16px; }
+    .guidelines p:last-child, .guidelines ul:last-child { margin-bottom: 0; }
     .conf-name { font-weight: 600; }
     .conf-name a { color: var(--accent); text-decoration: none; }
     .conf-name a:hover { text-decoration: underline; }
@@ -582,6 +588,8 @@
     const SIZE_RANK = { massive: 1, large: 2, medium: 3, small: 4 };
 
     const COLUMNS = [
+      { key: "id", label: "ID", sort: null, defaultHidden: true,
+        note: "The conference's record id (a slug of its name), as in its /c/<id>/ page and data URLs" },
       { key: "conference", field: "conference", label: "Conference", sort: "acronym" },
       { key: "category", field: "category", label: "Category", sort: "category", facet: listFacet("category") },
       { key: "subcategory", field: "subcategory", label: "Subcategory", sort: "subcategory", facet: listFacet("subcategory") },
@@ -598,6 +606,8 @@
       { key: "paper_month", field: "paper_month", label: "Paper month", sort: "paper_month", facet: monthFacet("paper_month") },
       { key: "upcoming_paper_deadline", field: "paper_due", label: "Paper due", sort: "upcoming_paper_deadline" },
       { key: "deadline_time", field: "deadline_time", label: "Deadline time", sort: null },
+      { key: "abstract_guidelines", field: "abstract_guidelines", label: "Abstract guidelines", sort: null },
+      { key: "paper_guidelines", field: "paper_guidelines", label: "Paper guidelines", sort: null },
       { key: "conference_month", field: "conference_month", label: "Conference month", sort: "conference_month", facet: monthFacet("conference_month") },
       { key: "upcoming_dates", field: "conference_dates", label: "Conference dates", sort: "upcoming_start_date" },
       { key: "location", field: "location", label: "Location", sort: "upcoming_location" },
@@ -620,23 +630,38 @@
 
     const $ = (id) => document.getElementById(id);
 
-    // Column visibility. Columns default to all-visible; the user's choice is
-    // persisted as the set of hidden keys. A single <style> element hides cells by
-    // data-col, so the rule survives table re-renders without re-touching the DOM.
+    // Column visibility. Columns default to visible, except those marked
+    // `defaultHidden` (e.g. ID); the user's choice is persisted as the set of
+    // hidden keys, plus the default-hidden columns they turned on (so a column
+    // added as default-hidden stays hidden for visitors with a stored choice).
+    // A single <style> element hides cells by data-col, so the rule survives
+    // table re-renders without re-touching the DOM.
     const COLS_KEY = "conference-agent.hidden-columns";
+    const SHOWN_KEY = "conference-agent.shown-columns";
     let hiddenCols = new Set();
+    let shownCols = new Set();
     try {
-      const stored = JSON.parse(localStorage.getItem(COLS_KEY) || "[]");
-      hiddenCols = new Set(stored.filter((k) => COLUMNS.some((c) => c.key === k)));
+      const known = (k) => COLUMNS.some((c) => c.key === k);
+      hiddenCols = new Set(JSON.parse(localStorage.getItem(COLS_KEY) || "[]").filter(known));
+      shownCols = new Set(JSON.parse(localStorage.getItem(SHOWN_KEY) || "[]").filter(known));
     } catch (e) { /* ignore malformed storage */ }
+    for (const col of COLUMNS) {
+      if (col.defaultHidden && !shownCols.has(col.key)) hiddenCols.add(col.key);
+    }
 
     function applyColumnVisibility() {
+      for (const col of COLUMNS) {
+        if (!col.defaultHidden) continue;
+        if (hiddenCols.has(col.key)) shownCols.delete(col.key);
+        else shownCols.add(col.key);
+      }
       const rules = [...hiddenCols]
         .map((k) => `[data-col="${k}"] { display: none; }`)
         .join("\n");
       $("col-style").textContent = rules;
       try {
         localStorage.setItem(COLS_KEY, JSON.stringify([...hiddenCols]));
+        localStorage.setItem(SHOWN_KEY, JSON.stringify([...shownCols]));
       } catch (e) { /* ignore storage errors */ }
     }
 
@@ -928,6 +953,28 @@
       }).join(", ");
     }
 
+    // Abstract / paper guidelines are free text: paragraphs, or bullet lines
+    // starting with "- " (also "* " or "• "), which render as a list. The cell
+    // scrolls past a few lines so one long entry does not stretch the row.
+    function guidelinesCell(text) {
+      if (!text) return '<span class="muted">—</span>';
+      const out = [];
+      let items = [];
+      const flush = () => {
+        if (items.length) out.push(`<ul>${items.map((i) => `<li>${i}</li>`).join("")}</ul>`);
+        items = [];
+      };
+      for (const raw of String(text).split("\n")) {
+        const line = raw.trim();
+        const bullet = /^[-*•]\s+(.*)$/.exec(line);
+        if (bullet) { items.push(escapeHtml(bullet[1])); continue; }
+        flush();
+        if (line) out.push(`<p>${escapeHtml(line)}</p>`);
+      }
+      flush();
+      return `<div class="guidelines">${out.join("")}</div>`;
+    }
+
     // Registration is free text: show the upcoming edition's value, falling back
     // to the prior edition's, else a muted dash.
     function textOrPrior(upcoming, prior) {
@@ -1096,6 +1143,7 @@
         const formatHtml = tagList(splitList(r.format));
 
         tr.innerHTML = `
+          <td data-col="id" class="nobreak">${escapeHtml(r.id)}</td>
           <td data-col="conference"><div class="conf-name">${name}</div></td>
           <td data-col="category">${catHtml}</td>
           <td data-col="subcategory">${subcatHtml}</td>
@@ -1110,6 +1158,8 @@
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline, specFor(r, "paper"))}</td>
           <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline, specFor(r, "paper"), r.paper_deadline_extension)}</td>
           <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
+          <td data-col="abstract_guidelines">${guidelinesCell(r.abstract_guidelines)}</td>
+          <td data-col="paper_guidelines">${guidelinesCell(r.paper_guidelines)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month, r.upcoming_start_date || r.prior_start_date)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="location">${locationCell(r)}</td>
@@ -1580,10 +1630,10 @@
     // Per-conference update emails. The ✉️ button opens a small form under it;
     // the address is remembered in this browser after the first successful
     // subscription, so later it is prefilled and Enter alone subscribes. The
-    // Vercel Function at /api/subscribe (web/vercel/api/) emails a confirmation
+    // Vercel Function at /api/subscribe (conference_agent/web/vercel/api/) emails a confirmation
     // link the first time; the local refresh job sends the updates.
     const NOTIFY_EMAIL_KEY = "conference-agent.notify-email";
-    // Mirrors EMAIL_RE in web/vercel/api/_lib.js.
+    // Mirrors EMAIL_RE in conference_agent/web/vercel/api/_lib.js.
     const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
     let np = null; // { id, btn } while the form is open
 
@@ -1809,7 +1859,7 @@
 
     // Natural-language ("AI") search. Translates the plain-English request into
     // a boolean query with a small model that runs entirely in the browser over
-    // WebGPU (web/static/nl_query.js), then replaces the search box text with that
+    // WebGPU (conference_agent/web/static/nl_query.js), then replaces the search box text with that
     // query and searches.
     // The model (~1 GB) loads lazily on first use and is cached afterward, so
     // there is no backend and no per-request cost — matching the static site.

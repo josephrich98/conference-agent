@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
+_STATIC = Path(__file__).resolve().parent.parent / "conference_agent" / "web" / "static"
 
 # (file, indentation of its top-level statements). ``nl_query.js`` is wrapped in
 # an IIFE, so it declares no globals and is not listed.

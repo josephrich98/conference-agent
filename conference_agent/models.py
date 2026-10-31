@@ -169,6 +169,17 @@ def normalize_formats(value: "str | list | tuple | None") -> List[str]:
     return [fmt for fmt in CONFERENCE_FORMATS if fmt in present]
 
 
+def normalize_guidelines(value) -> Optional[str]:
+    """Clean submission-guideline text: ``\\n`` line endings, no trailing spaces
+    on a line, no blank lines at either end, and runs of blank lines collapsed
+    to one. ``None`` for blank input."""
+    if value is None:
+        return None
+    lines = [line.rstrip() for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return text or None
+
+
 def name_id(name: str) -> str:
     """The record id for a conference name: a lowercase, hyphenated ASCII slug.
 
@@ -417,6 +428,28 @@ class Conference(BaseModel):
         None, description="Source URL the attendance figure was taken from (internal provenance)"
     )
     notes: Optional[str] = Field(None, description="Free-form notes")
+    # Submission requirements, per series (a call's rules rarely change between
+    # editions): free text, a paragraph or "- " bullet lines, covering word /
+    # character limits, required structure, figures, templates, and so on.
+    # Researched by a dedicated pass (``discover.research_guidelines``), not by
+    # the survey, which leaves them unset (``upsert_conferences`` then keeps the
+    # stored text).
+    abstract_guidelines: Optional[str] = Field(
+        None,
+        description="Abstract submission requirements (word/character limits, structure, ...), "
+        "a paragraph or '- ' bullet lines",
+    )
+    paper_guidelines: Optional[str] = Field(
+        None,
+        description="Full-paper submission requirements (page limit, template, anonymization, ...), "
+        "a paragraph or '- ' bullet lines",
+    )
+
+    @field_validator("abstract_guidelines", "paper_guidelines", mode="before")
+    @classmethod
+    def _clean_guidelines(cls, value):
+        return normalize_guidelines(value)
+
     # Time of day and time zone each deadline closes, one pair per deadline kind.
     # These are the stored source of truth (not shown as columns); the table's
     # ``Deadline time`` text is *derived* from them (see :attr:`deadline_time`).

@@ -1,7 +1,7 @@
 """Per-conference update emails for site visitors who subscribed.
 
 Visitors subscribe from the live site's ✉️ button. The Vercel Functions in
-``web/vercel/api/`` confirm the address and store each (email, conference id)
+``conference_agent/web/vercel/api/`` confirm the address and store each (email, conference id)
 pair in a private Vercel Blob store. This module is the sending half, run by the
 local refresh job (``scripts/notify_subscribers.py``) after each refresh:
 
@@ -29,7 +29,7 @@ subscriptions and snapshot entries keep the id they were written under; the
 unsubscribe link names the id the subscription is actually stored under.
 
 Tokens are HMAC-SHA256 (hex) keyed by ``SUBSCRIBE_SECRET`` over the
-newline-joined parts, identical to ``sign`` in ``web/vercel/api/_lib.js``.
+newline-joined parts, identical to ``sign`` in ``conference_agent/web/vercel/api/_lib.js``.
 """
 
 from __future__ import annotations
@@ -51,7 +51,8 @@ from conference_agent.models import Conference
 
 # (attribute, label) pairs whose change triggers an update email. Prior-edition
 # fields are left out: they only change when an edition rolls over, which also
-# changes the upcoming fields below.
+# changes the upcoming fields below. The abstract / paper guidelines are left out
+# too: each re-research rewords them, which would email changes that are not.
 WATCHED_FIELDS: Tuple[Tuple[str, str], ...] = (
     ("name", "Name"),
     ("upcoming_abstract_deadline", "Abstract deadline"),

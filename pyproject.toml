@@ -10,8 +10,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Joseph Rich" }]
-# The base install covers querying the database and adding / deleting entries.
-# Discovery (`conference-agent discover`) needs the `discover` extra.
+keywords = ["conferences", "deadlines", "calendar", "academic", "ical"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Environment :: Console",
+]
+# A regular install provides `lookup` and `info`. The maintainer commands (add,
+# delete, discover) are available only in a development install from a source
+# checkout (`pip install -e .`); discovery also needs the `discover` extra.
 dependencies = [
     "pydantic>=2.0",
     "SQLAlchemy>=2.0",
@@ -27,16 +36,18 @@ dev = ["pytest>=7.0", "ruff>=0.4", "bandit>=1.7", "psycopg[binary]>=3.1", "confe
 
 [project.scripts]
 conference-agent = "conference_agent.cli:main"
-conf-build-table = "scripts.build_table:main"
-conf-daily-update = "scripts.daily_update:main"
+
+[project.urls]
+Homepage = "https://conferenceagent.vercel.app"
+Source = "https://github.com/josephrich98/conference-agent"
 
 [tool.setuptools]
-packages = ["conference_agent", "web"]
+packages = ["conference_agent", "conference_agent.web"]
 
-# Ship the static SPA assets with the `web` package so they are present in the
+# Ship the static SPA assets with the `conference_agent.web` package so they are present in the
 # Lambda artifact (FileResponse / StaticFiles resolve them relative to the package).
 [tool.setuptools.package-data]
-web = ["static/*"]
+"conference_agent.web" = ["static/*"]
 
 [tool.pytest.ini_options]
 markers = [

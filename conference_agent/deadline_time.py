@@ -13,7 +13,7 @@ times are always 24-hour ``HH:MM`` and zones are always one of the codes in
 :data:`TIMEZONES` or an IANA name. Display format (12- or 24-hour) is a viewing
 choice, so the stored form carries no preference.
 
-The zone table is mirrored in ``web/static/calendar.js`` (``DEADLINE_ZONES``);
+The zone table is mirrored in ``conference_agent/web/static/calendar.js`` (``DEADLINE_ZONES``);
 ``tests/test_deadline_time.py`` pins the two together.
 """
 

@@ -1,8 +1,8 @@
-"""Tests for the browser-only keyword fallback in ``web/static/search.js``.
+"""Tests for the browser-only keyword fallback in ``conference_agent/web/static/search.js``.
 
 When the exact boolean search matches nothing (or the text does not parse), the
 page ranks rows with ``keywordSearch``, which tolerates typos, inflections, and
-filler words. ``web.search.keyword_search`` is its Python port (used by
+filler words. ``conference_agent.web.search.keyword_search`` is its Python port (used by
 ``conference-agent lookup``); the parity test below pins the two together. The JS
 tests run through Node and are skipped automatically when ``node`` is unavailable (e.g. on the Python-only CI).
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from web.search import keyword_search, keyword_terms
+from conference_agent.web.search import keyword_search, keyword_terms
 
 _NODE = shutil.which("node")
 _RUNNER = Path(__file__).parent / "js" / "run_keyword.js"

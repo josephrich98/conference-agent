@@ -907,7 +907,7 @@ def test_extensions_older_than_five_years_are_dropped(tmp_path):
 
 
 def test_extensions_reach_the_page_but_not_the_csv_columns(tmp_path):
-    from web.app import _RESULT_COLUMNS, _row_to_dict
+    from conference_agent.web.app import _RESULT_COLUMNS, _row_to_dict
 
     db_url = _db_url(tmp_path)
     upsert_conferences([_conf()], db_url)

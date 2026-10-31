@@ -16,8 +16,7 @@ PYTHON ?= python3.12
 build-ConferenceFunction:
 	mkdir -p "$(ARTIFACTS_DIR)"
 	cp -r conference_agent "$(ARTIFACTS_DIR)/conference_agent"
-	cp -r web "$(ARTIFACTS_DIR)/web"
-	$(PYTHON) -m pip install --no-cache-dir -r web/requirements.txt -t "$(ARTIFACTS_DIR)"
+	$(PYTHON) -m pip install --no-cache-dir -r conference_agent/web/requirements.txt -t "$(ARTIFACTS_DIR)"
 	# Trim files the runtime never needs to keep the package small.
 	find "$(ARTIFACTS_DIR)" -type d -name "__pycache__" -prune -exec rm -rf {} + || true
 	find "$(ARTIFACTS_DIR)" -type d -name "tests" -prune -exec rm -rf {} + || true
@@ -25,12 +24,11 @@ build-ConferenceFunction:
 # Build target for the scheduled-refresh Lambda (EventBridge Scheduler -> Lambda,
 # replacing the GitHub Actions cron). Same layout as the web function but with the
 # discovery dependencies (Anthropic SDK + fetch/parse helpers) added via
-# web/requirements-refresh.txt. Deployed only when EnableScheduledRefresh="true";
+# conference_agent/web/requirements-refresh.txt. Deployed only when EnableScheduledRefresh="true";
 # the target must exist regardless so `sam build` succeeds either way.
 build-RefreshFunction:
 	mkdir -p "$(ARTIFACTS_DIR)"
 	cp -r conference_agent "$(ARTIFACTS_DIR)/conference_agent"
-	cp -r web "$(ARTIFACTS_DIR)/web"
-	$(PYTHON) -m pip install --no-cache-dir -r web/requirements-refresh.txt -t "$(ARTIFACTS_DIR)"
+	$(PYTHON) -m pip install --no-cache-dir -r conference_agent/web/requirements-refresh.txt -t "$(ARTIFACTS_DIR)"
 	find "$(ARTIFACTS_DIR)" -type d -name "__pycache__" -prune -exec rm -rf {} + || true
 	find "$(ARTIFACTS_DIR)" -type d -name "tests" -prune -exec rm -rf {} + || true

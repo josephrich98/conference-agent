@@ -69,7 +69,7 @@ def deadline_time_for(conf: Conference, kind: str) -> Optional[str]:
     Reads the structured per-kind fields (``abstract_time`` / ``abstract_timezone``
     and so on); ``kind`` is the event kind (``abstract``, ``late-abstract``,
     ``paper``). ``None`` when that deadline has no recorded time. Mirrored in
-    ``web/static/calendar.js``.
+    ``conference_agent/web/static/calendar.js``.
     """
     field = kind.replace("-", "_")
     return (
@@ -105,7 +105,7 @@ def calendar_edition(conf: Conference) -> str:
     (``database.roll_past_editions``) before the next one is announced. Falling
     back to it keeps its events in subscribed calendars until then, the same
     "upcoming, falling back to prior" rule the table uses. Mirrored in
-    ``web/static/calendar.js``.
+    ``conference_agent/web/static/calendar.js``.
     """
     if any(getattr(conf, f"upcoming_{d}") for d in _EDITION_DATES):
         return "upcoming"

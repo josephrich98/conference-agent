@@ -6,8 +6,8 @@ last either way. Within a month, rows order by the day of the month, ignoring th
 year, so a prior edition shown for an unannounced series sorts by season. A start
 of Jan 1 gives plain January-to-December order (the page's "Sort starting in
 January" option).
-Checked for both the API (``web/app.py``) and the static site
-(``web/static/search.js``, via Node; skipped when ``node`` is unavailable).
+Checked for both the API (``conference_agent/web/app.py``) and the static site
+(``conference_agent/web/static/search.js``, via Node; skipped when ``node`` is unavailable).
 """
 
 from __future__ import annotations
@@ -20,11 +20,11 @@ from pathlib import Path
 
 import pytest
 
-import web.app as appmod
+import conference_agent.web.app as appmod
 from conference_agent.database import upsert_conferences
 from conference_agent.models import Conference
 
-_SEARCH_JS = Path(__file__).parent.parent / "web" / "static" / "search.js"
+_SEARCH_JS = Path(__file__).parent.parent / "conference_agent" / "web" / "static" / "search.js"
 
 # Paper deadlines in Jan, Mar, Oct, Dec, plus one series with no paper deadline.
 # The two October rows differ in year as well as day: last year's Oct 20 must

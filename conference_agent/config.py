@@ -144,3 +144,19 @@ WATCH_BACKSTOP_DAYS = 28
 # burst of changes spreads over several days instead of one long run.
 WATCH_BATCH_SIZE = 6
 WATCH_MAX_AGENT_PER_RUN = 18
+
+# --- Submission-guidelines pass (``conference-agent discover --guidelines``) ---
+#
+# The abstract / paper guidelines are researched by their own agent pass, run by
+# the daily job after the watch run, for series with a submission deadline still
+# ahead (``database.guidelines_targets``). A series never researched is due at
+# once; one with no guidelines found is retried every GUIDELINES_RETRY_DAYS (the
+# call may not be posted yet); one with guidelines is re-researched every
+# GUIDELINES_RECHECK_DAYS, since a new edition's call may change the rules.
+# GUIDELINES_BATCH_SIZE series go into one agent session, and at most
+# GUIDELINES_MAX_PER_RUN are researched per run (the rest wait for the next
+# run, soonest deadline first).
+GUIDELINES_RETRY_DAYS = 14
+GUIDELINES_RECHECK_DAYS = 120
+GUIDELINES_BATCH_SIZE = 5
+GUIDELINES_MAX_PER_RUN = 15

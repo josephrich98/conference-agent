@@ -67,7 +67,9 @@ field), ``format`` (any of abstract / paper / poster / oral),
 ``location``, ``airports`` (free text — the codes and names of the airports
 near the location, e.g. ``airports:ORD``), ``size``, ``attendance``, ``remote``, ``cost``, ``registration`` (free text — a
 substring match), ``deadline_time`` (free text — the time of day and zone
-submissions close, e.g. ``deadline_time:AoE``), ``abstract_due``, ``late_abstract_due`` (the second, later
+submissions close, e.g. ``deadline_time:AoE``), ``abstract_guidelines`` and
+``paper_guidelines`` (free text — the submission requirements, e.g.
+``abstract_guidelines:"250 words"``), ``abstract_due``, ``late_abstract_due`` (the second, later
 abstract deadline some series publish — a poster-only deadline or a
 late-breaking round), ``paper_due``, ``conference_dates``,
 ``conference_month``, ``abstract_month``, ``late_abstract_month``, and
@@ -121,6 +123,8 @@ RESULT_COLUMNS = [
     "paper_month",
     "upcoming_paper_deadline",
     "deadline_time",
+    "abstract_guidelines",
+    "paper_guidelines",
     "conference_month",
     "upcoming_start_date",
     "upcoming_end_date",
@@ -141,7 +145,7 @@ RESULT_COLUMNS = [
 ]
 
 # The queryable fields exposed to users mirror the table's column headers exactly
-# (see COLUMNS in web/static/index.html), so the search box and the displayed
+# (see COLUMNS in conference_agent/web/static/index.html), so the search box and the displayed
 # table agree on names. Each public field maps to the underlying ConferenceRow
 # column(s); users never need to know the internal names.
 
@@ -169,6 +173,10 @@ _TEXT_FIELDS = {
     # Time of day (+ zone) submissions close -- free text, substring match
     # (e.g. ``deadline_time:AoE``).
     "deadline_time": ("deadline_time",),
+    # Submission requirements -- free text, substring match (e.g.
+    # ``abstract_guidelines:"250 words"``).
+    "abstract_guidelines": ("abstract_guidelines",),
+    "paper_guidelines": ("paper_guidelines",),
 }
 
 # Public date field → (upcoming column, prior column). Comparisons run against
@@ -223,6 +231,8 @@ _FIELD_TYPES = {
     "cost": "string",
     "registration": "string",
     "deadline_time": "string",
+    "abstract_guidelines": "string",
+    "paper_guidelines": "string",
     "abstract_due": "date",
     "late_abstract_due": "date",
     "paper_due": "date",
@@ -250,6 +260,8 @@ _BARE_SEARCH_COLUMNS = (
     "upcoming_registration",
     "prior_registration",
     "deadline_time",
+    "abstract_guidelines",
+    "paper_guidelines",
     "url",
     "notes",
 )
@@ -310,6 +322,8 @@ _FIELD_DESCRIPTIONS = {
     "cost": "registration fee or fee range of the upcoming (or most recent) meeting",
     "registration": "registration windows, e.g. early bird and regular periods",
     "deadline_time": "time of day and time zone that submissions close",
+    "abstract_guidelines": "abstract submission requirements, e.g. word or character limits and required sections",
+    "paper_guidelines": "full-paper submission requirements, e.g. page limit, template, and anonymization",
     "abstract_due": "earliest (primary) abstract deadline",
     "late_abstract_due": "later abstract deadline: poster-only or late-breaking round",
     "paper_due": "full-paper submission deadline",
@@ -712,7 +726,7 @@ def build_filter(query: str):
 
 
 # ---------------------------------------------------------------------------
-# Keyword fallback (Python port of ``keywordSearch`` in web/static/search.js).
+# Keyword fallback (Python port of ``keywordSearch`` in conference_agent/web/static/search.js).
 #
 # The table runs the exact boolean search first; when it matches nothing, or the
 # text does not parse, it falls back to this forgiving, relevance-ranked keyword
@@ -737,6 +751,8 @@ _KEYWORD_FIELDS = (
     ("upcoming_cost", 0.5),
     ("prior_cost", 0.5),
     ("deadline_time", 0.5),
+    ("abstract_guidelines", 0.5),
+    ("paper_guidelines", 0.5),
     ("upcoming_registration", 0.5),
     ("prior_registration", 0.5),
     ("url", 0.5),
@@ -744,7 +760,10 @@ _KEYWORD_FIELDS = (
 )
 
 # Long free-text columns where typo-tolerant matching mostly produces noise.
-_KEYWORD_EXACT_ONLY = {"notes", "url", "upcoming_registration", "prior_registration"}
+_KEYWORD_EXACT_ONLY = {
+    "notes", "url", "upcoming_registration", "prior_registration",
+    "abstract_guidelines", "paper_guidelines",
+}
 
 # Displayed-date columns a four-digit year is checked against.
 _KEYWORD_DATE_COLUMNS = (
@@ -935,7 +954,7 @@ def keyword_search(query: str, rows: List[dict]) -> List[dict]:
     Returns the rows matching at least half as many of the query's terms as the
     best row does, most relevant first (more terms matched, then a higher
     score, with rarer terms weighing more). Empty when the query has no usable
-    terms. Mirrors ``keywordSearch`` in web/static/search.js.
+    terms. Mirrors ``keywordSearch`` in conference_agent/web/static/search.js.
     """
     terms = keyword_terms(query)
     if not terms:

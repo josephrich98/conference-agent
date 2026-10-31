@@ -1,6 +1,6 @@
 """Offline tests for natural-language → boolean-query translation.
 
-The local LLM call (``web.nl_query._call_ollama``) is monkeypatched so these run
+The local LLM call (``conference_agent.web.nl_query._call_ollama``) is monkeypatched so these run
 hermetically with no Ollama server. A live, end-to-end translation test would be
 marked ``@pytest.mark.network`` / ``llm`` and is intentionally omitted from CI.
 """
@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from web import nl_query
-from web.nl_query import (
+from conference_agent.web import nl_query
+from conference_agent.web.nl_query import (
     LLMUnavailable,
     Translation,
     TranslationError,
@@ -20,7 +20,7 @@ from web.nl_query import (
     _field_reference,
     translate,
 )
-from web.search import build_filter
+from conference_agent.web.search import build_filter
 
 
 def _fake_call(query):
@@ -137,7 +137,7 @@ def test_llm_unavailable_propagates(monkeypatch):
 def test_endpoint_maps_errors_to_status_codes(monkeypatch):
     from fastapi import HTTPException
 
-    from web import app as webapp
+    from conference_agent.web import app as webapp
 
     # 503 when the local model is unreachable.
     monkeypatch.setattr(webapp, "translate", lambda q: (_ for _ in ()).throw(LLMUnavailable("down")))

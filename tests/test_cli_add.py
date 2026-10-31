@@ -760,3 +760,44 @@ def test_add_csv_rejects_non_numeric_attendance(tmp_path, capsys):
     path.write_text("conference_name,subcategory,attendance\nValue Check Meeting,radiology,lots\n")
     assert main(["--db", url, "add", "--csv", str(path)]) == 1
     assert "attendance 'lots' is not a whole number" in capsys.readouterr().err
+
+
+def test_missing_db_folder_is_reported(tmp_path, capsys):
+    # A pip-installed CLI run outside the repo has no data/ folder for the
+    # default database: report it rather than raise SQLite's opaque error.
+    url = f"sqlite:///{tmp_path / 'missing' / 'test.db'}"
+    assert main(["--db", url, "lookup", "--columns", "acronym"]) == 1
+    assert main(["--db", url, "delete", "--yes", "--conference-name", "Nope"]) == 1
+    assert "no local database" in capsys.readouterr().err
+    assert not (tmp_path / "missing").exists()
+
+
+def test_add_creates_missing_db_folder(tmp_path):
+    url = f"sqlite:///{tmp_path / 'missing' / 'test.db'}"
+    assert main(["--db", url, "add", "--conference-name", "New Meeting", "--subcategory", "radiology"]) == 0
+    assert [c.name for c in query_conferences(db_url=url)] == ["New Meeting"]
+
+
+def test_missing_backend_is_reported(tmp_path, monkeypatch, capsys):
+    url = _db_url(tmp_path)
+    main(["--db", url, "add", "--conference-name", "New Meeting", "--subcategory", "radiology"])
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert main(["--db", url, "discover", "--backend", "claude-code", "--subcategory", "radiology"]) == 1
+    assert "'claude' CLI was not found" in capsys.readouterr().err
+
+
+def test_maintainer_commands_need_development_install(tmp_path, monkeypatch, capsys):
+    import conference_agent.cli as cli
+
+    monkeypatch.setattr(cli, "is_development_install", lambda: False)
+    url = _db_url(tmp_path)
+    for argv in (
+        ["add", "--conference-name", "X"],
+        ["--db", url, "delete", "--conference-name", "X"],
+        ["discover", "--help"],
+    ):
+        assert main(argv) == 2
+        assert "development install" in capsys.readouterr().err
+    assert "add" not in cli.build_parser()._subparsers._group_actions[0].choices
+    # A query that merely contains a command name is still a lookup.
+    assert cli._maintainer_command_requested(["lookup", "--query", "delete"]) is None

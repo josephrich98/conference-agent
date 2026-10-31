@@ -23,12 +23,13 @@ The output is a self-contained directory::
       nl_query.js         # natural-language ("AI") search via in-browser WebLLM
       c/<id>/, field/<tag>/, sitemap.xml, robots.txt  # prerendered SEO pages
       c/<id>/calendar.ics, field/<tag>/calendar.ics, calendar.ics  # subscribable feeds
+      c/<id>/data.json        # one conference's full row, for scripts (CORS-enabled)
       data/conferences.json   # the catalog snapshot (minus retired series) + field metadata
       add/index.html      # "Add or edit a conference" form (fields from `add --fields`)
       data/add_fields.json    # the `conference-agent add` input vocabulary, for the form
       api/ + package.json     # Vercel Functions for per-conference update emails
 
-The ``api/`` functions (from ``web/vercel/``) are the one exception to "no
+The ``api/`` functions (from ``conference_agent/web/vercel/``) are the one exception to "no
 compute": they run only when a visitor subscribes, confirms, or unsubscribes,
 never for browsing or search. Other static hosts serve the table unchanged; only
 the ✉️ subscribe button and the "Add or edit a conference" form (which opens a GitHub pull
@@ -60,11 +61,11 @@ from conference_agent.database import (
     query_conferences,
 )
 from conference_agent.refresh import is_retired
-from web.app import _RESULT_COLUMNS, _row_to_dict
-from web.search import field_help
+from conference_agent.web.app import _RESULT_COLUMNS, _row_to_dict
+from conference_agent.web.search import field_help
 
 # Static assets copied verbatim into the bundle (the UI is the product now).
-_STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "conference_agent" / "web" / "static"
 _ASSETS = ("index.html", "search.js", "calendar.js", "nl_query.js")
 # Vercel Functions (subscribe / confirm / unsubscribe) and their dependencies.
 _VERCEL_DIR = _STATIC_DIR.parent / "vercel"
@@ -114,7 +115,11 @@ def _write_redirects(db_url: str, rows: list[dict], out_dir: Path) -> int:
         {
             "source": "/(.*)\\.ics",
             "headers": [{"key": "Content-Type", "value": "text/calendar; charset=utf-8"}],
-        }
+        },
+        {
+            "source": "/(c/.*/data\\.json|data/.*\\.json)",
+            "headers": [{"key": "Access-Control-Allow-Origin", "value": "*"}],
+        },
     ]
     (out_dir / "vercel.json").write_text(
         json.dumps({"redirects": redirects, "headers": headers}, indent=1) + "\n",
@@ -189,6 +194,12 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
         index.read_text(encoding="utf-8").replace("<!--SEO_LINKS-->", seo["browse"]),
         encoding="utf-8",
     )
+    for row in rows:
+        page = out_dir / "c" / slugify(row["id"])
+        page.mkdir(parents=True, exist_ok=True)
+        (page / "data.json").write_text(
+            json.dumps(row, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+        )
     _write_feeds(db_url, rows, out_dir)
     _write_redirects(db_url, rows, out_dir)
     shutil.copyfile(_VERCEL_DIR / "package.json", out_dir / "package.json")

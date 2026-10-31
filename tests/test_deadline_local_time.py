@@ -1,6 +1,6 @@
 """Tests for the viewer-local deadline time shown under the "Deadline time" column.
 
-``localDeadlineTime`` in ``web/static/calendar.js`` takes a stored 24-hour time and
+``localDeadlineTime`` in ``conference_agent/web/static/calendar.js`` takes a stored 24-hour time and
 zone code ("23:59", "ET") and renders it in the viewer's zone. It is browser-only,
 so it is exercised through Node; skipped when ``node`` is unavailable (e.g. on the
 Python-only CI).

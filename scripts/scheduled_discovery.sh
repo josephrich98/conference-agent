@@ -11,7 +11,10 @@
 # Before the watch run it adds any "Add or edit a conference" submissions merged into
 # origin/main (scripts/ingest_submissions.py). The watch run also moves finished
 # editions into the prior columns. After it, the airports near any new or
-# changed location are looked up (`conference-agent discover --airports`).
+# changed location are looked up (`conference-agent discover --airports`), and
+# the abstract / paper submission guidelines are researched for series with a
+# deadline ahead that are due (`conference-agent discover --guidelines`: never
+# researched, empty and 14+ days old, or 120+ days old; at most 15 per run).
 #
 # If the run changes what the site shows, it redeploys the static site
 # (scripts/deploy_static.sh). The comparison is on the exported site data, not
@@ -90,6 +93,12 @@ run() {
   # no agent). A lookup that cannot reach its service is retried next run.
   echo ""
   conference-agent discover --airports || { echo "ERROR: airport lookup failed"; status=1; }
+
+  # Submission guidelines (Abstract / Paper guidelines columns) for series with
+  # a deadline ahead that are due. A failed batch is retried next run.
+  echo ""
+  conference-agent discover --guidelines --backend claude-code --model sonnet ||
+    { echo "ERROR: guidelines research failed"; status=1; }
 
   # Deploy even after a partial failure: batches that succeeded are kept.
   after="$(site_hash)" || return 1

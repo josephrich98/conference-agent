@@ -221,7 +221,7 @@ Resources:
       BuildMethod: makefile
     Properties:
       CodeUri: ../
-      Handler: web.handler.handler
+      Handler: conference_agent.web.handler.handler
       Description: conference-agent FastAPI app (table UI + boolean search API)
       Architectures:
         - x86_64
@@ -233,7 +233,7 @@ Resources:
       Environment:
         Variables:
           CONFERENCE_DATABASE_URL: !Sub "postgresql+pg8000://${DBUsername}:${DBPassword}@${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}"
-          # Empty unless GaMeasurementId is set; web.app injects the GA snippet
+          # Empty unless GaMeasurementId is set; conference_agent.web.app injects the GA snippet
           # only when this is a valid G-XXXX id, so analytics is AWS-only.
           CONFERENCE_GA_ID: !Ref GaMeasurementId
       VpcConfig:
@@ -503,7 +503,7 @@ Resources:
       BuildMethod: makefile
     Properties:
       CodeUri: ../
-      Handler: web.refresh_handler.handler
+      Handler: conference_agent.web.refresh_handler.handler
       Description: Scheduled conference discovery refresh (replaces the GitHub Actions cron).
       Architectures:
         - x86_64

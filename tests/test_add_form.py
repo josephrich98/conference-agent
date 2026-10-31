@@ -5,7 +5,7 @@ from pathlib import Path
 
 from conference_agent.cli import add_field_schema
 
-_STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
+_STATIC = Path(__file__).resolve().parent.parent / "conference_agent" / "web" / "static"
 
 
 def _quoted_names(block: str) -> set[str]:

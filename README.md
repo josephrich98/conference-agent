@@ -1,7 +1,7 @@
 # conference_agent
 
 Website: https://conferenceagent.vercel.app
-Database: data/conferences.db
+Data: https://conferenceagent.vercel.app/data/conferences.json
 
 Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics.
 
@@ -11,35 +11,29 @@ Features:
 - Search with keywords, boolean logic, or plain English
 - Sort conferences by those with the nearest submission deadlines, color-coded by timeframe
 - See deadline times in your current timezone
+- Read each conference's abstract and paper submission guidelines (word or page limits, required structure, templates)
 - View conferences that have a history of extending deadlines
-- Add new conferences or edit existing conferences with a form or command-line interface
+- Suggest a new conference or an edit to an existing one with the [form](https://conferenceagent.vercel.app/add/)
+- Read any conference or single field as static JSON, with no API key (see [Data access](#data-access-for-scripts-and-ai-agents))
 
 ## Install
 
 ```bash
-git clone https://github.com/josephrich98/conference-agent
-cd conference-agent
-pip install .
-```
-
-The base install is enough to query the database and add or delete entries
-(`lookup`, `add`, `delete`). To run the discovery agent, install the `discover`
-extra:
-
-```bash
-pip install .[discover]
+pip install conference-agent
 ```
 
 ## Usage
 
 ```bash
 conference-agent lookup    # query the database
-conference-agent add       # add/update a conference manually
-conference-agent delete    # delete a conference manually
-conference-agent discover  # run the discovery agent to update conference information
+conference-agent info      # show one conference by id or acronym
 ```
 
-Each entry is indexed by the conference_name column.
+Both commands search the live site's data
+(https://conferenceagent.vercel.app/data/conferences.json, cached in
+`~/.cache/conference-agent`), so they need no local database. The site is
+checked for a newer catalog on the first run of each day; later runs that day
+read the cached copy without a network request (`--refresh` checks again).
 
 ### conference-agent lookup
 
@@ -65,184 +59,52 @@ conference-agent lookup
 View all unique values of a column:
 
 ```bash
-conference-agent lookup --columns conference_name
+conference-agent lookup --columns name
 ```
 
+### conference-agent info
 
-### conference-agent add
-
-View all fields:
+Show one conference's entire row, found by its id (the unique name slug) or its
+acronym:
 
 ```bash
-conference-agent add --fields
+conference-agent info radiological-society-of-north-america-annual-meeting
+conference-agent info RSNA
 ```
 
-Add a new conference (will fail if the conference name already exists):
+Show only specific columns (a single column prints just its value):
 
 ```bash
-conference-agent add \
-  --conference-name "Radiological Society of North America Annual Meeting" \
-  --conference-acronym "RSNA" \
-  --subcategory radiology \
-  --format abstract poster oral \
-  --location "Chicago, IL" \
-  --attendance 39000 --attendance-year 2025 \
-  --remote-option hybrid \
-  --cost "\$1,095 (member, early-bird)" \
-  --abstract-due 2026-05-06 \
-  --conference-dates 2026-11-29 2026-12-03 \
-  --url https://www.rsna.org/annual-meeting
+conference-agent info RSNA name upcoming_start_date upcoming_location
 ```
 
-Update an existing conference (will fail if the conference name does not exist):
+If an acronym is shared by several conferences, `info` lists their ids and
+exits with an error; rerun it with the id of the one you want. List ids with
+`conference-agent lookup --columns id`.
+
+To add a conference or correct one, use the
+[form](https://conferenceagent.vercel.app/add/); submissions are reviewed
+before they reach the table. Maintaining or self-hosting the database (the
+`add`, `delete`, and `discover` commands, which come only with a development
+install from a clone of the repository, and the scheduled updates) is
+covered in [DEVELOPMENT.md](https://github.com/josephrich98/conference-agent/blob/main/DEVELOPMENT.md).
+
+## Data access for scripts and AI agents
+
+No API key or server: the live site serves the data as static JSON. The `<id>` is the
+conference name slug; find it
+by searching `acronym`/`name` in the catalog.
+
+- One conference (all fields): `https://conferenceagent.vercel.app/c/<id>/data.json`
+- Whole catalog (`conferences` list plus `fields` metadata): `https://conferenceagent.vercel.app/data/conferences.json`
+- Agent guide: `/llms.txt`
+- Calendar feeds: `/c/<id>/calendar.ics`, `/field/<tag>/calendar.ics`, `/calendar.ics`
 
 ```bash
-conference-agent add --update \
-  --conference-name "Radiological Society of North America Annual Meeting" \
-  ...
+# AUA abstract deadline date and time of day
+curl -s https://conferenceagent.vercel.app/c/american-urological-association-annual-meeting/data.json \
+  | jq '{date: .upcoming_abstract_deadline, time: .abstract_time, zone: .abstract_timezone}'
+# AUA by acronym (acronyms are not unique; check `name`)
+curl -s https://conferenceagent.vercel.app/data/conferences.json \
+  | jq '.conferences[] | select(.acronym=="AUA")'
 ```
-
-Update an existing conference, including changing the conference-name field (will fail if the conference name does not exist):
-
-```bash
-conference-agent add --update \
-  --conference-name "Radiological Society of North America Annual Meeting" \
-  --new-conference-name "RSNA Annual Meeting" \
-  ...
-```
-
-### conference-agent delete
-
-Delete an existing conference (will fail if the conference name does not exist):
-
-```bash
-conference-agent delete \
-  --conference-name "Radiological Society of North America Annual Meeting"
-```
-
-### conference-agent discover
-
-Update the database with Claude code.
-
-For a single conference:
-
-```bash
-conference-agent discover \
-  --conference-name "Radiological Society of North America Annual Meeting"
-```
-
-For all conferences in a category:
-
-```bash
-conference-agent discover \
-  --category "artificial intelligence"
-```
-
-For all conferences in multiple categories:
-
-```bash
-conference-agent discover \
-  --category "artificial intelligence" \
-  --category mathematics
-```
-
-For all conferences in a subcategory:
-
-```bash
-conference-agent discover \
-  --subcategory radiology
-```
-
-For all conferences in a size:
-
-```bash
-conference-agent discover \
-  --size massive
-```
-
-To update airports specifically:
-
-```bash
-conference-agent disvoer \
-  --airports
-```
-
-Using Claude API rather than Claude code subscription:
-
-```bash
-conference-agent discover \
-  --conference-name "Radiological Society of North America Annual Meeting" \
-  --backend api
-```
-
-## Local to website database conversion
-
-- *underscores replaced with spaces, and capitalization applied as appropriate*
-- acronym + name + url --> conference ([ACRONYM](URL) — NAME)
-- upcoming_* + prior_* --> one column each, showing the upcoming value and falling back to the prior one
-- upcoming_start_date + upcoming_end_date --> conference dates (START – END)
-- abstract_month, late_abstract_month, paper_month, conference_month (all derived from date columns) --> month names (1 --> January)
-- attendance + attendance_year --> attendance (45,000 (2025))
-- abstract_time/timezone + late_abstract_time/timezone + paper_time/timezone --> deadline time (11:59 PM ET; 12- or 24-hour)
-- abstract_deadline_extension + late_abstract_deadline_extension + paper_deadline_extension --> no column of their own; embedded as a ⏩ button after the matching deadline date, listing the past extensions (original → extended) on hover, tap, or click
-- added calendar (📅: subscribe to the conference's feed, or download a one-time .ics) and email (✉️: update emails, plus a reminder one week before each deadline) columns
-- subscribable calendar feeds: `/c/<id>/calendar.ics` per conference, `/field/<tag>/calendar.ics` per field, and `/calendar.ics` for everything
-- hidden: id, notes, attendance_source, last_checked, watch_* (internal bookkeeping)
-- retired series (no future edition, last one over 24 months old) are left out of the website
-
-## Scheduled updates
-
-A local cron job runs `scripts/scheduled_discovery.sh` every day at 2 AM PST. It
-runs the **watch** cadence (`daily_update.py --cadence watch`), which avoids an
-agent run unless something appears to have changed:
-
-| Tier | Which series | Page check |
-|---|---|---|
-| daily | an upcoming submission deadline within 14 days before or after today | every day |
-| soon | an upcoming deadline or the meeting's start within the next 30 days | every 14 days |
-| stale | no future edition on record; the last edition's submission deadline (or start date) 6–24 months ago | every 14 days |
-| recent | no future edition on record; the last edition's submission deadline (or start date) under 6 months ago | every 14 days |
-
-The page check needs no agent: it fetches the official link plus up to three
-same-site "dates" / "deadlines" / "call for abstracts" pages and fingerprints the
-set of dates they mention (`conference_agent/page_watch.py`). The agent then
-re-researches a series, in a targeted run of up to 6 named series rather than a
-whole field, only when:
-
-- the fingerprint changed (an extension, a moved meeting, a new edition);
-- the pages could not be read (blocked, rendered by JavaScript, no link) and the
-  series has not been researched in 14 days; or
-- 28 days have passed without research (a backstop, since a new edition is often
-  announced on a new, year-specific site the stored link never shows).
-
-At most 18 series are researched per run; the rest wait for the next day.
-Targeted results are merged without clearing fields the agent did not re-find.
-Once a meeting is over (and no deadline of that edition is still ahead), its
-dates move from the upcoming columns to the prior ones; an edition recorded in
-both is merged into one.
-
-Each run also:
-
-- adds "Add or edit a conference" submissions merged into `origin/main`
-  (`scripts/ingest_submissions.py`; processed files are recorded in
-  `data/ingested_submissions.json`, and a failed one is not retried);
-- redeploys the static site (`scripts/deploy_static.sh`) if the data the site
-  shows changed;
-- emails subscribers about changed conferences, and once when a subscribed
-  conference's deadline is a week away (`scripts/notify_subscribers.py`); and
-- emails the end of the log to `CONFERENCE_NOTIFY_EMAIL` if any step failed
-  (`scripts/alert_failure.py`).
-
-Logs go to `data/logs/`. Preview a run without
-calling the agent or writing anything with:
-
-```bash
-python scripts/daily_update.py --cadence watch --dry-run
-```
-
-The windows and limits are constants in `conference_agent/config.py`. The
-older per-field cadences remain available: `--cadence due` (fields holding a
-series in the 6–24-month window), `weekly` (flagship fields), `monthly` (the
-rest), and `all`. The AWS SAM stack can schedule those via EventBridge Scheduler
-(`EnableScheduledRefresh=true`; see `DEPLOY_AWS.md`), but that stack is torn
-down.

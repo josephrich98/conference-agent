@@ -1,5 +1,5 @@
 /*
- * Test helper for the structured deadline-time helpers in web/static/calendar.js.
+ * Test helper for the structured deadline-time helpers in conference_agent/web/static/calendar.js.
  *
  * Used by tests/test_deadline_time.py. Reads a JSON object on stdin with any of:
  *   instants: [[dateIso, time, tz], ...]   -> ms instants the deadline has passed
@@ -9,7 +9,7 @@
  * and writes a JSON object with the matching keys.
  */
 const path = require("path");
-const cal = require(path.resolve(__dirname, "../../web/static/calendar.js"));
+const cal = require(path.resolve(__dirname, "../../conference_agent/web/static/calendar.js"));
 
 let input = "";
 process.stdin.setEncoding("utf8");

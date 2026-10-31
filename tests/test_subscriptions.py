@@ -48,7 +48,7 @@ def _run(confs, state_path, subscribers=None, send=None, resolve=None):
 
 
 def test_sign_matches_the_js_implementation():
-    # Value computed by web/vercel/api/_lib.js sign("unsubscribe", "a.b@x.org",
+    # Value computed by conference_agent/web/vercel/api/_lib.js sign("unsubscribe", "a.b@x.org",
     # "RSNA") with SUBSCRIBE_SECRET=s3cret; the two must agree for links to work.
     assert subs.sign(SECRET, "unsubscribe", "a.b@x.org", "RSNA") == (
         "eb44d7e855d70556901060bc435dbda287d3e4dd0438f657a70a944a8179c1c1"

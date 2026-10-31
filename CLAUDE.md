@@ -105,8 +105,24 @@ for the design.
     each series' subscriber-facing fields against the last run's snapshot
     (`data/notify_state.json`) and emails that series' subscribers the changes
     plus its updated `.ics`, with signed unsubscribe links
+  - `live.py` — read-only access to the live site for `lookup` / `info`:
+    downloads `<SITE_URL>/data/conferences.json` (cached in
+    `~/.cache/conference-agent`; ETag-revalidated on the first run of a day,
+    after which that day's runs make no request unless `--refresh` is given;
+    falling back to the cached copy when offline)
+    and loads it into a content-named SQLite file, so the same SQLAlchemy
+    search runs over the live data. `lookup` / `info` use it unless `--local`
+    or `--db` is given; the write commands always use the local `--db`
   - `cli.py` — command-line entry point (`discover` / `add` /
-    `delete` / `lookup`). A bare `discover` surveys every field
+    `delete` / `lookup` / `info`). The maintainer commands (`discover` / `add`
+    / `delete`) exist only in a development install
+    (`cli.is_development_install`: the package runs from a source checkout,
+    e.g. `pip install -e .`); a regular `pip install` gets only `lookup` and
+    `info`, and naming a maintainer command there exits 2 with a pointer to
+    the repository. `python -m conference_agent` runs the same CLI. `info ID [COL ...]` prints one series'
+    row (or just the named `lookup` columns; one column prints the bare value),
+    finding it by id (current or former) or, failing that, by case-insensitive
+    acronym; an acronym shared by several series lists their ids and exits 1. A bare `discover` surveys every field
     (`database.discovery_subcategories`: the table's subcategories), one agent run
     per field; `--subcategory` / `--category` narrow the survey, while
     `--conference-name` / `--size` switch to re-checking matching stored series
@@ -121,8 +137,10 @@ for the design.
     `--update --new-conference-name` renames a series (its id follows).
     `discover --airports` looks up the Airports column instead of running the
     agent, for rows whose location changed (`--airports all` for every row;
-    the discover filters narrow it)
-- `web/` — FastAPI app + static single-page table (`search.py` boolean-query
+    the discover filters narrow it). `discover --guidelines` researches the
+    Abstract / Paper guidelines columns instead of surveying (see the
+    guidelines design decision)
+- `conference_agent/web/` — FastAPI app + static single-page table (`search.py` boolean-query
   language, `nl_query.py` optional natural-language → boolean-query translation
   via a local Ollama model, `app.py` REST API, `static/index.html`, `handler.py`
   Lambda entry point, `requirements.txt` for the Lambda build). For the
@@ -140,11 +158,11 @@ for the design.
   `robots.txt`, and the home page's browse links; called by `build_static.py`
   (the table itself is JS-rendered, so crawlers need these). Vercel Web
   Analytics (`/_vercel/insights/script.js`) must be enabled in the project dashboard.
-- `web/vercel/` — the Vercel Functions behind the table's ✉️ subscribe button
+- `conference_agent/web/vercel/` — the Vercel Functions behind the table's ✉️ subscribe button
   (`api/subscribe.js`, `confirm.js`, `unsubscribe.js`, `subscriptions.js`,
   shared `_lib.js`) and their `package.json`; `build_static.py` copies them into
   `dist/`. `api/propose.js` backs the "Add or edit a conference" form
-  (`web/static/add.html`, served at `/add/`, linked from the header and below
+  (`conference_agent/web/static/add.html`, served at `/add/`, linked from the header and below
   the table): the form is generated from `data/add_fields.json`
   (`cli.add_field_schema`, the same vocabulary as `add --fields json`) but
   lays it out one line per `ROWS` entry. The dates are entered once (upcoming
@@ -176,7 +194,7 @@ for the design.
   via the root `Makefile`. The serving Lambda injects Google Analytics when
   `GaMeasurementId` is set (AWS-only; the static site never carries it), and
   setting `EnableScheduledRefresh=true` provisions an EventBridge Scheduler +
-  refresh Lambda (`web/refresh_handler.py`) + NAT gateway that replace the old
+  refresh Lambda (`conference_agent/web/refresh_handler.py`) + NAT gateway that replace the old
   GitHub Actions refresh cron. This AWS path is a private, on-demand demo kept
   torn down to $0 — see the gitignored `DEPLOY_AWS.md` run-book.
 - `tests/` — offline unit tests (network/LLM tests are marked and excluded from CI)
@@ -184,6 +202,9 @@ for the design.
 - `.github/workflows/` — `ci.yml` only (lint + offline tests). The scheduled
   refresh workflows (`weekly_update`/`monthly_update`/`auto_check`) were replaced
   by EventBridge Scheduler in the AWS SAM stack (see `infra/template.yaml`)
+- `README.md` — user guide (`lookup` / `info`, the form, static data access);
+  `DEVELOPMENT.md` — maintainer guide (`add` / `delete` / `discover`, the
+  local database, the site conversion, scheduled updates)
 - `DEPLOY.md` — deploy guide: the static Vercel path (live) and the legacy AWS stack
 
 ## Development Setup
@@ -195,7 +216,7 @@ conda activate conference_agent
 ```
 
 ```bash
-pip install -e .                   # core: lookup / add / delete (no discovery)
+pip install -e .                   # core: lookup / info / add / delete (no discovery)
 pip install -e ".[dev]"            # core + test tooling (includes web + discover)
 pip install -e ".[discover]"       # discovery: anthropic (api backend) + fetch/parse helpers
 pip install -e ".[web]"            # FastAPI web table + calendar feed
@@ -277,6 +298,26 @@ dependencies there rather than installing ad hoc.
   goes from green to red the moment it passes with no re-render or redeploy.
   The zone table and the display grouping exist in both Python and JS;
   `tests/test_deadline_time.py` pins them together via Node.
+- **Submission guidelines are per-series free text, researched by their own
+  pass.** `abstract_guidelines` and `paper_guidelines` (on the model, nullable
+  Text columns, cleaned by `models.normalize_guidelines`) hold a call's
+  requirements (word / character or page limits, structure, figures, templates,
+  anonymization) as a paragraph or `- ` bullet lines; the table's two columns
+  (right of Deadline time), the `/c/<id>/` pages, and `seo_pages._guidelines_html`
+  render bullet lines as a list. They are `add` fields, form textareas (4,000
+  characters in `api/propose`), search fields (`abstract_guidelines:`), and
+  pinnable. The survey and re-check prompts do not research them (that would
+  lengthen every run); a survey that reports none keeps the stored text
+  (`upsert_conferences`). Instead `discover --guidelines`
+  (`discover.research_guidelines`, two-phase like discovery, batches of
+  `GUIDELINES_BATCH_SIZE`) covers series with an upcoming deadline still ahead
+  that are due by `database.guidelines_targets`: never researched, empty and
+  researched `GUIDELINES_RETRY_DAYS` (14) ago, or researched
+  `GUIDELINES_RECHECK_DAYS` (120) ago; at most `GUIDELINES_MAX_PER_RUN` (15)
+  per run, soonest deadline first. `record_guidelines` keeps stored text over a
+  blank result and stamps the bookkeeping column `guidelines_checked`. The
+  guidelines are not subscriber-watched fields, since each re-research rewords
+  them.
 - **Deadline extensions are derived on write (or entered by hand) and shown
   only as a marker.** Three
   text columns (`abstract_deadline_extension`, `late_abstract_deadline_extension`,
@@ -290,7 +331,7 @@ dependencies there rather than installing ad hoc.
   stored lines (duplicates dropped); an entry more than five years old is
   rejected. The add form's "Deadline extension history" (below the paper
   deadline) collects these as rows of type / original date / extended date,
-  with a + button for more. On the site, `web/app.py` `_EXTENSION_COLUMNS` carries them in
+  with a + button for more. On the site, `conference_agent/web/app.py` `_EXTENSION_COLUMNS` carries them in
   each serialized row only so `index.html` can mark the deadline dates:
   `extensionMark` puts a ⏩ after a date whose series has an extension whose
   extended date has already passed (that history on hover or tap; an extension
@@ -445,17 +486,17 @@ dependencies there rather than installing ad hoc.
   credentials and runs from the static/Lambda web layer. All-day reminders are
   anchored to the morning (see `calendar_sync._alarm_trigger`) so calendar apps
   label "N days before" correctly rather than a day early.
-- **Boolean-searchable web table.** `web/` mirrors a proven pattern: a small
+- **Boolean-searchable web table.** `conference_agent/web/` mirrors a proven pattern: a small
   boolean query language (`field:value`, `AND`/`OR`/`NOT`, parentheses, date
   comparisons) compiled to SQLAlchemy filters, a FastAPI JSON/CSV API, and a
   static single-page table with a per-row "📅 cal" calendar-download button and a
   "Subscribe (.ics)" feed URL that mirrors the active search. One search box
   serves both modes: the exact boolean search runs first, and when it matches
   nothing (or the text does not parse) the page falls back to
-  `keywordSearch` in `web/static/search.js`, a forgiving, relevance-ranked
+  `keywordSearch` in `conference_agent/web/static/search.js`, a forgiving, relevance-ranked
   keyword match (prefix/stem/typo tolerant, filler words dropped, rows matching
   more terms first). The fallback is not in the API; its Python port,
-  `web.search.keyword_search`, serves `conference-agent lookup` (unique column
+  `conference_agent.web.search.keyword_search`, serves `conference-agent lookup` (unique column
   values over the same search), so the boolean grammar, its Python parity, and
   the API are unchanged; `tests/test_keyword_search.py` covers it via Node and
   pins the Python port to it. An "✨ AI search" button next to Search (or Ctrl+Enter)
@@ -478,11 +519,11 @@ dependencies there rather than installing ad hoc.
   search text in the URL (`/?category=<slug>`, `/?subcategory=machine-learning`,
   `&q=...`; back/forward step through selections), so a field's view is a
   shareable link. The `/field/<tag>/` pages link to these URLs.
-- **Optional natural-language search over a local LLM.** `web/nl_query.py`
+- **Optional natural-language search over a local LLM.** `conference_agent/web/nl_query.py`
   translates a plain-English request into the boolean query language above using
   a free, local Ollama model (no API key, no external network call). The system
   prompt's field list and controlled vocabularies are derived from
-  `web.search.field_help`, so they never drift from what the parser accepts; the
+  `conference_agent.web.search.field_help`, so they never drift from what the parser accepts; the
   model's output is validated with `build_filter` (with one repair round) before
   it is returned, so the search box is never populated with a query that errors.
   The feature is optional and degrades gracefully — `GET /api/translate` returns
@@ -515,7 +556,7 @@ dependencies there rather than installing ad hoc.
   one reminder per upcoming deadline once it is `SUBSCRIBER_REMINDER_DAYS` (7)
   days away or closer (`subscriptions.send_reminders`; per-address state in
   `data/reminder_state.json`).
-  The tokens must match between `web/vercel/api/_lib.js` and
+  The tokens must match between `conference_agent/web/vercel/api/_lib.js` and
   `subscriptions.sign` (a test pins a JS-computed value). The functions run only
   on subscribe / confirm / unsubscribe, never for browsing or search.
 - **Static, compute-free hosting path.** The deployed site is read-only
@@ -524,9 +565,9 @@ dependencies there rather than installing ad hoc.
   running, so query volume cannot incur cost. `scripts/build_static.py` snapshots
   the database to `dist/data/conferences.json` and copies the single-page UI into
   `dist/`; the browser does search, sort, CSV export, and per-row `.ics`
-  generation entirely client-side. `web/static/search.js` ports the boolean query
-  language from `web/search.py` (compiling to a row predicate instead of a SQL
-  filter), and `web/static/calendar.js` ports `conference_agent/calendar_sync.py`
+  generation entirely client-side. `conference_agent/web/static/search.js` ports the boolean query
+  language from `conference_agent/web/search.py` (compiling to a row predicate instead of a SQL
+  filter), and `conference_agent/web/static/calendar.js` ports `conference_agent/calendar_sync.py`
   (matching its base32hex UIDs so re-downloaded events stay idempotent). The risk
   of the two search implementations drifting is guarded by
   `tests/test_search_parity.py`, which asserts the JS and Python searches select
@@ -536,14 +577,18 @@ dependencies there rather than installing ad hoc.
   Python builder (served as `text/calendar` via `vercel.json`); the 📅 button
   offers them (webcal / Google / copy URL) alongside the one-time download. The
   search-mirroring feed of the dynamic backend is not available statically.
+  Each conference's full row is also a static `c/<id>/data.json` (CORS-enabled),
+  so a script can fetch one series or one cell (`jq .upcoming_abstract_deadline`)
+  without downloading the whole catalog; `llms.txt` (written by `seo_pages.write_pages`)
+  describes these endpoints for AI agents.
   Natural-language ("AI") search *is* available on the static site:
-  `web/static/nl_query.js` ports the prompt and validate/repair loop from
-  `web/nl_query.py` but runs a small instruction model entirely in the browser
+  `conference_agent/web/static/nl_query.js` ports the prompt and validate/repair loop from
+  `conference_agent/web/nl_query.py` but runs a small instruction model entirely in the browser
   over WebGPU via WebLLM (no API key, no backend, no egress after a one-time
   ~1 GB model download), so it stays within the compute-free, credential-free
   design. It loads lazily on first use, reuses the snapshot's `fields` catalog
   for the prompt and `search.js`'s parser for validation, and degrades to the
-  boolean box when WebGPU is unavailable. (The server `web/nl_query.py` +
+  boolean box when WebGPU is unavailable. (The server `conference_agent/web/nl_query.py` +
   `/api/translate` Ollama path remains for the dynamic backend.) See `DEPLOY.md`.
   The AWS SAM stack remains as the alternative dynamic backend.
 
@@ -598,7 +643,8 @@ dependencies there rather than installing ad hoc.
   merges an edition stored in both slots (the `Conference` model collapses the
   same duplicate on input). Before the watch run the job ingests merged
   submissions, and after it runs `conference-agent discover --airports` for new or
-  changed locations; if any step fails it emails the log tail via
+  changed locations and `conference-agent discover --guidelines --model sonnet`
+  for the submission guidelines that are due; if any step fails it emails the log tail via
   `scripts/alert_failure.py`. It redeploys (via
   `scripts/deploy_static.sh`) only when the exported site data changed; the DB
   file itself changes every run from bookkeeping columns, so it is not the

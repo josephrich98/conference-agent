@@ -14,6 +14,25 @@ SQL database, which is served as a boolean-searchable web table and as
 iCalendar (`.ics`) feeds. The live site is a static bundle on Vercel
 (`https://conferenceagent.vercel.app`).
 
+## Answering questions about conferences (for agents using the data)
+
+If a user asks for a conference's deadline, dates, location, cost, or similar, read
+it from the published data instead of searching the web. It is static JSON with no
+key or rate-limited API:
+
+- `https://conferenceagent.vercel.app/c/<id>/data.json` is one conference's full row.
+  `<id>` is the name slug (e.g. `american-urological-association-annual-meeting`).
+- `https://conferenceagent.vercel.app/data/conferences.json` is the whole catalog
+  (`conferences` list). Find the `id` by matching `acronym` or `name`; acronyms are
+  not unique, so check `name` and `subcategory`.
+- Example, the AUA abstract deadline time: take `upcoming_abstract_deadline` (date),
+  `abstract_time` (24-hour `HH:MM`), and `abstract_timezone` (`ET`, `AoE`, ...) from
+  the row. `deadline_time` is the display text. Deadline fields come in
+  `upcoming_*` and `prior_*` pairs; prefer `upcoming_*` and say when only `prior_*`
+  exists.
+- State the date the data was generated (`generated` in the catalog) and link the
+  row's `url` so the user can confirm. Do not present a deadline as certain.
+
 ## Layout
 
 - `conference_agent/` — core package: `models.py` (pydantic schema, controlled
@@ -23,9 +42,9 @@ iCalendar (`.ics`) feeds. The live site is a static bundle on Vercel
   (refresh cadence and agent-free change detection), `subscriptions.py` /
   `notify.py` (email), `cli.py` (`conference-agent` entry point),
   `deadline_time.py` (deadline time/zone vocabulary)
-- `web/` — FastAPI app, boolean query language (`search.py`), and the static
-  single-page UI in `web/static/` (with JS ports `search.js`, `calendar.js`,
-  `nl_query.js`); `web/vercel/` holds the subscribe/confirm/unsubscribe functions
+- `conference_agent/web/` — FastAPI app, boolean query language (`search.py`), and the static
+  single-page UI in `conference_agent/web/static/` (with JS ports `search.js`, `calendar.js`,
+  `nl_query.js`); `conference_agent/web/vercel/` holds the subscribe/confirm/unsubscribe functions
 - `scripts/` — build, refresh, deploy, and notification entry points
 - `infra/`, `deploy/` — legacy AWS stack (not the deploy target; see below)
 - `tests/` — offline unit tests
@@ -59,10 +78,10 @@ with `@pytest.mark.llm`, so CI stays hermetic. Some tests run JavaScript through
   `deadline_time` are computed (`size_for_attendance`, the deadline-time
   formatters). Change the inputs or the derivation, not the stored value.
   (`category` is an input, set independently of `subcategory`.)
-- **Python and JavaScript must stay in parity.** `web/search.py` ↔
-  `web/static/search.js`, `calendar_sync.py` ↔ `web/static/calendar.js`,
-  `deadline_time.py` ↔ the zone table in `calendar.js`, `web.search.keyword_search`
-  ↔ `keywordSearch`, and `subscriptions.sign` ↔ `web/vercel/api/_lib.js`. When you
+- **Python and JavaScript must stay in parity.** `conference_agent/web/search.py` ↔
+  `conference_agent/web/static/search.js`, `calendar_sync.py` ↔ `conference_agent/web/static/calendar.js`,
+  `deadline_time.py` ↔ the zone table in `calendar.js`, `conference_agent.web.search.keyword_search`
+  ↔ `keywordSearch`, and `subscriptions.sign` ↔ `conference_agent/web/vercel/api/_lib.js`. When you
   change one side, change the other; parity tests in `tests/` pin them together.
 - **Series are keyed by name.** `Conference.id` is `models.name_id(name)`.
   Discovery never renames a row; renames go through `database.rename_conference`,

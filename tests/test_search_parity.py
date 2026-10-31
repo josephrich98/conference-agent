@@ -1,6 +1,6 @@
 """Parity test: the browser query language matches the server query language.
 
-The static site reimplements ``web/search.py`` in JavaScript (``web/static/search.js``)
+The static site reimplements ``conference_agent/web/search.py`` in JavaScript (``conference_agent/web/static/search.js``)
 so that filtering runs in the browser with no backend. The one real risk of that
 migration is the two implementations drifting apart. This test compiles a corpus
 of representative queries through *both* — the Python ``build_filter`` over an
@@ -24,8 +24,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from conference_agent.database import Base, ConferenceRow, get_engine
-from web.app import _row_to_dict
-from web.search import _parse_date_bounds, _parse_month, build_filter
+from conference_agent.web.app import _row_to_dict
+from conference_agent.web.search import _parse_date_bounds, _parse_month, build_filter
 
 _NODE = shutil.which("node")
 _RUNNER = Path(__file__).parent / "js" / "run_search.js"
@@ -282,7 +282,7 @@ def test_size_rank_and_attendance_queries(tmp_path, query, expected):
 
 @pytest.mark.parametrize("query", ["size>=huge", "attendance>lots", "attendance>1.5"])
 def test_invalid_size_rank_and_attendance_values_raise(query):
-    from web.search import QueryError
+    from conference_agent.web.search import QueryError
 
     with pytest.raises(QueryError):
         build_filter(query)

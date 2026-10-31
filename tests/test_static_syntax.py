@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 _NODE = shutil.which("node")
-_STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
+_STATIC = Path(__file__).resolve().parent.parent / "conference_agent" / "web" / "static"
 _INLINE = re.compile(r"<script(?![^>]*\bsrc=)([^>]*)>(.*?)</script>", re.S)
 
 

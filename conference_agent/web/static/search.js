@@ -1,13 +1,13 @@
 /*
  * Boolean search query language for the conference table — browser port.
  *
- * This is a faithful port of `web/search.py`. The Python version compiles a
+ * This is a faithful port of `conference_agent/web/search.py`. The Python version compiles a
  * query string to a SQLAlchemy filter; this version compiles the same grammar to
  * a predicate `(row) => boolean` evaluated over the in-memory catalog (the static
  * `data/conferences.json` snapshot). The two must agree on which rows match —
  * `tests/test_search_parity.py` enforces that against the live database.
  *
- * Keep this in lockstep with `web/search.py`: the field registry, aliases,
+ * Keep this in lockstep with `conference_agent/web/search.py`: the field registry, aliases,
  * tokenizer regex, parser, and comparison semantics are all mirrored from it.
  *
  * Exposes `buildPredicate(query)` (returns a `(row) => boolean`, or `null` for an
@@ -15,7 +15,7 @@
  * the browser-only `keywordSearch(query, rows)` fallback (see the end of the file).
  */
 
-// --- Field registry (mirrors web/search.py) --------------------------------
+// --- Field registry (mirrors conference_agent/web/search.py) --------------------------------
 
 // Public text field -> underlying column(s). A scoped match is a case-insensitive
 // substring OR-ed across the listed columns.
@@ -31,6 +31,8 @@ const TEXT_FIELDS = {
   cost: ["upcoming_cost", "prior_cost"],
   registration: ["upcoming_registration", "prior_registration"],
   deadline_time: ["deadline_time"],
+  abstract_guidelines: ["abstract_guidelines"],
+  paper_guidelines: ["paper_guidelines"],
 };
 
 // Public date field -> [upcoming column, prior column]. Comparisons run against
@@ -77,6 +79,8 @@ const BARE_SEARCH_COLUMNS = [
   "upcoming_registration",
   "prior_registration",
   "deadline_time",
+  "abstract_guidelines",
+  "paper_guidelines",
   "url",
   "notes",
 ];
@@ -120,7 +124,7 @@ function resolveField(name) {
   return key;
 }
 
-// --- Tokenizer (mirrors web/search.py) -------------------------------------
+// --- Tokenizer (mirrors conference_agent/web/search.py) -------------------------------------
 
 const OP_ALT = ">=|<=|=>|=<|>|<|=";
 const OP_NORMALIZE = { "=>": ">=", "=<": "<=" };
@@ -193,7 +197,7 @@ function tokenize(query) {
   return tokens;
 }
 
-// --- Parser (recursive descent, mirrors web/search.py) ---------------------
+// --- Parser (recursive descent, mirrors conference_agent/web/search.py) ---------------------
 
 class Parser {
   constructor(tokens) {
@@ -355,7 +359,7 @@ function parseMonth(value) {
   throw new QueryError(`Invalid month: ${JSON.stringify(value)} (use 1-12 or a month name)`);
 }
 
-// --- Compiler (AST -> predicate, mirrors web/search.py) --------------------
+// --- Compiler (AST -> predicate, mirrors conference_agent/web/search.py) --------------------
 
 function compileDateTerm(term) {
   const [lower, upper] = parseDateBounds(term.value);
@@ -480,7 +484,7 @@ function buildPredicate(query) {
   return compile(node);
 }
 
-// --- Sorting (mirrors web/app.py _run_search ordering) ---------------------
+// --- Sorting (mirrors conference_agent/web/app.py _run_search ordering) ---------------------
 
 const SORTABLE = new Set([
   "acronym", "name", "category", "subcategory", "format", "upcoming_location", "size",
@@ -518,13 +522,13 @@ const NUMERIC_SORT = new Set([
 ]);
 
 // Size sorts by magnitude, not alphabetically: ascending is massive -> small.
-// Mirrors ``_SIZE_SORT_RANK`` in web/app.py.
+// Mirrors ``_SIZE_SORT_RANK`` in conference_agent/web/app.py.
 const SIZE_SORT_RANK = { massive: 1, large: 2, medium: 3, small: 4 };
 
 // The derived-month sorts roll from today rather than January 1, ranking on the
 // month and the day of its underlying date, so ascending lists what comes next
 // first (on Oct 15: Oct 15-31, Nov, ..., Sep, Oct 1-14). A month without a day
-// counts as the 1st. Mirrors ``_rolling_month`` in web/app.py.
+// counts as the 1st. Mirrors ``_rolling_month`` in conference_agent/web/app.py.
 function rollingMonth(month, day, startMonth, startDay) {
   if (!isPresent(month)) return null;
   const d = isPresent(day) ? day : 1;
@@ -600,7 +604,7 @@ function sortRows(rows, sort, order, monthStart, dayStart) {
   });
 }
 
-// --- Keyword fallback (browser-only; no counterpart in web/search.py) -------
+// --- Keyword fallback (browser-only; no counterpart in conference_agent/web/search.py) -------
 //
 // The boolean language above is exact: every bare word must appear verbatim as a
 // substring, so a typo ("radiolgy"), an inflection ("radiological"), or a filler
@@ -626,6 +630,8 @@ const KEYWORD_FIELDS = [
   ["upcoming_cost", 0.5],
   ["prior_cost", 0.5],
   ["deadline_time", 0.5],
+  ["abstract_guidelines", 0.5],
+  ["paper_guidelines", 0.5],
   ["upcoming_registration", 0.5],
   ["prior_registration", 0.5],
   ["url", 0.5],
@@ -635,6 +641,7 @@ const KEYWORD_FIELDS = [
 // Long free-text columns where typo-tolerant matching mostly produces noise.
 const KEYWORD_EXACT_ONLY = new Set([
   "notes", "url", "upcoming_registration", "prior_registration",
+  "abstract_guidelines", "paper_guidelines",
 ]);
 
 // Displayed-date columns a four-digit year is checked against.

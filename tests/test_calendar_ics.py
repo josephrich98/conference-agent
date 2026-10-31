@@ -254,7 +254,7 @@ def test_js_calendar_matches_python_for_both_editions():
             prior_start_date=date(2025, 11, 30),
         ),
     ]
-    calendar_js = Path(__file__).resolve().parent.parent / "web" / "static" / "calendar.js"
+    calendar_js = Path(__file__).resolve().parent.parent / "conference_agent" / "web" / "static" / "calendar.js"
     rows = [json.loads(c.model_dump_json()) | {"id": c.id} for c in confs]
     script = (
         f"const c = require({json.dumps(str(calendar_js))});"
