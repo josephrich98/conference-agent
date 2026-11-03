@@ -8,7 +8,7 @@ Dynamic academic conference database with a focus on artificial intelligence, me
 Features:
 - Keep up to date with conference news such as venue announcements, submission deadline posting, and submission deadline extension via calendar events and email reminders
 - Organize conferences by category and subcategory, size, submission deadlines, and more
-- Search with keywords, boolean logic, or plain English
+- Search with keywords (e.g. "radiology november") or boolean logic
 - Sort conferences by those with the nearest submission deadlines, color-coded by timeframe
 - See deadline times in your current timezone
 - Read each conference's abstract and paper submission guidelines (word or page limits, required structure, templates)

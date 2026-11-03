@@ -495,18 +495,21 @@ dependencies there rather than installing ad hoc.
   nothing (or the text does not parse) the page falls back to
   `keywordSearch` in `conference_agent/web/static/search.js`, a forgiving, relevance-ranked
   keyword match (prefix/stem/typo tolerant, filler words dropped, rows matching
-  more terms first). The fallback is not in the API; its Python port,
+  more terms first, ties going to the larger meeting by attendance). A month
+  name counts most for the meeting's month (`conference_month`) and less for a
+  deadline month, unless the query mentions a deadline (`deadline`, `due`,
+  `submission`, `abstract`, `paper`, ...), which reverses that, so "radiology
+  november" lists RSNA first. The fallback is not in the API; its Python port,
   `conference_agent.web.search.keyword_search`, serves `conference-agent lookup` (unique column
   values over the same search), so the boolean grammar, its Python parity, and
   the API are unchanged; `tests/test_keyword_search.py` covers it via Node and
-  pins the Python port to it. An "AI search" button next to Search (or Ctrl+Enter)
-  sends the same box's text to the natural-language translator. Categorical
+  pins the Python port to it. Categorical
   column headers (category, subcategory, format, size, remote, the four month
   columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or
   one tag in it) in those columns opens the same list beside it with that value
   pre-checked. The chosen values are
   browser-only state held apart from the search box and ANDed with it, so they
-  survive an AI search and the boolean grammar (which has no exact-match
+  survive a new search and the boolean grammar (which has no exact-match
   operator for text) stays unchanged. An ascending sort on Abstract / Late abstract /
   Paper due or Conference dates hides rows whose shown date (upcoming, else
   prior; a meeting's last day) is before today, and the status line counts
@@ -519,7 +522,9 @@ dependencies there rather than installing ad hoc.
   search text in the URL (`/?category=<slug>`, `/?subcategory=machine-learning`,
   `&q=...`; back/forward step through selections), so a field's view is a
   shareable link. The `/field/<tag>/` pages link to these URLs.
-- **Optional natural-language search over a local LLM.** `conference_agent/web/nl_query.py`
+- **Optional natural-language search over a local LLM (dynamic backend only).**
+  The table has no AI search button; this survives only as the AWS backend's
+  `/api/translate` endpoint. `conference_agent/web/nl_query.py`
   translates a plain-English request into the boolean query language above using
   a free, local Ollama model (no API key, no external network call). The system
   prompt's field list and controlled vocabularies are derived from
@@ -581,15 +586,6 @@ dependencies there rather than installing ad hoc.
   so a script can fetch one series or one cell (`jq .upcoming_abstract_deadline`)
   without downloading the whole catalog; `llms.txt` (written by `seo_pages.write_pages`)
   describes these endpoints for AI agents.
-  Natural-language ("AI") search *is* available on the static site:
-  `conference_agent/web/static/nl_query.js` ports the prompt and validate/repair loop from
-  `conference_agent/web/nl_query.py` but runs a small instruction model entirely in the browser
-  over WebGPU via WebLLM (no API key, no backend, no egress after a one-time
-  ~1 GB model download), so it stays within the compute-free, credential-free
-  design. It loads lazily on first use, reuses the snapshot's `fields` catalog
-  for the prompt and `search.js`'s parser for validation, and degrades to the
-  boolean box when WebGPU is unavailable. (The server `conference_agent/web/nl_query.py` +
-  `/api/translate` Ollama path remains for the dynamic backend.) See `DEPLOY.md`.
   The AWS SAM stack remains as the alternative dynamic backend.
 
 ## CI/CD

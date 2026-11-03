@@ -20,7 +20,6 @@ The output is a self-contained directory::
       index.html          # the single-page table UI (relative asset paths)
       search.js           # boolean query language, ported to run in the browser
       calendar.js         # per-row iCalendar (.ics) generation in the browser
-      nl_query.js         # natural-language ("AI") search via in-browser WebLLM
       c/<id>/, field/<tag>/, sitemap.xml, robots.txt  # prerendered SEO pages
       c/<id>/calendar.ics, field/<tag>/calendar.ics, calendar.ics  # subscribable feeds
       c/<id>/data.json        # one conference's full row, for scripts (CORS-enabled)
@@ -66,7 +65,7 @@ from conference_agent.web.search import field_help
 
 # Static assets copied verbatim into the bundle (the UI is the product now).
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "conference_agent" / "web" / "static"
-_ASSETS = ("index.html", "search.js", "calendar.js", "nl_query.js")
+_ASSETS = ("index.html", "search.js", "calendar.js")
 # Vercel Functions (subscribe / confirm / unsubscribe) and their dependencies.
 _VERCEL_DIR = _STATIC_DIR.parent / "vercel"
 

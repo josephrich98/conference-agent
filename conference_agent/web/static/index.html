@@ -151,10 +151,6 @@
       border-color: var(--rule-strong);
     }
     #query::placeholder { color: #87928e; }
-    #nl-btn[disabled] { opacity: 0.6; cursor: default; }
-    .nl-status { color: var(--muted); font-size: 12px; flex: 1 1 100%; }
-    .nl-status:empty { display: none; }
-    .nl-status.err { color: var(--date-recent); }
     button {
       padding: 9px 14px;
       font-size: 14px;
@@ -510,9 +506,8 @@
   </nav>
 
   <div class="controls">
-    <input id="query" type="text" placeholder='Keywords (pediatric radiology), a boolean query ((virtual OR hybrid) AND size:large), or plain English for AI search' autocomplete="off" />
+    <input id="query" type="text" placeholder='Search by field, month, place, or name (radiology november), or a boolean query (size:large AND remote:hybrid)' autocomplete="off" />
     <button class="primary" id="search-btn">Search</button>
-    <button class="primary" id="nl-btn" title="Translate a plain-English request in the search box into a boolean query (Ctrl+Enter)">AI search</button>
     <div class="columns-menu">
       <button id="columns-btn" title="Choose which columns are visible">Columns ▾</button>
       <div id="columns-panel" hidden>
@@ -524,7 +519,6 @@
       </div>
     </div>
     <button id="csv-btn">Export CSV</button>
-    <span id="nl-status" class="nl-status"></span>
   </div>
 
   <div class="syntax">
@@ -601,7 +595,6 @@
 
   <script src="search.js"></script>
   <script src="calendar.js"></script>
-  <script src="nl_query.js"></script>
   <script defer src="/_vercel/insights/script.js"></script>   <!-- Vercel Web Analytics -->
   <script data-goatcounter="https://conferenceagent.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
   <script>
@@ -1261,10 +1254,9 @@
           if (past) rows = rows.filter((r) => !past(r));
           const why = queryError ? `Not a valid boolean query (${queryError})` : "No exact matches";
           status = `${why} — showing ${plural(rows.length)} matching some of your keywords` +
-            (byRelevance ? ", most relevant first" : "") +
-            ". For a precise filter, try AI search.";
+            (byRelevance ? ", most relevant first" : "") + ".";
         } else if (!queryError) {
-          status = "0 conferences. Try fewer or different keywords, or AI search.";
+          status = "0 conferences. Try fewer or different keywords.";
         }
       }
       return { rows, status, byRelevance };
@@ -1287,8 +1279,8 @@
     // ---------------------------------------------------------- column filters
     // Excel-style value lists behind each categorical header's ■. The chosen
     // values are held here, not in the search box, and ANDed with whatever the
-    // box holds (a boolean query, keywords, or an AI-translated query), so an AI
-    // search keeps the filters and the boolean grammar is unchanged. A row
+    // box holds (a boolean query or keywords), so a new search keeps the
+    // filters and the boolean grammar is unchanged. A row
     // passes a column's filter when any of its values is checked; BLANK stands
     // for a row with no value.
 
@@ -1883,59 +1875,7 @@
       } catch (e) { /* non-fatal */ }
     }
 
-    // Natural-language ("AI") search. Translates the plain-English request into
-    // a boolean query with a small model that runs entirely in the browser over
-    // WebGPU (conference_agent/web/static/nl_query.js), then replaces the search box text with that
-    // query and searches.
-    // The model (~1 GB) loads lazily on first use and is cached afterward, so
-    // there is no backend and no per-request cost — matching the static site.
-    function setNlStatus(msg, isErr) {
-      const el = $("nl-status");
-      el.textContent = msg || "";
-      el.className = `nl-status${isErr ? " err" : ""}`;
-    }
-
-    let nlBusy = false;
-    async function nlSearch() {
-      if (nlBusy) return;
-      const text = $("query").value.trim();
-      if (!text) return;
-      if (!window.ConferenceNL || !ConferenceNL.isSupported()) {
-        setNlStatus(
-          "AI search needs WebGPU (try a recent Chrome or Edge). Enter a boolean query and use Search instead.",
-          true
-        );
-        return;
-      }
-      nlBusy = true;
-      const btn = $("nl-btn");
-      btn.disabled = true;
-      setNlStatus("Preparing the AI model… (first use downloads ~1 GB, then it is cached)");
-      try {
-        const { query, repaired } = await ConferenceNL.translate(text, DATA.fields, {
-          onProgress: (textMsg, progress) => {
-            const pct = typeof progress === "number" ? ` (${Math.round(progress * 100)}%)` : "";
-            setNlStatus(`Loading AI model…${pct}`);
-          },
-        });
-        $("query").value = query;
-        newSearch();
-        setNlStatus(
-          query
-            ? `Translated to: ${query}${repaired ? "  (auto-corrected)" : ""}`
-            : "No specific filters detected — showing all conferences."
-        );
-      } catch (e) {
-        setNlStatus(`AI search failed: ${e.message || e}`, true);
-      } finally {
-        nlBusy = false;
-        btn.disabled = false;
-      }
-    }
-
-    $("nl-btn").addEventListener("click", nlSearch);
-
-    $("search-btn").addEventListener("click", () => { setNlStatus(""); newSearch(); });
+    $("search-btn").addEventListener("click", newSearch);
     $("csv-btn").addEventListener("click", exportCsv);
     // Per-row calendar and email buttons (delegated, since rows re-render on each search).
     $("results-body").addEventListener("click", (e) => {
@@ -2047,10 +1987,7 @@
     window.addEventListener("resize", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
     document.querySelector(".table-wrap").addEventListener("scroll", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
     $("query").addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
-      // Enter runs the keyword/boolean search; Ctrl/Cmd+Enter runs AI search.
-      if (e.ctrlKey || e.metaKey) nlSearch();
-      else { setNlStatus(""); newSearch(); }
+      if (e.key === "Enter") newSearch();
     });
     $("help-toggle").addEventListener("click", () => {
       const h = $("fields-help");

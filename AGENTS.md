@@ -43,8 +43,7 @@ key or rate-limited API:
   `notify.py` (email), `cli.py` (`conference-agent` entry point),
   `deadline_time.py` (deadline time/zone vocabulary)
 - `conference_agent/web/` — FastAPI app, boolean query language (`search.py`), and the static
-  single-page UI in `conference_agent/web/static/` (with JS ports `search.js`, `calendar.js`,
-  `nl_query.js`); `conference_agent/web/vercel/` holds the subscribe/confirm/unsubscribe functions
+  single-page UI in `conference_agent/web/static/` (with JS ports `search.js` and `calendar.js`); `conference_agent/web/vercel/` holds the subscribe/confirm/unsubscribe functions
 - `scripts/` — build, refresh, deploy, and notification entry points
 - `infra/`, `deploy/` — legacy AWS stack (not the deploy target; see below)
 - `tests/` — offline unit tests

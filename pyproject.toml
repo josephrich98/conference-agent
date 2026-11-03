@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "conference_agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "AI agent that compiles academic/professional conferences into a table and exports them as a calendar feed"
 readme = "README.md"
 requires-python = ">=3.10"

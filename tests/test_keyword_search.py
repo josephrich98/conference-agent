@@ -26,13 +26,13 @@ _ROWS = [
         id="RSNA", acronym="RSNA", name="Radiological Society of North America Annual Meeting",
         subcategory="radiology", category="medicine", size="large", remote_option="in-person",
         upcoming_location="McCormick Place, Chicago, Illinois, USA",
-        upcoming_start_date="2026-11-29", conference_month=11,
+        upcoming_start_date="2026-11-29", conference_month=11, attendance=45000,
     ),
     dict(
         id="SPR", acronym="SPR", name="Society for Pediatric Radiology Annual Meeting",
         subcategory="radiology, pediatrics", category="medicine", size="medium",
         remote_option="in-person", upcoming_location="Dallas, TX", upcoming_start_date="2026-05-12",
-        conference_month=5,
+        conference_month=5, abstract_month=11, attendance=1200,
     ),
     dict(
         id="ECR", acronym="ECR", name="European Congress of Radiology",
@@ -49,6 +49,7 @@ _ROWS = [
         id="AAN", acronym="AAN", name="American Academy of Neurology Annual Meeting",
         subcategory="neurology", category="medicine", size="large", remote_option="hybrid",
         upcoming_location="Chicago, IL", upcoming_start_date="2027-04-17", conference_month=4,
+        attendance=15000,
     ),
     dict(
         id="SITC", acronym="SITC", name="Society for Immunotherapy of Cancer Annual Meeting",
@@ -128,6 +129,20 @@ def test_synonyms_months_and_years(run):
     assert out["chicago 2027"]["ids"][0] == "AAN"
 
 
+def test_month_means_the_meeting_unless_the_query_is_about_deadlines(run):
+    out = run("radiology november", "radiology abstracts due november", "radiology deadline in november")
+    # RSNA meets in November; SPR only has a November abstract deadline.
+    assert out["radiology november"]["ids"][:2] == ["RSNA", "SPR"]
+    assert out["radiology abstracts due november"]["ids"][0] == "SPR"
+    assert out["radiology deadline in november"]["ids"][0] == "SPR"
+    assert out["radiology deadline in november"]["terms"] == ["radiology", "november"]
+
+
+def test_ties_go_to_the_larger_meeting(run):
+    # RSNA and AAN are both in Chicago; RSNA draws more attendees.
+    assert run("chicago")["chicago"]["ids"] == ["RSNA", "AAN"]
+
+
 def test_no_match_returns_empty(run):
     assert run("zzzzqqq")["zzzzqqq"]["ids"] == []
 
@@ -141,6 +156,8 @@ _PARITY_QUERIES = (
     "radiolgy", "nuerology", "radiological", "pediatrics", "stats",
     "ai december", "cancer: immunotherapy", "chicago 2027", "online neuro",
     "big usa", "zzzzqqq", "Vienna", "statistical boston",
+    "radiology november", "radiology abstracts due november", "radiology deadline in november",
+    "chicago", "medicine",
 )
 
 

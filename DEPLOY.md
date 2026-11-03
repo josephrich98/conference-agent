@@ -27,7 +27,7 @@ python scripts/build_static.py                 # snapshot the DB + UI into dist/
   `npx wrangler pages deploy dist --project-name conference-agent` for
   Cloudflare Pages.
 
-Search, sorting, CSV export, `.ics` downloads, and AI search all run in the
+Search, sorting, CSV export, and `.ics` downloads all run in the
 browser over `dist/data/conferences.json` (see `CLAUDE.md` for how the JS ports
 are kept in parity with the Python). The only feature missing from the static
 site is the whole-list "Subscribe (.ics)" feed, which needs a server.

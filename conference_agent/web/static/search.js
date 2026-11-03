@@ -652,9 +652,25 @@ const KEYWORD_DATE_COLUMNS = [
   "upcoming_paper_deadline", "prior_paper_deadline",
 ];
 
-const KEYWORD_MONTH_COLUMNS = [
-  "conference_month", "abstract_month", "late_abstract_month", "paper_month",
-];
+const KEYWORD_DEADLINE_MONTH_COLUMNS = ["abstract_month", "late_abstract_month", "paper_month"];
+
+// Words that say a month in the query means a deadline's month rather than the
+// meeting's ("abstracts due in march"). The ones that name no stored value are
+// also dropped from the terms; "abstract" and "paper" stay, since they are formats.
+const DEADLINE_WORDS = new Set([
+  "deadline", "deadlines", "due", "submission", "submissions", "submit", "cfp",
+]);
+const DEADLINE_HINTS = new Set([...DEADLINE_WORDS, "abstract", "abstracts", "paper", "papers"]);
+
+// A month name scores this much on the month it is not about (a deadline month
+// when the query is about the meeting, and vice versa), so "radiology november"
+// lists the meetings held in November before those with a November deadline.
+const OFF_MONTH_SCORE = 0.6;
+
+/** Whether a keyword query is about deadlines (a month then means a deadline month). */
+function isDeadlineQuery(query) {
+  return splitWords(String(query || "")).some((w) => DEADLINE_HINTS.has(w));
+}
 
 // Filler words dropped from a keyword query (plus the boolean operators).
 const STOPWORDS = new Set([
@@ -787,7 +803,7 @@ function keywordTerms(query) {
     KNOWN_FIELD_NAMES.has(name.toLowerCase()) ? " " : ` ${name} `
   );
   for (const word of splitWords(rest)) {
-    if (STOPWORDS.has(word)) continue;
+    if (STOPWORDS.has(word) || DEADLINE_WORDS.has(word)) continue;
     if (/^\d+$/.test(word) && !/^(19|20)\d\d$/.test(word)) continue; // "06" of a date
     if (word.length < 2) continue;
     add(word);
@@ -796,7 +812,7 @@ function keywordTerms(query) {
 }
 
 // Best weighted match of one term anywhere in the row, 0 if none.
-function termScore(term, row) {
+function termScore(term, row, deadlineQuery) {
   const idx = keywordIndex(row);
   const alternatives = [term, ...(KEYWORD_SYNONYMS[term] || [])];
   let best = 0;
@@ -822,8 +838,13 @@ function termScore(term, row) {
     best = Math.max(best, 1);
   }
   const month = MONTH_NAMES[term];
-  if (month !== undefined && KEYWORD_MONTH_COLUMNS.some((c) => row[c] === month)) {
-    best = Math.max(best, 1);
+  if (month !== undefined) {
+    const onMeeting = row.conference_month === month;
+    const onDeadline = KEYWORD_DEADLINE_MONTH_COLUMNS.some((c) => row[c] === month);
+    const primary = deadlineQuery ? onDeadline : onMeeting;
+    const secondary = deadlineQuery ? onMeeting : onDeadline;
+    if (primary) best = Math.max(best, 1);
+    else if (secondary) best = Math.max(best, OFF_MONTH_SCORE);
   }
   return best;
 }
@@ -832,13 +853,15 @@ function termScore(term, row) {
  * Forgiving keyword ranking over `rows`. Returns `[{row, matched, score}]` for
  * rows matching at least half as many of the query's terms as the best row does,
  * most relevant first (more terms matched, then a higher score). Terms that match
- * few rows weigh more than ones that match many, as in a search engine. Returns
+ * few rows weigh more than ones that match many, as in a search engine; among
+ * equally relevant rows the larger meeting (by attendance) comes first. Returns
  * an empty array when the query has no usable terms.
  */
 function keywordSearch(query, rows) {
   const terms = keywordTerms(query);
   if (terms.length === 0) return [];
-  const perRow = rows.map((row) => terms.map((t) => termScore(t, row)));
+  const deadlineQuery = isDeadlineQuery(query);
+  const perRow = rows.map((row) => terms.map((t) => termScore(t, row, deadlineQuery)));
   const idf = terms.map((_, i) => {
     const df = perRow.filter((scores) => scores[i] > 0).length;
     return df ? Math.log(1 + rows.length / df) : 0;
@@ -854,7 +877,8 @@ function keywordSearch(query, rows) {
   const minMatched = Math.ceil(bestMatched / 2);
   return hits
     .filter((h) => h.matched >= minMatched)
-    .sort((a, b) => b.matched - a.matched || b.score - a.score);
+    .sort((a, b) => b.matched - a.matched || b.score - a.score ||
+      (Number(b.row.attendance) || 0) - (Number(a.row.attendance) || 0));
 }
 
 // Browser global + CommonJS export (for the Node-based tests).

@@ -777,7 +777,18 @@ _KEYWORD_DATE_COLUMNS = (
     "prior_paper_deadline",
 )
 
-_KEYWORD_MONTH_COLUMNS = ("conference_month", "abstract_month", "late_abstract_month", "paper_month")
+_KEYWORD_DEADLINE_MONTH_COLUMNS = ("abstract_month", "late_abstract_month", "paper_month")
+
+# Words that say a month in the query means a deadline's month rather than the
+# meeting's ("abstracts due in march"). The ones that name no stored value are
+# also dropped from the terms; "abstract" and "paper" stay, since they are formats.
+_DEADLINE_WORDS = {"deadline", "deadlines", "due", "submission", "submissions", "submit", "cfp"}
+_DEADLINE_HINTS = _DEADLINE_WORDS | {"abstract", "abstracts", "paper", "papers"}
+
+# A month name scores this much on the month it is not about (a deadline month
+# when the query is about the meeting, and vice versa), so "radiology november"
+# lists the meetings held in November before those with a November deadline.
+_OFF_MONTH_SCORE = 0.6
 
 # Filler words dropped from a keyword query (plus the boolean operators).
 _STOPWORDS = {
@@ -908,7 +919,7 @@ def keyword_terms(query: str) -> List[str]:
         flags=re.ASCII,
     )
     for word in _split_words(rest):
-        if word in _STOPWORDS:
+        if word in _STOPWORDS or word in _DEADLINE_WORDS:
             continue
         if _DIGITS_RE.fullmatch(word) and not _YEAR_RE.fullmatch(word):
             continue  # the "06" of a date
@@ -918,7 +929,12 @@ def keyword_terms(query: str) -> List[str]:
     return terms
 
 
-def _term_score(term: str, row: dict, index: list) -> float:
+def _is_deadline_query(query: str) -> bool:
+    """Whether a keyword query is about deadlines (a month then means a deadline month)."""
+    return any(w in _DEADLINE_HINTS for w in _split_words(str(query or "")))
+
+
+def _term_score(term: str, row: dict, index: list, deadline_query: bool = False) -> float:
     """Best weighted match of one term anywhere in the row, 0 if none."""
     best = 0
     for alt in (term, *_KEYWORD_SYNONYMS.get(term, ())):
@@ -943,9 +959,22 @@ def _term_score(term: str, row: dict, index: list) -> float:
     ):
         best = max(best, 1)
     month = _MONTH_NAMES.get(term)
-    if month is not None and any(row.get(c) == month for c in _KEYWORD_MONTH_COLUMNS):
-        best = max(best, 1)
+    if month is not None:
+        on_meeting = row.get("conference_month") == month
+        on_deadline = any(row.get(c) == month for c in _KEYWORD_DEADLINE_MONTH_COLUMNS)
+        primary, secondary = (on_deadline, on_meeting) if deadline_query else (on_meeting, on_deadline)
+        if primary:
+            best = max(best, 1)
+        elif secondary:
+            best = max(best, _OFF_MONTH_SCORE)
     return best
+
+
+def _attendance(row: dict) -> float:
+    try:
+        return float(row.get("attendance") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def keyword_search(query: str, rows: List[dict]) -> List[dict]:
@@ -953,16 +982,18 @@ def keyword_search(query: str, rows: List[dict]) -> List[dict]:
 
     Returns the rows matching at least half as many of the query's terms as the
     best row does, most relevant first (more terms matched, then a higher
-    score, with rarer terms weighing more). Empty when the query has no usable
+    score, with rarer terms weighing more, then the larger meeting by
+    attendance). Empty when the query has no usable
     terms. Mirrors ``keywordSearch`` in conference_agent/web/static/search.js.
     """
     terms = keyword_terms(query)
     if not terms:
         return []
+    deadline_query = _is_deadline_query(query)
     per_row = []
     for row in rows:
         index = _keyword_index(row)
-        per_row.append([_term_score(t, row, index) for t in terms])
+        per_row.append([_term_score(t, row, index, deadline_query) for t in terms])
     idf = []
     for i in range(len(terms)):
         df = sum(1 for scores in per_row if scores[i] > 0)
@@ -976,5 +1007,5 @@ def keyword_search(query: str, rows: List[dict]) -> List[dict]:
         return []
     min_matched = math.ceil(max(h[1] for h in hits) / 2)
     hits = [h for h in hits if h[1] >= min_matched]
-    hits.sort(key=lambda h: (-h[1], -h[2]))
+    hits.sort(key=lambda h: (-h[1], -h[2], -_attendance(h[0])))
     return [h[0] for h in hits]
