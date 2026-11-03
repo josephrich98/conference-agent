@@ -499,7 +499,7 @@ dependencies there rather than installing ad hoc.
   `conference_agent.web.search.keyword_search`, serves `conference-agent lookup` (unique column
   values over the same search), so the boolean grammar, its Python parity, and
   the API are unchanged; `tests/test_keyword_search.py` covers it via Node and
-  pins the Python port to it. An "✨ AI search" button next to Search (or Ctrl+Enter)
+  pins the Python port to it. An "AI search" button next to Search (or Ctrl+Enter)
   sends the same box's text to the natural-language translator. Categorical
   column headers (category, subcategory, format, size, remote, the four month
   columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or

@@ -32,13 +32,13 @@ SITE_URL = "https://conferenceagent.vercel.app"
 SITE_NAME = "Conference Agent"
 
 _STYLE = """
-:root{--bg:#f7f8fa;--panel:#fff;--border:#e2e6eb;--text:#1f2933;--muted:#6b7684;--accent:#2563eb}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1720;--panel:#17212b;--border:#2a3644;--text:#e6ebf0;--muted:#9aa7b4;--accent:#6ea8ff}}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+:root{--bg:#f2f3f0;--panel:#fff;--border:#d3d8d3;--text:#1c2a30;--muted:#5d6a66;--accent:#1f5560}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1720;--panel:#17212b;--border:#2a3644;--text:#e6ebf0;--muted:#9aa7b4;--accent:#8cc6c4}}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 "Public Sans",system-ui,-apple-system,Segoe UI,sans-serif}
 main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
-a{color:var(--accent)}h1{font-size:24px;margin:8px 0 4px}h2{font-size:17px;margin:24px 0 8px}
+a{color:var(--accent)}h1,h2{font-family:"Source Serif 4",Georgia,serif;font-weight:600}h1{font-size:28px;margin:8px 0 4px}h2{font-size:18px;margin:24px 0 8px}
 .muted{color:var(--muted);font-size:13px}
-table{border-collapse:collapse;width:100%;background:var(--panel);border:1px solid var(--border);border-radius:6px}
+table{border-collapse:collapse;width:100%;background:var(--panel);border:1px solid var(--border)}
 th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
 th{width:34%;font-weight:600}
 """
@@ -102,6 +102,8 @@ def _page(title: str, description: str, path: str, body: str, jsonld: Iterable[d
         f"<link rel=\"canonical\" href=\"{_e(canonical)}\">"
         f"<meta property=\"og:type\" content=\"website\"><meta property=\"og:title\" content=\"{_e(title)}\">"
         f"<meta property=\"og:description\" content=\"{_e(description)}\"><meta property=\"og:url\" content=\"{_e(canonical)}\">"
+        "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600"
+        "&family=Source+Serif+4:opsz,wght@8..60,600&display=swap\">"
         f"<style>{_STYLE}</style>{ld}"
         "<script defer src=\"/_vercel/insights/script.js\"></script></head>"
         f"<body><main><p class=\"muted\"><a href=\"/\">{SITE_NAME}</a></p>{body}</main></body></html>\n"

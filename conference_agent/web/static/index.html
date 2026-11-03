@@ -10,27 +10,36 @@
   <meta property="og:title" content="Conference Agent: Conference Agent Database">
   <meta property="og:description" content="Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics. Keep track of submission deadlines with calendar events and email reminders.">
   <meta property="og:url" content="https://conferenceagent.vercel.app/">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,600&display=swap">
   <style>
     :root {
-      --bg: #f7f8fa;
+      --bg: #f2f3f0;
       --panel: #ffffff;
-      --border: #e2e6eb;
-      --text: #1f2933;
-      --muted: #6b7280;
-      --accent: #2563eb;
-      --accent-weak: #eff4ff;
-      --massive: #2563eb;
-      --large: #16a34a;
-      --medium: #ea580c;
-      --small: #1f2933;
-      --date-recent: #dc2626;
-      --date-old: #ea580c;
-      --date-soon: #16a34a;
+      --border: #d3d8d3;
+      --rule-strong: #9aa6a1;
+      --text: #1c2a30;
+      --fg: #1c2a30;
+      --muted: #5d6a66;
+      --accent: #1f5560;
+      --accent-weak: #e4ecea;
+      --ink: #1c2a30;
+      --massive: #1f5560;
+      --large: #2e6b34;
+      --medium: #a5521b;
+      --small: #1c2a30;
+      --date-recent: #b42318;
+      --date-old: #a5521b;
+      --date-soon: #2e6b34;
+      --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+      --sans: "Public Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: var(--sans);
+      line-height: 1.4;
       color: var(--text);
       background: var(--bg);
     }
@@ -39,8 +48,8 @@
     }
     header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
     .header-text { min-width: 0; }
-    h1 { font-size: 20px; margin: 0 0 2px; }
-    .subtitle { color: var(--muted); font-size: 13px; margin: 0; }
+    h1 { font-family: var(--serif); font-size: 28px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; }
+    .subtitle { color: var(--muted); font-size: 14px; margin: 0; max-width: 72ch; }
     .repo-link {
       flex: none;
       display: inline-flex;
@@ -62,23 +71,26 @@
       white-space: nowrap;
       color: #fff;
       background: var(--accent);
-      border-radius: 6px;
+      border-radius: 0;
       text-decoration: none;
     }
-    .add-link:hover { filter: brightness(1.08); }
+    .add-link:hover { background: var(--ink); }
     .short-label { display: none; }
     @media (max-width: 600px) {
       .header-links { gap: 10px; }
       .long-label { display: none; }
       .short-label { display: inline; }
       .repo-link svg { width: 20px; height: 20px; }
+      header { padding: 16px 16px 8px; }
+      h1 { font-size: 23px; }
+      .subtitle { font-size: 13px; }
     }
     .add-more { text-align: left; position: sticky; left: 0; margin: 8px 0 0; font-size: 13px; color: var(--muted); }
     /* "Browse by field": one card per category, then the chosen category's
        subcategories as chips. Both are the category / subcategory column
        filters, mirrored in the URL (?category=...&subcategory=...). */
     .fields-bar { padding: 8px 24px 4px; }
-    .fields-bar h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 8px; }
+    .fields-bar h2 { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--text); margin: 4px 0 8px; }
     .cat-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -86,33 +98,34 @@
     }
     .cat-card {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
-      padding: 12px 14px;
+      padding: 11px 14px 12px;
       text-align: left;
-      font-size: 15px;
+      font-family: var(--serif);
+      font-size: 16px;
       font-weight: 600;
+      line-height: 1.2;
       color: var(--text);
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 10px;
+      border-radius: 0;
       cursor: pointer;
     }
-    .cat-card:hover { border-color: var(--accent); filter: none; }
-    .cat-card .ic { font-size: 22px; line-height: 1; }
-    .cat-card .n { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
-    .cat-card.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .cat-card:hover { border-color: var(--ink); filter: none; }
+        .cat-card .n { display: block; margin-top: 3px; font-family: var(--sans); font-size: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .cat-card.on { background: var(--ink); border-color: var(--ink); color: #fff; }
     .cat-card.on .n { color: rgba(255, 255, 255, 0.85); }
     .sub-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .sub-chips:empty { display: none; }
     .sub-chip {
       padding: 5px 11px;
       font-size: 13px;
-      border-radius: 999px;
+      border-radius: 0;
       background: var(--panel);
     }
     .sub-chip .n { color: var(--muted); margin-left: 4px; }
-    .sub-chip.on { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); }
+    .sub-chip.on { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); font-weight: 600; }
     @media (max-width: 600px) {
       .fields-bar { padding: 8px 16px 4px; }
       .cat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -131,9 +144,13 @@
       padding: 9px 12px;
       font-size: 14px;
       border: 1px solid var(--border);
-      border-radius: 6px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      border-radius: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      background: var(--panel);
+      border-color: var(--rule-strong);
     }
+    #query::placeholder { color: #87928e; }
     #nl-btn[disabled] { opacity: 0.6; cursor: default; }
     .nl-status { color: var(--muted); font-size: 12px; flex: 1 1 100%; }
     .nl-status:empty { display: none; }
@@ -142,12 +159,16 @@
       padding: 9px 14px;
       font-size: 14px;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 0;
       background: var(--panel);
+      color: var(--text);
+      font-family: var(--sans);
       cursor: pointer;
     }
     button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-    button:hover { filter: brightness(0.98); }
+    button:hover { border-color: var(--ink); }
+    button.primary:hover { background: var(--ink); border-color: var(--ink); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .columns-menu { position: relative; }
     #columns-panel {
       position: absolute;
@@ -158,8 +179,9 @@
       padding: 8px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      border-radius: 0;
+      box-shadow: 0 3px 0 rgba(28, 42, 48, 0.08);
+      border-color: var(--rule-strong);
     }
     #columns-panel[hidden] { display: none; }
     #columns-panel .col-actions {
@@ -176,7 +198,7 @@
       gap: 8px;
       padding: 5px 6px;
       font-size: 13px;
-      border-radius: 4px;
+      border-radius: 0;
       cursor: pointer;
       white-space: nowrap;
     }
@@ -189,7 +211,7 @@
     .syntax code {
       background: var(--accent-weak);
       padding: 1px 5px;
-      border-radius: 4px;
+      border-radius: 0;
       font-size: 12px;
     }
     #help-toggle { color: var(--accent); cursor: pointer; text-decoration: underline; }
@@ -199,7 +221,7 @@
       padding: 10px 12px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 0;
       max-width: 900px;
     }
     #fields-help table { border-collapse: collapse; font-size: 12px; }
@@ -215,10 +237,12 @@
       border-collapse: collapse;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 0;
       overflow: hidden;
       font-size: 13px;
+      font-variant-numeric: tabular-nums;
     }
+    table.results tbody tr:hover td { background: #f7f8f6; }
     table.results th, table.results td {
       text-align: left;
       padding: 9px 12px;
@@ -226,13 +250,15 @@
       vertical-align: top;
     }
     table.results th {
-      background: #fafbfc;
+      background: var(--ink);
+      color: #f2f3f0;
       font-weight: 600;
+      border-bottom-color: var(--ink);
       cursor: pointer;
       white-space: nowrap;
       user-select: none;
     }
-    table.results th .arrow { color: var(--accent); font-size: 11px; }
+    table.results th .arrow { color: #9fd0cf; font-size: 11px; }
     table.results tr:last-child td { border-bottom: none; }
     /* Free-text columns that otherwise wrap into tall, narrow cells. */
     table.results td[data-col="conference"] { min-width: 160px; }
@@ -279,7 +305,8 @@
       display: inline-block;
       background: var(--accent-weak);
       color: var(--text);
-      border-radius: 4px;
+      border-radius: 0;
+      border-left: 2px solid var(--accent);
       padding: 1px 6px;
       margin: 1px 3px 1px 0;
       font-size: 12px;
@@ -297,7 +324,7 @@
       font-size: 13px;
       white-space: nowrap;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 0;
       background: var(--panel);
       color: var(--text);
       text-decoration: none;
@@ -313,8 +340,9 @@
       padding: 12px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      border-radius: 0;
+      box-shadow: 0 3px 0 rgba(28, 42, 48, 0.08);
+      border-color: var(--rule-strong);
       font-size: 13px;
     }
     #notify-pop[hidden] { display: none; }
@@ -327,8 +355,9 @@
       padding: 12px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      border-radius: 0;
+      box-shadow: 0 3px 0 rgba(28, 42, 48, 0.08);
+      border-color: var(--rule-strong);
       font-size: 13px;
     }
     #cal-pop[hidden] { display: none; }
@@ -343,7 +372,7 @@
       padding: 7px 9px;
       font-size: 14px;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 0;
     }
     #np-email[aria-invalid="true"] { border-color: var(--date-recent); }
     #np-error { color: var(--date-recent); font-size: 12px; min-height: 16px; margin: 4px 0 0; }
@@ -354,15 +383,15 @@
     table.results th .filt {
       border: none;
       background: none;
-      color: #9aa0a6;
+      color: #8fa09d;
       font-size: 11px;
       margin-left: 4px;
       padding: 1px 4px;
-      border-radius: 4px;
+      border-radius: 0;
       vertical-align: 1px;
     }
-    table.results th .filt:hover { color: var(--text); background: var(--accent-weak); }
-    table.results th .filt.on { color: #fff; background: var(--accent); }
+    table.results th .filt:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+    table.results th .filt.on { color: var(--ink); background: #9fd0cf; }
     /* A categorical cell opens the same checkbox list, preset to its value. */
     table.results td.facet-cell { cursor: pointer; }
     table.results td.facet-cell:hover { background: var(--accent-weak); }
@@ -376,8 +405,9 @@
       padding: 8px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      border-radius: 0;
+      box-shadow: 0 3px 0 rgba(28, 42, 48, 0.08);
+      border-color: var(--rule-strong);
       font-size: 13px;
     }
     #filter-pop[hidden] { display: none; }
@@ -387,8 +417,9 @@
       padding: 6px 8px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+      border-radius: 0;
+      box-shadow: 0 3px 0 rgba(28, 42, 48, 0.08);
+      border-color: var(--rule-strong);
       font-size: 13px;
     }
     .opt-pop[hidden] { display: none; }
@@ -400,14 +431,14 @@
       padding: 6px 8px;
       font-size: 13px;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 0;
     }
     #filter-pop label {
       display: flex;
       align-items: center;
       gap: 8px;
       padding: 4px 6px;
-      border-radius: 4px;
+      border-radius: 0;
       cursor: pointer;
     }
     #filter-pop label:hover { background: var(--accent-weak); }
@@ -443,7 +474,7 @@
       right: 20px;
       max-width: 360px;
       padding: 12px 16px;
-      border-radius: 8px;
+      border-radius: 0;
       color: #fff;
       font-size: 13px;
       opacity: 0;
@@ -452,8 +483,8 @@
       pointer-events: none;
     }
     #toast.show { opacity: 1; transform: translateY(0); }
-    #toast.ok { background: #15803d; }
-    #toast.err { background: #b91c1c; }
+    #toast.ok { background: var(--large); }
+    #toast.err { background: var(--date-recent); }
   </style>
   <style id="col-style"></style>
 </head>
@@ -479,9 +510,9 @@
   </nav>
 
   <div class="controls">
-    <input id="query" type="text" placeholder='Keywords (pediatric radiology), a boolean query ((virtual OR hybrid) AND size:large), or plain English for ✨ AI search' autocomplete="off" />
+    <input id="query" type="text" placeholder='Keywords (pediatric radiology), a boolean query ((virtual OR hybrid) AND size:large), or plain English for AI search' autocomplete="off" />
     <button class="primary" id="search-btn">Search</button>
-    <button class="primary" id="nl-btn" title="Translate a plain-English request in the search box into a boolean query (Ctrl+Enter)">✨ AI search</button>
+    <button class="primary" id="nl-btn" title="Translate a plain-English request in the search box into a boolean query (Ctrl+Enter)">AI search</button>
     <div class="columns-menu">
       <button id="columns-btn" title="Choose which columns are visible">Columns ▾</button>
       <div id="columns-panel" hidden>
@@ -497,8 +528,8 @@
   </div>
 
   <div class="syntax">
-    <span class="muted">More information about search term formatting, fields, and color-coding</span>
-    &nbsp;·&nbsp;<span id="help-toggle">more info</span>
+    <span class="muted">How search terms, fields, and date colors work:</span>
+    <span id="help-toggle">show details</span>
     <div id="fields-help"></div>
   </div>
 
@@ -1231,9 +1262,9 @@
           const why = queryError ? `Not a valid boolean query (${queryError})` : "No exact matches";
           status = `${why} — showing ${plural(rows.length)} matching some of your keywords` +
             (byRelevance ? ", most relevant first" : "") +
-            ". For a precise filter, try ✨ AI search.";
+            ". For a precise filter, try AI search.";
         } else if (!queryError) {
-          status = "0 conferences. Try fewer or different keywords, or ✨ AI search.";
+          status = "0 conferences. Try fewer or different keywords, or AI search.";
         }
       }
       return { rows, status, byRelevance };
@@ -1443,11 +1474,6 @@
     // filters as the header ■ lists, and the selection and search text are kept
     // in the URL (e.g. /?subcategory=machine-learning), so a field's view can be
     // shared as a link.
-    const CATEGORY_ICONS = {
-      "medicine": "🩺", "biology": "🧬", "artificial intelligence": "🤖",
-      "computer science": "💻", "physics": "⚛️", "stats": "📊", "chemistry": "⚗️",
-      "mathematics": "📐", "humanities": "📚", "social science": "🏛️",
-    };
     const CATEGORY_LABELS = { "stats": "Statistics" };
     const fieldSlug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "x";
     const fieldLabel = (v) => CATEGORY_LABELS[v] || v.charAt(0).toUpperCase() + v.slice(1);
@@ -1501,13 +1527,13 @@
       lastActive = active;
       const subs = filters.subcategory;
       const allOn = !filters.category && !subs;
-      const card = (value, icon, label, n, on) =>
+      const card = (value, label, n, on) =>
         `<button class="cat-card${on ? " on" : ""}" data-cat="${escapeHtml(value)}" aria-pressed="${on}">` +
-        `<span class="ic" aria-hidden="true">${icon}</span><span>${escapeHtml(label)}` +
+        `<span>${escapeHtml(label)}` +
         `<span class="n">${n.toLocaleString()} conference${n === 1 ? "" : "s"}</span></span></button>`;
       $("cat-grid").innerHTML =
-        card("", "🌐", "All fields", DATA.conferences.length, allOn) +
-        [...FIELD_BAR.cats].map(([c, n]) => card(c, CATEGORY_ICONS[c] || "🏷️", fieldLabel(c), n,
+        card("", "All fields", DATA.conferences.length, allOn) +
+        [...FIELD_BAR.cats].map(([c, n]) => card(c, fieldLabel(c), n,
           c === active || !!(filters.category && filters.category.has(c)))).join("");
 
       let chips = "";
@@ -2030,7 +2056,7 @@
       const h = $("fields-help");
       const showing = h.style.display === "block";
       h.style.display = showing ? "none" : "block";
-      $("help-toggle").textContent = showing ? "more info" : "less info";
+      $("help-toggle").textContent = showing ? "show details" : "hide details";
     });
 
     renderColumnsMenu();
