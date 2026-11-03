@@ -848,7 +848,18 @@ Write each as either a short paragraph or bullet lines that each start with \
 Keep each under about 1,000 characters, and end it with one line naming the \
 call it comes from, e.g. "Per the 2027 call for abstracts." (the upcoming \
 edition's call when it is published, otherwise the most recent edition's, and \
-say so)."""
+say so).
+
+Leave out every deadline and date of the submission cycle: submission \
+deadlines and times, when submission opens or closes, late-breaking windows, \
+notification, camera-ready, registration, disclosure, video, or supplementary \
+due dates, and when accepted abstracts are published. The table records the \
+deadlines in their own columns, and these dates change every year. A rule that \
+itself depends on a date (e.g. "work published before the meeting is \
+ineligible") stays, phrased without the calendar date where possible. A \
+requirement whose only content is its due date (e.g. "a video is required by \
+Nov 16") keeps the requirement and drops the date ("a 20-30 minute video is \
+required")."""
 
 _GUIDELINES_SYSTEM = """\
 You are a research assistant that records the submission requirements of \

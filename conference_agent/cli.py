@@ -178,13 +178,13 @@ _SCALAR_FIELDS = (
         "abstract_guidelines", "abstract_guidelines", "text",
         "Abstract submission requirements, free text: a paragraph or one '- ' "
         "bullet per line (word or character limit, required structure, figures, "
-        "number of submissions, ...)",
+        "number of submissions, ...). Leave out deadlines; they have their own fields",
     ),
     _Field(
         "paper_guidelines", "paper_guidelines", "text",
         "Full-paper submission requirements, free text: a paragraph or one '- ' "
         "bullet per line (page limit, template, anonymization, supplementary "
-        "material, ...). Leave unset for abstract-only meetings",
+        "material, ...); no deadlines. Leave unset for abstract-only meetings",
     ),
     _Field(
         "prior_abstract_due", "prior_abstract_deadline", "date",
