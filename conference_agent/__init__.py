@@ -8,4 +8,4 @@ from conference_agent.models import Conference, ConferenceSize, RemoteOption
 
 __all__ = ["Conference", "ConferenceSize", "RemoteOption"]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
