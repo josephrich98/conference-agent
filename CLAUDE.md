@@ -15,13 +15,13 @@ medicine, biology, chemistry, physics, mathematics, stats, computer science,
 artificial intelligence — though a custom one is kept), its **prior** and
 **upcoming** editions (abstract deadline, late abstract deadline, paper
 deadline, conference dates for
-each, plus a free-text registration field per edition capturing the registration
-window(s) — e.g. "Early bird: Jan 5 – Mar 1; Regular: Mar 2 – conference" — since
-registration is published as periods, not a single date), a derived conference
+each, plus a registration field per edition holding only the published items of
+Opens / Early bird deadline / Final deadline / Refund deadline / Notes, one
+"Label: date" line each), a derived conference
 month, abstract month, late abstract month, and paper
 month (each
 taken from the matching date so rows sort by season even when their years are
-offset; registration, being free text, has no derived month), the official
+offset; registration has no derived month), the official
 link, remote-attendance option, a location and cost per edition (plus a
 `stable_location` flag for series held in the same place every year), a sourced
 annual-attendance figure, and a
@@ -53,7 +53,9 @@ for the design.
     oral), an `attendance`
     figure, a list of `categories` tags (the broad bucket; `category` joins them), `conference_month`
     / `abstract_month` / `late_abstract_month` / `paper_month` (registration is
-    free text — `registration` property, no derived month) and
+    line-format text — `registration` property, no derived month;
+    `normalize_registration` / `parse_registration` and `REGISTRATION_FIELDS`
+    define the format) and
     `size` / `attendance_display` / `format` / `subcategory` properties);
     `ConferenceSize` and `RemoteOption` enums; `CATEGORIES` (the suggested
     top-level vocabulary);
@@ -139,7 +141,8 @@ for the design.
     agent, for rows whose location changed (`--airports all` for every row;
     the discover filters narrow it). `discover --guidelines` researches the
     Abstract / Paper guidelines columns instead of surveying (see the
-    guidelines design decision)
+    guidelines design decision), and `discover --registration` the upcoming
+    registration dates (see the registration design decision)
 - `conference_agent/web/` — FastAPI app + static single-page table (`search.py` boolean-query
   language, `nl_query.py` optional natural-language → boolean-query translation
   via a local Ollama model, `app.py` REST API, `static/index.html`, `handler.py`
@@ -345,6 +348,29 @@ dependencies there rather than installing ad hoc.
   deadline (earlier changes are treated as corrections). Entries whose extended
   date is more than five years old are pruned on write and by
   `roll_past_editions`.
+- **Registration is per-edition "Label: date" lines, researched by its own
+  pass.** `prior_registration` / `upcoming_registration` stay single Text
+  columns, but hold one line per item the meeting publishes, in the order
+  `Opens`, `Early bird deadline`, `Final deadline`, `Refund deadline`, `Notes`
+  (`models.REGISTRATION_FIELDS`), with dates as ISO `YYYY-MM-DD` (or `YYYY-MM`
+  for a month). `models.normalize_registration` (the model validator, and
+  `merge_records`) canonicalizes any label spelling, any date spelling, `;`- or
+  newline-separated input, and a dict; a value that is not a date ("Fall 2026")
+  is kept only under its own label. Text in another shape (the earlier free-text
+  windows) is kept as given until researched again. Notes is meant to be rare:
+  only lottery / cap / waitlist or a separate site or deadline for one location,
+  never rate tiers or prices. The survey and re-check prompts do not research
+  registration (a sparser result would overwrite a fuller one), and a survey that
+  reports none keeps the stored text. Instead `discover --registration`
+  (`discover.research_registration`, batches of `REGISTRATION_BATCH_SIZE`)
+  covers series with an upcoming date ahead that are due by
+  `database.registration_targets`: never researched, blank or not in the line
+  format and researched `REGISTRATION_RETRY_DAYS` (14) ago, or researched
+  `REGISTRATION_RECHECK_DAYS` (45) ago; at most `REGISTRATION_MAX_PER_RUN` (15)
+  per run, soonest meeting first; the bookkeeping column is
+  `registration_checked`. The table cell (`registrationCell` in `index.html`)
+  shows one line per item and colors the deadline dates like the other dates;
+  the `/c/<id>/` pages spell the dates out (`seo_pages._registration_text`).
 - **Location and cost are per edition.** A series moves cities and changes its
   fees, so both are prior/upcoming pairs (`prior_location` / `upcoming_location`,
   `prior_cost` / `upcoming_cost`, in `models.EDITION_SUFFIXES`), rolled with the
@@ -639,8 +665,9 @@ dependencies there rather than installing ad hoc.
   merges an edition stored in both slots (the `Conference` model collapses the
   same duplicate on input). Before the watch run the job ingests merged
   submissions, and after it runs `conference-agent discover --airports` for new or
-  changed locations and `conference-agent discover --guidelines --model sonnet`
-  for the submission guidelines that are due; if any step fails it emails the log tail via
+  changed locations, `conference-agent discover --guidelines --model sonnet`
+  for the submission guidelines that are due, and `conference-agent discover
+  --registration --model sonnet` for the registration dates that are due; if any step fails it emails the log tail via
   `scripts/alert_failure.py`. It redeploys (via
   `scripts/deploy_static.sh`) only when the exported site data changed; the DB
   file itself changes every run from bookkeeping columns, so it is not the

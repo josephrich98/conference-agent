@@ -160,3 +160,18 @@ GUIDELINES_RETRY_DAYS = 14
 GUIDELINES_RECHECK_DAYS = 120
 GUIDELINES_BATCH_SIZE = 5
 GUIDELINES_MAX_PER_RUN = 15
+
+# --- Registration pass (``conference-agent discover --registration``) ---
+#
+# The upcoming edition's registration dates (Opens / Early bird deadline /
+# Final deadline / Refund deadline / Notes) are researched by their own agent
+# pass, run by the daily job, for series with an upcoming date still ahead
+# (``database.registration_targets``). A series never researched is due at
+# once; one whose registration is blank or not yet in that format is retried
+# every REGISTRATION_RETRY_DAYS (registration may not be open yet); one with
+# registration dates is re-researched every REGISTRATION_RECHECK_DAYS, since
+# dates are added as the meeting nears.
+REGISTRATION_RETRY_DAYS = 14
+REGISTRATION_RECHECK_DAYS = 45
+REGISTRATION_BATCH_SIZE = 5
+REGISTRATION_MAX_PER_RUN = 15

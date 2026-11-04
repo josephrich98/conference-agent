@@ -44,12 +44,14 @@ from conference_agent.config import (
 )
 from conference_agent.models import (
     CATEGORIES,
+    REGISTRATION_FIELDS,
     Conference,
     RemoteOption,
     name_id,
     normalize_categories,
     normalize_formats,
     normalize_guidelines,
+    normalize_registration,
     normalize_subcategories,
 )
 
@@ -103,11 +105,6 @@ For each notable conference in the requested field, gather:
   actual dollar figure(s) when available (e.g. "$1,095 member / $1,395
   non-member, early-bird"), not just "varies"; leave the upcoming cost blank until
   that edition's fees are published rather than repeating last year's
-- the registration period(s) as free text, for the prior and the upcoming edition
-  separately (prior_registration / upcoming_registration): capture the windows the
-  meeting publishes, e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"
-  or, if only an opening is given, "Registration opens June 2026". Leave blank when
-  no registration timing is published -- do not guess
 - the time of day and time zone at which each submission deadline closes: for the
   abstract, the late abstract, and the paper deadline separately (e.g. "11:59 PM ET"
   or "23:59 AoE") -- the zone is the part that matters. Read each from the call for
@@ -204,10 +201,7 @@ abstract_timezone / late_abstract_timezone / paper_timezone are the matching \
 zones: use "AoE" (Anywhere on Earth, UTC-12), "UTC", a region code (ET, CT, MT, \
 PT, CET, ...) -- the region code, not EST/EDT, since it covers daylight time -- or \
 an IANA name such as "Asia/Shanghai"; "" when the notes give no time or zone for \
-that deadline. The prior_registration and \
-upcoming_registration fields are the registration window(s) of each edition as \
-free text (e.g. "Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference"), "" \
-when the notes give none. The prior_location and upcoming_location fields are \
+that deadline. The prior_location and upcoming_location fields are \
 the host city / venue of each edition (e.g. "Chicago, IL" or "Vienna, \
 Austria"); stable_location is "true" when the notes say the conference is held \
 in the same place every year, otherwise "". The prior_cost and upcoming_cost \
@@ -261,14 +255,6 @@ class _ExtractedConference(BaseModel):
     upcoming_paper_deadline: str
     upcoming_start_date: str
     upcoming_end_date: str
-    prior_registration: str = Field(
-        default="",
-        description="Free-text registration window(s) of the prior edition, or ''",
-    )
-    upcoming_registration: str = Field(
-        default="",
-        description="Free-text registration window(s) of the upcoming edition, or ''",
-    )
     abstract_time: str = Field(
         default="",
         description="Time of day the abstract deadline closes, 24-hour HH:MM, or ''",
@@ -378,8 +364,6 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         upcoming_paper_deadline=_parse_date(item.upcoming_paper_deadline),
         upcoming_start_date=_parse_date(item.upcoming_start_date),
         upcoming_end_date=_parse_date(item.upcoming_end_date),
-        prior_registration=_clean(item.prior_registration),
-        upcoming_registration=_clean(item.upcoming_registration),
         abstract_time=_clean(item.abstract_time),
         abstract_timezone=_clean(item.abstract_timezone),
         late_abstract_time=_clean(item.late_abstract_time),
@@ -936,6 +920,71 @@ def _describe_guidelines_target(conf: Conference) -> str:
     )
 
 
+def _research_and_extract(
+    system: str,
+    prompt: str,
+    extract_system: str,
+    schema: type,
+    backend: str,
+    model: Optional[str],
+    max_tokens: int,
+):
+    """Run a two-phase pass (web-search research, then a structured extraction
+    into ``schema``) and return the parsed result, or ``None`` when the research
+    found nothing."""
+    if backend not in DISCOVERY_BACKENDS:
+        raise ValueError(
+            f"Unknown discovery backend {backend!r}; expected one of "
+            f"{', '.join(DISCOVERY_BACKENDS)}."
+        )
+    if backend == "claude-code":
+        research_text = _research_text_via_cli(system, prompt, model)
+        if not research_text.strip():
+            return None
+        payload = _run_claude_cli(
+            research_text,
+            append_system=extract_system,
+            tools=[],
+            json_schema=schema.model_json_schema(),
+            model=model,
+            timeout=_CLI_EXTRACT_TIMEOUT,
+        )
+        data = payload.get("structured_output")
+        return schema.model_validate(data) if data else None
+    resolved_model = model or ANTHROPIC_MODEL
+    client = _anthropic_client()
+    research_text = _research_loop(client, system, prompt, resolved_model, max_tokens)
+    if not research_text.strip():
+        return None
+    response = client.messages.parse(
+        model=resolved_model,
+        max_tokens=max_tokens,
+        system=extract_system,
+        messages=[{"role": "user", "content": research_text}],
+        output_format=schema,
+    )
+    return response.parsed_output
+
+
+def _pair_targets(items: Iterable, targets: List[Conference]) -> list:
+    """Pair each extracted ``item`` (with ``name`` / ``acronym``) with the target
+    it describes, by name id, else by a unique acronym; unmatched items are
+    dropped. Returns ``[(target, item), ...]``."""
+    by_id = {t.id: t for t in targets}
+    by_acronym: dict = {}
+    for t in targets:
+        by_acronym.setdefault(t.acronym.strip().upper(), []).append(t)
+    out = []
+    for item in items:
+        target = by_id.get(name_id(item.name)) if item.name.strip() else None
+        if target is None:
+            same = by_acronym.get(item.acronym.strip().upper(), [])
+            target = same[0] if len(same) == 1 else None
+        if target is not None:
+            out.append((target, item))
+    return out
+
+
 def research_guidelines(
     targets: Iterable[Conference],
     backend: str = DEFAULT_BACKEND,
@@ -951,11 +1000,6 @@ def research_guidelines(
     "paper_guidelines": str | None}}`` for the targets the research matched
     (by name id, else by a unique acronym).
     """
-    if backend not in DISCOVERY_BACKENDS:
-        raise ValueError(
-            f"Unknown discovery backend {backend!r}; expected one of "
-            f"{', '.join(DISCOVERY_BACKENDS)}."
-        )
     targets = list(targets)
     if not targets:
         return {}
@@ -963,50 +1007,137 @@ def research_guidelines(
         today=(today or date.today()).isoformat(),
         targets="\n".join(_describe_guidelines_target(t) for t in targets),
     )
-    if backend == "claude-code":
-        research_text = _research_text_via_cli(_GUIDELINES_SYSTEM, prompt, model)
-        if not research_text.strip():
-            return {}
-        payload = _run_claude_cli(
-            research_text,
-            append_system=_GUIDELINES_EXTRACT_SYSTEM,
-            tools=[],
-            json_schema=_ExtractedGuidelinesList.model_json_schema(),
-            model=model,
-            timeout=_CLI_EXTRACT_TIMEOUT,
-        )
-        data = payload.get("structured_output")
-        parsed = _ExtractedGuidelinesList.model_validate(data) if data else None
-    else:
-        resolved_model = model or ANTHROPIC_MODEL
-        client = _anthropic_client()
-        research_text = _research_loop(client, _GUIDELINES_SYSTEM, prompt, resolved_model, max_tokens)
-        if not research_text.strip():
-            return {}
-        response = client.messages.parse(
-            model=resolved_model,
-            max_tokens=max_tokens,
-            system=_GUIDELINES_EXTRACT_SYSTEM,
-            messages=[{"role": "user", "content": research_text}],
-            output_format=_ExtractedGuidelinesList,
-        )
-        parsed = response.parsed_output
+    parsed = _research_and_extract(
+        _GUIDELINES_SYSTEM, prompt, _GUIDELINES_EXTRACT_SYSTEM,
+        _ExtractedGuidelinesList, backend, model, max_tokens,
+    )
     if not parsed:
         return {}
+    return {
+        target.id: {
+            "abstract_guidelines": normalize_guidelines(item.abstract_guidelines),
+            "paper_guidelines": normalize_guidelines(item.paper_guidelines),
+        }
+        for target, item in _pair_targets(parsed.conferences, targets)
+    }
 
-    by_id = {t.id: t for t in targets}
-    by_acronym: dict = {}
-    for t in targets:
-        by_acronym.setdefault(t.acronym.strip().upper(), []).append(t)
-    out: dict = {}
-    for item in parsed.conferences:
-        target = by_id.get(name_id(item.name)) if item.name.strip() else None
-        if target is None:
-            same = by_acronym.get(item.acronym.strip().upper(), [])
-            target = same[0] if len(same) == 1 else None
-        if target is not None:
-            out[target.id] = {
-                "abstract_guidelines": normalize_guidelines(item.abstract_guidelines),
-                "paper_guidelines": normalize_guidelines(item.paper_guidelines),
-            }
-    return out
+
+# --- Registration -------------------------------------------------------------
+
+# What each registration item means, shared by the research and extraction
+# prompts so both describe the same fields.
+_REGISTRATION_FORMAT = """\
+For the UPCOMING edition only (the one whose dates are listed), report:
+- opens: the date registration opens (or opened).
+- early_bird_deadline: the last day of the early-bird (lowest, earliest) rate. \
+When there are several rate tiers (e.g. early / advance / regular), this is the \
+end of the first one. When the only published price change is a late fee from \
+some date on, the day before that date is the early-bird deadline.
+- final_deadline: the last day to register, as published (e.g. the close of \
+online or advance registration). Leave it blank when no closing date is \
+published (e.g. registration simply stays open on site).
+- refund_deadline: the last day a cancellation is refunded (fully or in part).
+- notes: almost always "". Use it only for a fact that changes whether or \
+where someone can register and that the four dates cannot express: \
+registration is by lottery or invitation, is capped or sold out / waitlisted, \
+or happens on a separate site or with a separate deadline for one location of \
+a multi-site meeting. One short sentence. Do NOT use notes for intermediate or \
+later rate tiers (advance, standard, late, on-site rates), group, member, or \
+student registration, membership deadlines, hotel or housing dates, partial or \
+emergency refund rules, prices (recorded elsewhere), times of day, links, or a \
+restatement of the dates.
+
+Write every date as YYYY-MM-DD, or YYYY-MM when only the month is published \
+("registration opens in January 2027" -> 2027-01). Use "" for anything the \
+official sources do not publish -- do not guess, and do not carry over the \
+previous edition's dates."""
+
+_REGISTRATION_SYSTEM = """\
+You are a research assistant that records the registration dates of academic \
+and professional conferences. Use web search to read each conference's \
+official registration page (and its fees, important-dates, cancellation / \
+refund policy, and FAQ pages). Search thoroughly: try the conference site's \
+registration and important-dates pages, the society's pages, and searches \
+such as "<acronym> <year> registration", "<acronym> <year> early registration \
+deadline", and "<acronym> <year> cancellation policy". If the upcoming \
+edition's registration is not published yet, say so, and report a published \
+opening date or month if one is announced.
+
+""" + _REGISTRATION_FORMAT + """
+
+State only what an official source says. Report every conference under its \
+full name exactly as listed, one conference at a time."""
+
+_REGISTRATION_PROMPT = """\
+Find the registration dates of the upcoming edition of ONLY these \
+conferences (today is {today}):
+{targets}"""
+
+_REGISTRATION_EXTRACT_SYSTEM = """\
+Convert the research notes into one record per conference: its full name \
+exactly as the notes give it, and the registration items of its upcoming \
+edition. Keep what the notes state and nothing else; do not invent values. \
+""" + _REGISTRATION_FORMAT
+
+
+class _ExtractedRegistration(BaseModel):
+    name: str
+    acronym: str = ""
+    opens: str = Field(default="", description="Registration opening date (YYYY-MM-DD or YYYY-MM), or ''")
+    early_bird_deadline: str = Field(default="", description="Last day of the early-bird rate, or ''")
+    final_deadline: str = Field(default="", description="Last day to register, or ''")
+    refund_deadline: str = Field(default="", description="Last day for a refunded cancellation, or ''")
+    notes: str = Field(
+        default="",
+        description="Only what the four dates cannot express; usually ''",
+    )
+
+
+class _ExtractedRegistrationList(BaseModel):
+    conferences: List[_ExtractedRegistration]
+
+
+def _describe_registration_target(conf: Conference) -> str:
+    """One line per target: identity, link, and the upcoming meeting's dates."""
+    if conf.upcoming_start_date:
+        end = conf.upcoming_end_date or conf.upcoming_start_date
+        when = f"meets {conf.upcoming_start_date.isoformat()} to {end.isoformat()}"
+    else:
+        when = "upcoming meeting dates not recorded"
+    where = f" in {conf.upcoming_location}" if conf.upcoming_location else ""
+    link = f" -- {conf.url}" if conf.url else ""
+    return f"- {conf.acronym} -- {conf.name}{link}\n  {when}{where}"
+
+
+def research_registration(
+    targets: Iterable[Conference],
+    backend: str = DEFAULT_BACKEND,
+    model: Optional[str] = None,
+    max_tokens: int = 16000,
+    today: Optional[date] = None,
+) -> dict:
+    """Research the upcoming edition's registration dates of ``targets``.
+
+    Two phases like :func:`research_guidelines`. Returns ``{target id:
+    registration text | None}`` (the line format of
+    :func:`models.normalize_registration`) for the targets the research matched.
+    """
+    targets = list(targets)
+    if not targets:
+        return {}
+    prompt = _REGISTRATION_PROMPT.format(
+        today=(today or date.today()).isoformat(),
+        targets="\n".join(_describe_registration_target(t) for t in targets),
+    )
+    parsed = _research_and_extract(
+        _REGISTRATION_SYSTEM, prompt, _REGISTRATION_EXTRACT_SYSTEM,
+        _ExtractedRegistrationList, backend, model, max_tokens,
+    )
+    if not parsed:
+        return {}
+    return {
+        target.id: normalize_registration(
+            item.model_dump(include={key for key, _ in REGISTRATION_FIELDS})
+        )
+        for target, item in _pair_targets(parsed.conferences, targets)
+    }

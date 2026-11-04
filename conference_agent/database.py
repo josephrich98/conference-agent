@@ -46,6 +46,7 @@ from conference_agent.models import (
     normalize_categories,
     normalize_formats,
     normalize_guidelines,
+    normalize_registration,
     normalize_subcategories,
     size_for_attendance,
 )
@@ -166,6 +167,8 @@ class ConferenceRow(Base):
     # this row: row-level scheduling state like ``last_checked``, not on the
     # model. NULL means never researched.
     guidelines_checked: Mapped[Optional[Date]] = mapped_column(Date)
+    # Likewise for the registration pass (``discover --registration``).
+    registration_checked: Mapped[Optional[Date]] = mapped_column(Date)
 
     # Bookkeeping for the per-conference auto-check policy (``refresh`` module):
     # the date discovery last covered this row. ``None`` means never checked,
@@ -457,6 +460,7 @@ _DATE_FIELDS = (
 _TIME_FIELDS = tuple(f"{k}_{part}" for k in KINDS for part in ("time", "timezone"))
 # The free-text submission requirements (per series).
 GUIDELINE_FIELDS = ("abstract_guidelines", "paper_guidelines")
+REGISTRATION_COLUMNS = ("prior_registration", "upcoming_registration")
 # ``subcategory`` is the stored granular column; ``category`` is derived from it
 # (written separately, like ``size``), so it is not in this round-trip tuple.
 # ``prior_registration`` / ``upcoming_registration`` are free text (not dates), so
@@ -908,6 +912,7 @@ def upsert_conferences(
             stable = bool(row.stable_location)
             category = row.category
             guidelines = {f: getattr(row, f) for f in GUIDELINE_FIELDS}
+            registration = {f: getattr(row, f) for f in REGISTRATION_COLUMNS}
             pins = {} if manual else _pin_snapshot(row)
             before = _extension_snapshot(row)
             _apply_model_to_row(row, conf)
@@ -919,6 +924,11 @@ def upsert_conferences(
                 # The survey does not research guidelines (a dedicated pass
                 # does), so one it does not report keeps the stored text.
                 for field, value in guidelines.items():
+                    if getattr(conf, field) is None:
+                        setattr(row, field, value)
+                # Registration has its own pass too, so a survey that reports
+                # none keeps the stored text.
+                for field, value in registration.items():
                     if getattr(conf, field) is None:
                         setattr(row, field, value)
                 # A stable-location flag is usually set by hand; a run that does
@@ -1079,6 +1089,8 @@ def merge_records(
                     value = record.get(legacy_key) if legacy_key else None
                 if field in GUIDELINE_FIELDS:
                     value = normalize_guidelines(value)
+                if field in REGISTRATION_COLUMNS:
+                    value = normalize_registration(value)
                 if value not in (None, ""):
                     setattr(row, field, str(value).strip())
                     changed = True
@@ -1603,6 +1615,91 @@ def record_guidelines(
                     updated = True
             row.guidelines_checked = today
             changed += updated
+        session.commit()
+    return changed
+
+
+def registration_targets(
+    db_url: str = DEFAULT_DATABASE_URL,
+    today: Optional[date] = None,
+    ids: "Optional[Iterable[str]]" = None,
+    force: bool = False,
+) -> List[Conference]:
+    """Series whose upcoming registration dates are due for research, soonest first.
+
+    Only series with an upcoming date (a deadline or the meeting) still ahead
+    are covered. Among those, a series is due when it was never researched; when
+    its upcoming registration is blank or not yet in the line format and it was
+    last researched at least ``REGISTRATION_RETRY_DAYS`` ago (registration may
+    not be open yet); or when it was last researched at least
+    ``REGISTRATION_RECHECK_DAYS`` ago (dates get added as the meeting nears).
+    ``force`` makes every series with a date ahead due; ``ids`` narrows the
+    selection. A pinned upcoming registration is never due.
+    """
+    from conference_agent.config import REGISTRATION_RECHECK_DAYS, REGISTRATION_RETRY_DAYS
+    from conference_agent.models import is_structured_registration
+
+    today = today or date.today()
+    wanted = set(ids) if ids is not None else None
+    engine = get_engine(db_url)
+    due: list = []
+    with Session(engine) as session:
+        for row in session.query(ConferenceRow).all():
+            if wanted is not None and row.id not in wanted:
+                continue
+            if "upcoming_registration" in pinned_fields(row):
+                continue
+            ahead = [
+                d
+                for f in (*(f"upcoming_{k}_deadline" for k in KINDS), "upcoming_start_date", "upcoming_end_date")
+                if (d := getattr(row, f)) and d >= today
+            ]
+            if not ahead:
+                continue
+            checked = row.registration_checked
+            age = (today - checked).days if checked else None
+            incomplete = not is_structured_registration(row.upcoming_registration)
+            if (
+                force
+                or age is None
+                or (incomplete and age >= REGISTRATION_RETRY_DAYS)
+                or age >= REGISTRATION_RECHECK_DAYS
+            ):
+                start = row.upcoming_start_date or min(ahead)
+                due.append((start, row.name, _row_to_model(row)))
+    return [conf for _, _, conf in sorted(due, key=lambda t: (t[0], t[1]))]
+
+
+def record_registration(
+    found: "dict[str, Optional[str]]",
+    researched: Iterable[str],
+    db_url: str = DEFAULT_DATABASE_URL,
+    today: Optional[date] = None,
+) -> int:
+    """Store researched upcoming registration text and stamp ``registration_checked``.
+
+    ``found`` maps a row id to its registration text (the line format); a blank
+    value keeps the stored text, and a pinned field is left as it is. Every id
+    in ``researched`` is stamped, found or not. Returns the number of rows whose
+    registration changed.
+    """
+    today = today or date.today()
+    engine = get_engine(db_url)
+    changed = 0
+    with Session(engine) as session:
+        for row_id in researched:
+            row = resolve_row(session, row_id)
+            if row is None:
+                continue
+            value = normalize_registration(found.get(row_id))
+            if (
+                value
+                and "upcoming_registration" not in pinned_fields(row)
+                and value != row.upcoming_registration
+            ):
+                row.upcoming_registration = value
+                changed += 1
+            row.registration_checked = today
         session.commit()
     return changed
 

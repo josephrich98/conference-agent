@@ -330,7 +330,7 @@ def test_refresh_conferences_empty_targets_skip_the_agent(monkeypatch):
     assert discover.refresh_conferences([]) == []
 
 
-def test_to_conference_carries_structured_deadline_times_and_registration():
+def test_to_conference_carries_structured_deadline_times_not_registration():
     # These fields are requested by the research prompt; extraction must carry
     # them through (they were once missing from the schema and silently dropped).
     conf = _to_conference(
@@ -341,16 +341,15 @@ def test_to_conference_carries_structured_deadline_times_and_registration():
             abstract_timezone="Eastern Time",
             paper_time="23:59",
             paper_timezone="AoE",
-            upcoming_registration="Early bird: Jan 5 - Mar 1",
-            prior_registration="Opened Feb 2026",
         )
     )
     # Normalized on the way in: 24-hour time, canonical zone code.
     assert (conf.abstract_time, conf.abstract_timezone) == ("23:59", "ET")
     assert (conf.paper_time, conf.paper_timezone) == ("23:59", "AoE")
     assert conf.deadline_time == "abstract: 11:59 PM ET\npaper: 11:59 PM AoE"
-    assert conf.upcoming_registration == "Early bird: Jan 5 - Mar 1"
-    assert conf.prior_registration == "Opened Feb 2026"
+    # Registration has its own research pass (``discover --registration``), so
+    # a survey reports none and the stored value is kept.
+    assert conf.upcoming_registration is None and conf.prior_registration is None
     # Unstated -> None, so a fill-only refresh merge never blanks a stored value.
     blank = _to_conference(_extracted(acronym="abc", name="Some Conf"))
     assert blank.deadline_time is None and blank.abstract_time is None and blank.upcoming_registration is None

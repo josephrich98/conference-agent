@@ -26,7 +26,7 @@ from typing import Iterable, Optional
 from urllib.parse import quote
 
 from conference_agent.airports import parse_airports
-from conference_agent.models import CATEGORIES
+from conference_agent.models import CATEGORIES, REGISTRATION_FIELDS, parse_registration
 
 SITE_URL = "https://conferenceagent.vercel.app"
 SITE_NAME = "Conference Agent"
@@ -59,6 +59,21 @@ def _fmt_date(iso: Optional[str]) -> Optional[str]:
         return date.fromisoformat(iso).strftime("%B %-d, %Y")
     except ValueError:
         return iso
+
+
+def _registration_text(text: Optional[str]) -> Optional[str]:
+    """Registration for a page: its items joined with "; ", each full date
+    spelled out (the stored text is one "Label: YYYY-MM-DD" line per item)."""
+    items = parse_registration(text)
+    if not items:
+        return text or None
+    out = []
+    for key, label in REGISTRATION_FIELDS:
+        value = items.get(key)
+        if value:
+            shown = _fmt_date(value) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) else value
+            out.append(f"{label}: {shown}")
+    return "; ".join(out)
 
 
 def _date_range(start: Optional[str], end: Optional[str]) -> Optional[str]:
@@ -208,7 +223,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Paper deadline", _fmt_date(row.get("upcoming_paper_deadline"))),
         ("Deadline time", row.get("deadline_time")),
         ("Conference dates", _date_range(row.get("upcoming_start_date"), row.get("upcoming_end_date"))),
-        ("Registration", row.get("upcoming_registration")),
+        ("Registration", _registration_text(row.get("upcoming_registration"))),
         ("Location", _upcoming_location(row)),
         # Airports belong to the displayed location: here when it is this one.
         ("Nearby airports", _airports_text(row) if _upcoming_location(row) else None),
@@ -228,7 +243,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Late abstract deadline", _fmt_date(row.get("prior_late_abstract_deadline"))),
         ("Paper deadline", _fmt_date(row.get("prior_paper_deadline"))),
         ("Conference dates", _date_range(row.get("prior_start_date"), row.get("prior_end_date"))),
-        ("Registration", row.get("prior_registration")),
+        ("Registration", _registration_text(row.get("prior_registration"))),
         ("Location", row.get("prior_location")),
         ("Nearby airports", None if _upcoming_location(row) else _airports_text(row)),
         ("Cost", row.get("prior_cost")),

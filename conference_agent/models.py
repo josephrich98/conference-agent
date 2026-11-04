@@ -180,6 +180,175 @@ def normalize_guidelines(value) -> Optional[str]:
     return text or None
 
 
+# --- Registration -------------------------------------------------------------
+#
+# An edition's registration is stored as text, one "Label: value" line per
+# published item, in this order, with only the items the meeting published:
+#
+#     Opens: 2026-07-23
+#     Early bird deadline: 2026-08-10
+#     Final deadline: 2026-11-24
+#     Refund deadline: 2026-10-30
+#     Notes: Advance rate through 2026-09-21.
+#
+# A date is ISO ``YYYY-MM-DD``, or ``YYYY-MM`` when only the month is published;
+# a value that is not a date (e.g. "Fall 2026") is kept as written. Notes holds
+# only what the four dates cannot say. Text in any other shape (the earlier
+# free-text windows) is kept as given until it is researched again.
+REGISTRATION_FIELDS = (
+    ("opens", "Opens"),
+    ("early_bird_deadline", "Early bird deadline"),
+    ("final_deadline", "Final deadline"),
+    ("refund_deadline", "Refund deadline"),
+    ("notes", "Notes"),
+)
+_REGISTRATION_LABELS = {label.lower(): key for key, label in REGISTRATION_FIELDS}
+# Other spellings accepted on input (an ``add`` value, a form entry, an agent).
+_REGISTRATION_LABELS.update({
+    "registration opens": "opens",
+    "open": "opens",
+    "early bird": "early_bird_deadline",
+    "early-bird deadline": "early_bird_deadline",
+    "earlybird deadline": "early_bird_deadline",
+    "early registration deadline": "early_bird_deadline",
+    "registration deadline": "final_deadline",
+    "registration closes": "final_deadline",
+    "closes": "final_deadline",
+    "refund": "refund_deadline",
+    "cancellation deadline": "refund_deadline",
+    "note": "notes",
+})
+_REGISTRATION_LABEL_RE = re.compile(
+    r"^\s*(" + "|".join(sorted((re.escape(k) for k in _REGISTRATION_LABELS), key=len, reverse=True))
+    + r")\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
+# Split "Opens: ...; Final deadline: ..." (one CSV cell) at each label.
+_REGISTRATION_SPLIT_RE = re.compile(
+    r";\s*(?=(?:" + "|".join(sorted((re.escape(k) for k in _REGISTRATION_LABELS), key=len, reverse=True))
+    + r")\s*:)",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    name.lower(): i
+    for i in range(1, 13)
+    for name in (calendar.month_name[i], calendar.month_abbr[i])
+}
+_MONTHS["sept"] = 9
+
+
+def _registration_date(value: str) -> str:
+    """A registration date as ISO ``YYYY-MM-DD`` (or ``YYYY-MM`` for a month);
+    a value that is not a single date is returned as written."""
+    text = value.strip().rstrip(".")
+    text = re.sub(r"^(?:on|by|through|until|thru)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s+", "", text, flags=re.IGNORECASE)
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})(?:-(\d{1,2}))?", text)
+    if m:
+        y, mo, d = int(m[1]), int(m[2]), int(m[3]) if m[3] else None
+    else:
+        word = r"([A-Za-z]+)\.?"
+        patterns = (
+            (rf"{word}\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})", ("m", "d", "y")),
+            (rf"(\d{{1,2}})(?:st|nd|rd|th)?\s+{word},?\s+(\d{{4}})", ("d", "m", "y")),
+            (rf"{word},?\s+(\d{{4}})", ("m", "y")),
+        )
+        for pattern, order in patterns:
+            m = re.fullmatch(pattern, text)
+            if m:
+                parts = dict(zip(order, m.groups()))
+                mo = _MONTHS.get(parts["m"].lower())
+                y, d = int(parts["y"]), int(parts["d"]) if "d" in parts else None
+                break
+        else:
+            return value.strip()
+    if not mo or not 1 <= mo <= 12:
+        return value.strip()
+    if d is None:
+        return f"{y:04d}-{mo:02d}"
+    try:
+        return date(y, mo, d).isoformat()
+    except ValueError:
+        return value.strip()
+
+
+def parse_registration(value) -> Optional[dict]:
+    """The registration items of ``value`` as ``{key: value}`` (keys from
+    :data:`REGISTRATION_FIELDS`), or ``None`` when it is not in the line format
+    (blank, or earlier free text). A dict is read by key."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        items = {}
+        for raw_key, raw in value.items():
+            key = _REGISTRATION_LABELS.get(str(raw_key).replace("_", " ").strip().lower(), raw_key)
+            if key in dict(REGISTRATION_FIELDS) and raw not in (None, "") and str(raw).strip():
+                items[key] = str(raw).strip()
+    else:
+        text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+        lines = [
+            part.strip()
+            for line in text.split("\n")
+            for part in _REGISTRATION_SPLIT_RE.split(line)
+            if part.strip()
+        ]
+        if not lines:
+            return None
+        items = {}
+        canonical = set()  # keys written under their own label
+        for line in lines:
+            m = _REGISTRATION_LABEL_RE.match(line)
+            if not m:
+                return None
+            key = _REGISTRATION_LABELS[m[1].lower()]
+            if m[2].strip() and key not in items:
+                items[key] = m[2].strip()
+                if m[1].lower() == dict(REGISTRATION_FIELDS)[key].lower():
+                    canonical.add(key)
+    out = {}
+    for key, _ in REGISTRATION_FIELDS:
+        raw = items.get(key)
+        if raw is None or raw.strip().lower() in ("", "n/a", "none", "unknown", "tba", "tbd"):
+            continue
+        if key == "notes":
+            out[key] = " ".join(raw.split())
+            continue
+        out[key] = _registration_date(raw)
+        # A date item that is not a date is kept as written ("Opens: Fall
+        # 2026") only under its own label: under another spelling it is the
+        # earlier free text (e.g. "Early bird: Jan 5 - Mar 1"), as is one that
+        # itself holds several items ("...; Advance: through Sep 21").
+        if not isinstance(value, dict) and not re.match(r"\d{4}-\d{2}", out[key]) and (
+            key not in canonical or re.search(r"[:;]", raw)
+        ):
+            return None
+    return out
+
+
+def format_registration(items: dict) -> Optional[str]:
+    """The stored text for parsed registration items (see :data:`REGISTRATION_FIELDS`)."""
+    lines = [f"{label}: {items[key]}" for key, label in REGISTRATION_FIELDS if items.get(key)]
+    return "\n".join(lines) or None
+
+
+def normalize_registration(value) -> Optional[str]:
+    """Canonical registration text: the line format with ISO dates, in field
+    order, for input in that format (any label spelling, ``;`` or newline
+    separated) or a dict; other text is kept as given (whitespace cleaned).
+    ``None`` for blank input."""
+    items = parse_registration(value)
+    if items is not None:
+        return format_registration(items)
+    if value is None or isinstance(value, dict):
+        return None
+    return normalize_guidelines(value)
+
+
+def is_structured_registration(value) -> bool:
+    """True when ``value`` is non-blank registration text in the line format."""
+    return bool(value) and bool(parse_registration(value))
+
+
 def name_id(name: str) -> str:
     """The record id for a conference name: a lowercase, hyphenated ASCII slug.
 
@@ -303,9 +472,10 @@ class Conference(BaseModel):
     prior_registration: Optional[str] = Field(
         None,
         description=(
-            "Free-text registration window(s) of the most recent edition, e.g. "
-            "'Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference' or "
-            "'Registration opens June 2025'. Blank when no info is available."
+            "Registration dates of the most recent edition, one 'Label: value' line per "
+            "published item: 'Opens', 'Early bird deadline', 'Final deadline', "
+            "'Refund deadline' (dates as YYYY-MM-DD, or YYYY-MM for a month), and "
+            "'Notes' only for what the dates cannot say. Blank when none is published."
         ),
         validation_alias=AliasChoices("prior_registration", "prior_registration_date"),
     )
@@ -345,9 +515,10 @@ class Conference(BaseModel):
     upcoming_registration: Optional[str] = Field(
         None,
         description=(
-            "Free-text registration window(s) of the upcoming edition, e.g. "
-            "'Early bird: Jan 5 - Mar 1; Regular: Mar 2 - conference' or "
-            "'Registration opens June 2026'. Blank when no info is available."
+            "Registration dates of the upcoming edition, one 'Label: value' line per "
+            "published item: 'Opens', 'Early bird deadline', 'Final deadline', "
+            "'Refund deadline' (dates as YYYY-MM-DD, or YYYY-MM for a month), and "
+            "'Notes' only for what the dates cannot say. Blank when none is published."
         ),
         validation_alias=AliasChoices("upcoming_registration", "upcoming_registration_date"),
     )
@@ -444,6 +615,11 @@ class Conference(BaseModel):
         description="Full-paper submission requirements (page limit, template, anonymization, ...), "
         "a paragraph or '- ' bullet lines",
     )
+
+    @field_validator("prior_registration", "upcoming_registration", mode="before")
+    @classmethod
+    def _normalize_registration(cls, value):
+        return normalize_registration(value)
 
     @field_validator("abstract_guidelines", "paper_guidelines", mode="before")
     @classmethod

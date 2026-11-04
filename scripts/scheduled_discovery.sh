@@ -14,7 +14,10 @@
 # changed location are looked up (`conference-agent discover --airports`), and
 # the abstract / paper submission guidelines are researched for series with a
 # deadline ahead that are due (`conference-agent discover --guidelines`: never
-# researched, empty and 14+ days old, or 120+ days old; at most 15 per run).
+# researched, empty and 14+ days old, or 120+ days old; at most 15 per run),
+# and the upcoming registration dates likewise (`conference-agent discover
+# --registration`: never researched, incomplete and 14+ days old, or 45+ days
+# old; at most 15 per run).
 #
 # If the run changes what the site shows, it redeploys the static site
 # (scripts/deploy_static.sh). The comparison is on the exported site data, not
@@ -99,6 +102,12 @@ run() {
   echo ""
   conference-agent discover --guidelines --backend claude-code --model sonnet ||
     { echo "ERROR: guidelines research failed"; status=1; }
+
+  # Registration dates of the upcoming edition (Registration column) for
+  # series with a date ahead that are due. A failed batch is retried next run.
+  echo ""
+  conference-agent discover --registration --backend claude-code --model sonnet ||
+    { echo "ERROR: registration research failed"; status=1; }
 
   # Deploy even after a partial failure: batches that succeeded are kept.
   after="$(site_hash)" || return 1

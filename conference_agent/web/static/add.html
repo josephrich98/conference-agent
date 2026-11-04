@@ -248,7 +248,7 @@
       conference_acronym: "e.g. RSNA",
       attendance: "e.g. 45000",
       location: "e.g. Chicago, IL, USA",
-      registration: "e.g. Early bird: Jan 5 – Mar 1; Regular: Mar 2 – conference",
+      registration: "e.g.\nOpens: 2027-01-05\nEarly bird deadline: 2027-03-01\nFinal deadline: 2027-04-15\nRefund deadline: 2027-04-01",
       cost: "e.g. Members $450, non-members $650, students $150",
       abstract_timezone: "e.g. AoE, ET, CET", late_abstract_timezone: "e.g. AoE, ET, CET",
       paper_timezone: "e.g. AoE, ET, CET",
@@ -265,7 +265,7 @@
       abstract_time: "", abstract_timezone: "", late_abstract_time: "", late_abstract_timezone: "",
       paper_time: "", paper_timezone: "",
       attendance: "", attendance_year: "", attendance_source: "",
-      location: "Nearby airports are looked up from the location automatically.", registration: "", cost: "",
+      location: "Nearby airports are looked up from the location automatically.", registration: "One line for each published date: Opens, Early bird deadline, Final deadline, Refund deadline (any date format). Add a \"Notes:\" line only for what the dates cannot say.", cost: "",
       deadline_extensions: "Past extensions of this conference's deadlines, if any. Entries more than 5 years old are not kept.",
       abstract_guidelines: "Abstract requirements: a paragraph, or one requirement per line starting with \"- \". Leave out deadlines; they have their own fields.",
       paper_guidelines: "Full-paper requirements, for proceedings venues only. Leave out deadlines.",
@@ -505,9 +505,9 @@
         read = () => input.value.trim();
       } else {
         const isUrl = f.name === "url" || f.name === "attendance_source";
-        const long = f.name === "notes" || /_guidelines$/.test(f.name);
+        const long = f.name === "notes" || f.name === "registration" || /_guidelines$/.test(f.name);
         input = long
-          ? el("textarea", { id, maxlength: f.name === "notes" ? 2000 : 4000,
+          ? el("textarea", { id, maxlength: /_guidelines$/.test(f.name) ? 4000 : 2000,
               placeholder: PLACEHOLDERS[f.name] || "", rows: f.name === "notes" ? undefined : 5 })
           : el("input", { type: isUrl ? "url" : "text", id, maxlength: f.name === "conference_name" ? 300 : 2000,
               placeholder: isUrl ? "https://" : PLACEHOLDERS[f.name] });

@@ -2,7 +2,8 @@
 
 Subcommands:
   discover  — run the discovery agent and store results (optionally email a summary);
-              `discover --guidelines` researches the submission guidelines
+              `discover --guidelines` researches the submission guidelines,
+              `discover --registration` the upcoming registration dates
   add       — manually add conferences from flags, a CSV, or JSON (no API);
               `add --update` changes existing ones, `add --fields` prints the
               field vocabulary it accepts
@@ -137,8 +138,13 @@ _SCALAR_FIELDS = (
     ),
     _Field(
         "registration", "upcoming_registration", "text",
-        "Upcoming registration window(s), free text, e.g. 'Early bird: Jan 5 - "
-        "Mar 1; Regular: Mar 2 - conference'",
+        "Upcoming registration dates, one 'Label: value' item each (newline- or "
+        "';'-separated), only those published: 'Opens', 'Early bird deadline', "
+        "'Final deadline', 'Refund deadline' (any date spelling; stored as "
+        "YYYY-MM-DD, or YYYY-MM for a month), and 'Notes' only for what the "
+        "dates cannot say. e.g. 'Opens: 2027-01-05; Early bird deadline: "
+        "2027-03-01'. In JSON, also an object with keys opens / "
+        "early_bird_deadline / final_deadline / refund_deadline / notes",
     ),
     _Field(
         "abstract_time", "abstract_time", "text",
@@ -200,7 +206,7 @@ _SCALAR_FIELDS = (
     ),
     _Field(
         "prior_registration", "prior_registration", "text",
-        "Prior edition's registration window(s), free text",
+        "Prior edition's registration dates, in the same format as registration",
     ),
     _Field(
         "prior_location", "prior_location", "text",
@@ -427,8 +433,8 @@ def _add_maintainer_parsers(sub) -> None:
         "--conference-name / --size instead re-check matching stored series only "
         "(no new series are added); any --subcategory / --category also narrows "
         "that selection. --airports looks up the Airports column instead of "
-        "running the agent, and --guidelines researches the Abstract / Paper "
-        "guidelines columns. Run `discover --options` for the valid values.",
+        "running the agent, --guidelines researches the Abstract / Paper "
+        "guidelines columns, and --registration the Registration column. Run `discover --options` for the valid values.",
     )
     p_discover.add_argument(
         "--options",
@@ -485,6 +491,21 @@ def _add_maintainer_parsers(sub) -> None:
         "default) looks up only locations that changed since the last lookup; "
         "'all' looks up every location again. --conference-name / --size / "
         "--subcategory / --category limit the series covered. The scheduled job "
+        "runs this after each refresh.",
+    )
+    p_discover.add_argument(
+        "--registration",
+        nargs="?",
+        const="due",
+        choices=["due", "all"],
+        help="Instead of surveying, research the upcoming edition's registration "
+        "dates (Opens / Early bird deadline / Final deadline / Refund deadline / "
+        "Notes) of series with an upcoming date still ahead. 'due' (the default) "
+        "covers those never researched, those whose registration is blank or not "
+        "in that format last researched 14+ days ago, and those last researched "
+        "45+ days ago, at most 15 per run, soonest meeting first; 'all' covers "
+        "every series with a date ahead, with no cap. --conference-name / --size "
+        "/ --subcategory / --category limit the series covered. The scheduled job "
         "runs this after each refresh.",
     )
     p_discover.add_argument(
@@ -871,6 +892,48 @@ def _discover_guidelines(args) -> int:
     return 1 if failed else 0
 
 
+def _discover_registration(args) -> int:
+    """`discover --registration`: research the upcoming registration dates."""
+    from conference_agent.config import REGISTRATION_BATCH_SIZE, REGISTRATION_MAX_PER_RUN
+    from conference_agent.database import record_registration, registration_targets
+    from conference_agent.discover import research_registration
+
+    ids = None
+    if args.conference_name or args.size or args.subcategory or args.category:
+        errors: list[str] = []
+        matched = _discover_targets(args, errors)
+        if errors:
+            for message in errors:
+                print(f"Error: {message}", file=sys.stderr)
+            return 1
+        ids = [conf.id for conf in matched]
+    force = args.registration == "all"
+    targets = registration_targets(db_url=args.db, ids=ids, force=force)
+    if not force and len(targets) > REGISTRATION_MAX_PER_RUN:
+        print(f"{len(targets) - REGISTRATION_MAX_PER_RUN} series deferred to the next run.")
+        targets = targets[:REGISTRATION_MAX_PER_RUN]
+    if not targets:
+        print("No series with a date ahead is due for a registration check.")
+        return 0
+    print(f"Researching registration dates for {len(targets)} series.")
+    updated = failed = 0
+    for start in range(0, len(targets), REGISTRATION_BATCH_SIZE):
+        batch = targets[start:start + REGISTRATION_BATCH_SIZE]
+        print("Researching: " + ", ".join(_label(c) for c in batch), flush=True)
+        try:
+            found = research_registration(batch, backend=args.backend, model=args.model)
+        except BackendUnavailableError:
+            raise  # a setup problem fails every batch alike
+        except RuntimeError as exc:
+            # Leave the batch unstamped so the next run retries it.
+            print(f"Error: {exc}", file=sys.stderr)
+            failed += len(batch)
+            continue
+        updated += record_registration(found, [c.id for c in batch], db_url=args.db)
+    print(f"Updated the registration of {updated} series; {failed} failed (retried next run).")
+    return 1 if failed else 0
+
+
 def _cmd_discover(args) -> int:
     import os
 
@@ -899,6 +962,9 @@ def _cmd_discover(args) -> int:
 
     if args.guidelines:
         return _discover_guidelines(args)
+
+    if args.registration:
+        return _discover_registration(args)
 
     conferences: list = []
     written = 0

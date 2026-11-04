@@ -265,6 +265,8 @@
     td a.map-link:hover { color: var(--accent); }
     table.results td[data-col="cost"] { min-width: 170px; }
     table.results td[data-col="registration"] { min-width: 220px; }
+    .registration .reg-label { color: var(--muted); }
+    .registration .reg-notes { font-size: 12px; color: var(--muted); white-space: normal; margin-top: 2px; }
     table.results td[data-col="abstract_guidelines"],
     table.results td[data-col="paper_guidelines"] { min-width: 300px; }
     .guidelines { max-height: 9.5em; overflow-y: auto; font-size: 12px; line-height: 1.4; }
@@ -632,11 +634,11 @@
       { key: "deadline_time", field: "deadline_time", label: "Deadline time", sort: null },
       { key: "abstract_guidelines", field: "abstract_guidelines", label: "Abstract guidelines", sort: null },
       { key: "paper_guidelines", field: "paper_guidelines", label: "Paper guidelines", sort: null },
+      { key: "registration", field: "registration", label: "Registration", sort: null },
       { key: "conference_month", field: "conference_month", label: "Conference month", sort: "conference_month", facet: monthFacet("conference_month") },
       { key: "upcoming_dates", field: "conference_dates", label: "Conference dates", sort: "upcoming_start_date" },
       { key: "location", field: "location", label: "Location", sort: "upcoming_location" },
       { key: "airports", field: "airports", label: "Airports", sort: null },
-      { key: "registration", field: "registration", label: "Registration", sort: null },
       { key: "cost", field: "cost", label: "Cost", sort: null },
       { key: "cal", label: "Calendar", sort: null,
         note: "Download this conference's deadlines and dates as a calendar (.ics) file" },
@@ -999,11 +1001,32 @@
       return `<div class="guidelines">${out.join("")}</div>`;
     }
 
-    // Registration is free text: show the upcoming edition's value, falling back
-    // to the prior edition's, else a muted dash.
-    function textOrPrior(upcoming, prior) {
+    // Registration: the upcoming edition's value, else the prior edition's,
+    // else a muted dash. It is stored as "Label: value" lines (Opens / Early bird
+    // deadline / Final deadline / Refund deadline / Notes; dates YYYY-MM-DD, or
+    // YYYY-MM for a month), one line per published item, rendered one per line
+    // with the deadlines colored like the other dates. Text in another shape
+    // (the earlier free-text windows) is shown as written.
+    const REGISTRATION_LABELS = ["Opens", "Early bird deadline", "Final deadline", "Refund deadline", "Notes"];
+    function registrationCell(upcoming, prior) {
       const value = upcoming || prior;
-      return value ? escapeHtml(value) : '<span class="muted">—</span>';
+      if (!value) return '<span class="muted">—</span>';
+      const items = [];
+      for (const raw of String(value).split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        const label = REGISTRATION_LABELS.find((l) => line.startsWith(`${l}: `));
+        if (!label) return escapeHtml(value);
+        items.push([label, line.slice(label.length + 2).trim()]);
+      }
+      const rows = items.map(([label, text]) => {
+        if (label === "Notes") return `<div class="reg-notes">${escapeHtml(text)}</div>`;
+        const isDay = /^\d{4}-\d{2}-\d{2}$/.test(text);
+        const shown = isDay && label !== "Opens" ? dateSpan(text, text) : escapeHtml(text);
+        return `<div class="nobreak"><span class="reg-label">${label}:</span> ${shown}</div>`;
+      });
+      const title = upcoming ? "" : ' title="Previous edition"';
+      return `<div class="registration"${title}>${rows.join("")}</div>`;
     }
 
     // 24-hour ("military") display of the Deadline time column, chosen in the
@@ -1184,11 +1207,11 @@
           <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
           <td data-col="abstract_guidelines">${guidelinesCell(r.abstract_guidelines)}</td>
           <td data-col="paper_guidelines">${guidelinesCell(r.paper_guidelines)}</td>
+          <td data-col="registration">${registrationCell(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="conference_month" class="nobreak">${monthCell(r.conference_month, r.upcoming_start_date || r.prior_start_date)}</td>
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="location">${locationCell(r)}</td>
           <td data-col="airports">${airportsCell(r)}</td>
-          <td data-col="registration">${textOrPrior(r.upcoming_registration, r.prior_registration)}</td>
           <td data-col="cost">${editionText(r.upcoming_cost, r.prior_cost)}</td>
           <td data-col="cal" class="cal-cell">
             <button class="cal-btn cal-open" data-conf-id="${escapeHtml(r.id)}" title="Add this conference's deadlines and dates to your calendar">📅 cal</button>

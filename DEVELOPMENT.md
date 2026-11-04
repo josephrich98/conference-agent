@@ -68,6 +68,18 @@ conference-agent add --update \
   --abstract-guidelines $'- 2,200 characters maximum, excluding title and authors\n- Structured: Purpose, Methods, Results, Conclusion\n- One figure or table allowed'
 ```
 
+The `--registration` field holds the upcoming edition's registration dates, one
+`Label: date` item per published date (newline- or `;`-separated, any date
+spelling, stored as `YYYY-MM-DD`): `Opens`, `Early bird deadline`, `Final
+deadline`, `Refund deadline`, and a `Notes` item only for what the dates cannot
+say (e.g. registration by lottery):
+
+```bash
+conference-agent add --update \
+  --conference-name "Radiological Society of North America Annual Meeting" \
+  --registration "Opens: Jul 23, 2026; Early bird deadline: Oct 2, 2026; Refund deadline: Nov 6, 2026"
+```
+
 Update an existing conference (will fail if the conference name does not exist):
 
 ```bash
@@ -155,6 +167,17 @@ conference-agent discover \
 `--guidelines all` re-researches every conference with a deadline ahead, and the
 filters above (`--conference-name`, `--category`, ...) narrow the selection.
 
+To research the upcoming registration dates of conferences with a date still
+ahead (those never researched, those with none or not yet in the line format
+14+ days ago, and those researched 45+ days ago; at most 15 per run):
+
+```bash
+conference-agent discover \
+  --registration
+```
+
+`--registration all` re-researches every conference with a date ahead.
+
 Using the Claude API rather than a Claude Code subscription:
 
 ```bash
@@ -173,10 +196,11 @@ conference-agent discover \
 - attendance + attendance_year --> attendance (45,000 (2025))
 - abstract_time/timezone + late_abstract_time/timezone + paper_time/timezone --> deadline time (11:59 PM ET; 12- or 24-hour)
 - abstract_guidelines, paper_guidelines --> own columns (after deadline time); lines starting with "- " are shown as a bulleted list
+- upcoming_registration + prior_registration --> registration (left of conference month), one line per item, with the deadline dates colored like the other dates
 - abstract_deadline_extension + late_abstract_deadline_extension + paper_deadline_extension --> no column of their own; embedded as a ⏩ button after the matching deadline date, listing the past extensions (original → extended) on hover, tap, or click
 - added calendar (📅: subscribe to the conference's feed, or download a one-time .ics) and email (✉️: update emails, plus a reminder one week before each deadline) columns
 - subscribable calendar feeds: `/c/<id>/calendar.ics` per conference, `/field/<tag>/calendar.ics` per field, and `/calendar.ics` for everything
-- hidden: id, notes, attendance_source, last_checked, watch_*, guidelines_checked (internal bookkeeping)
+- hidden: id, notes, attendance_source, last_checked, watch_*, guidelines_checked, registration_checked (internal bookkeeping)
 - retired series (no future edition, last one over 24 months old) are left out of the website
 
 ## Scheduled updates
@@ -221,6 +245,10 @@ Each run also:
   submission deadline ahead that are due (`conference-agent discover
   --guidelines`, using Sonnet): never researched, none found 14+ days ago, or
   last researched 120+ days ago, at most 15 per run, soonest deadline first;
+- researches the upcoming registration dates of conferences with a date ahead
+  that are due (`conference-agent discover --registration`, using Sonnet):
+  never researched, none or not in the line format 14+ days ago, or last
+  researched 45+ days ago, at most 15 per run, soonest meeting first;
 - redeploys the static site (`scripts/deploy_static.sh`) if the data the site
   shows changed;
 - emails subscribers about changed conferences, and once when a subscribed
