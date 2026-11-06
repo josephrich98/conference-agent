@@ -227,14 +227,21 @@
     #browse summary { cursor: pointer; width: max-content; }
     #browse a { color: var(--accent); }
     #status { padding: 0 24px 8px; color: var(--muted); font-size: 13px; min-height: 18px; }
-    .table-wrap { padding: 0 24px 40px; overflow-x: auto; }
+    .table-wrap { padding: 0 24px 40px; }
+    /* The table scrolls inside its own box, at most one screen tall, so the
+       header row stays frozen at its top and the Conference column at its left
+       (like Excel's frozen panes) while the rest scrolls. */
+    .table-scroll {
+      overflow: auto;
+      max-height: calc(100vh - 16px);
+      max-height: calc(100dvh - 16px);
+      border: 1px solid var(--border);
+    }
     table.results {
       width: 100%;
-      border-collapse: collapse;
+      border-collapse: separate;
+      border-spacing: 0;
       background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 0;
-      overflow: hidden;
       font-size: 13px;
       font-variant-numeric: tabular-nums;
     }
@@ -253,6 +260,22 @@
       cursor: pointer;
       white-space: nowrap;
       user-select: none;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    table.results th[data-col="conference"],
+    table.results td[data-col="conference"] {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background: var(--panel);
+      box-shadow: inset -1px 0 0 var(--rule-strong);
+    }
+    table.results th[data-col="conference"] { z-index: 3; background: var(--ink); }
+    @media (max-width: 600px) {
+      .table-wrap { padding: 0 16px 32px; }
+      table.results tbody td[data-col="conference"] { min-width: 120px; max-width: 42vw; }
     }
     table.results th .arrow { color: #9fd0cf; font-size: 11px; }
     table.results tr:last-child td { border-bottom: none; }
@@ -532,12 +555,14 @@
   <div id="status"></div>
 
   <div class="table-wrap">
+    <div class="table-scroll">
     <table class="results">
       <thead>
         <tr id="header-row"></tr>
       </thead>
       <tbody id="results-body"></tbody>
     </table>
+    </div>
     <p class="add-more">Don't see your conference? <a href="add/">Add it here</a>.</p>
     <p class="add-more">To check out the command-line interface or contribute to this open-source repository, visit the <a href="https://github.com/josephrich98/conference-agent" target="_blank" rel="noopener noreferrer">GitHub Repository</a>.</p>
   </div>
@@ -2008,7 +2033,7 @@
       if (cp) closeCal();
     });
     window.addEventListener("resize", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
-    document.querySelector(".table-wrap").addEventListener("scroll", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
+    document.querySelector(".table-scroll").addEventListener("scroll", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
     $("query").addEventListener("keydown", (e) => {
       if (e.key === "Enter") newSearch();
     });
