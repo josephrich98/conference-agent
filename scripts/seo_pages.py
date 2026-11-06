@@ -32,8 +32,8 @@ SITE_URL = "https://conferenceagent.vercel.app"
 SITE_NAME = "Conference Agent"
 
 _STYLE = """
-:root{--bg:#f2f3f0;--panel:#fff;--border:#d3d8d3;--text:#1c2a30;--muted:#5d6a66;--accent:#1f5560}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1720;--panel:#17212b;--border:#2a3644;--text:#e6ebf0;--muted:#9aa7b4;--accent:#8cc6c4}}
+:root{--bg:#f2f3f0;--panel:#fff;--border:#d3d8d3;--text:#1c2a30;--muted:#5d6a66;--accent:#BF5700}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1720;--panel:#17212b;--border:#2a3644;--text:#e6ebf0;--muted:#9aa7b4;--accent:#E07A2E}}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 "Public Sans",system-ui,-apple-system,Segoe UI,sans-serif}
 main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
 a{color:var(--accent)}h1,h2{font-family:"Source Serif 4",Georgia,serif;font-weight:600}h1{font-size:28px;margin:8px 0 4px}h2{font-size:18px;margin:24px 0 8px}
