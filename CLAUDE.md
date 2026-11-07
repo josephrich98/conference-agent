@@ -532,8 +532,8 @@ dependencies there rather than installing ad hoc.
   pins the Python port to it. Categorical
   column headers (category, subcategory, format, size, remote, the four month
   columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or
-  one tag in it) in those columns opens the same list beside it with that value
-  pre-checked. The chosen values are
+  one tag in it) in those columns filters the column to that value at once
+  (clicking it again removes the filter). The chosen values are
   browser-only state held apart from the search box and ANDed with it, so they
   survive a new search and the boolean grammar (which has no exact-match
   operator for text) stays unchanged. An ascending sort on Abstract / Late abstract /

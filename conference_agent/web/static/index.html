@@ -24,6 +24,7 @@
       --muted: #5d6a66;
       --accent: #BF5700;
       --accent-weak: #f6e5d8;
+      --accent-line: #e3b994;
       --ink: #1c2a30;
       --massive: #1f5560;
       --large: #2e6b34;
@@ -107,14 +108,14 @@
       font-weight: 600;
       line-height: 1.2;
       color: var(--text);
-      background: var(--panel);
-      border: 1px solid var(--border);
+      background: var(--accent-weak);
+      border: 1px solid var(--accent-line);
       border-radius: 0;
       cursor: pointer;
     }
-    .cat-card:hover { border-color: var(--ink); filter: none; }
+    .cat-card:hover { border-color: var(--accent); filter: none; }
         .cat-card .n { display: block; margin-top: 3px; font-family: var(--sans); font-size: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
-    .cat-card.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+    .cat-card.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .cat-card.on .n { color: rgba(255, 255, 255, 0.85); }
     .sub-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .sub-chips:empty { display: none; }
@@ -253,10 +254,10 @@
       vertical-align: top;
     }
     table.results th {
-      background: var(--ink);
-      color: #f2f3f0;
+      background: var(--accent-weak);
+      color: var(--text);
       font-weight: 600;
-      border-bottom-color: var(--ink);
+      border-bottom-color: var(--accent);
       cursor: pointer;
       white-space: nowrap;
       user-select: none;
@@ -270,14 +271,20 @@
       left: 0;
       z-index: 1;
       background: var(--panel);
-      box-shadow: inset -1px 0 0 var(--rule-strong);
+      /* The outer left shadow fills any subpixel gap between the frozen column
+         and the scroll box's edge, so scrolled cells never peek through. */
+      box-shadow: inset -1px 0 0 var(--rule-strong), -4px 0 0 var(--panel);
     }
-    table.results th[data-col="conference"] { z-index: 3; background: var(--ink); }
+    table.results th[data-col="conference"] {
+      z-index: 3;
+      background: var(--accent-weak);
+      box-shadow: inset -1px 0 0 var(--rule-strong), -4px 0 0 var(--accent-weak);
+    }
     @media (max-width: 600px) {
       .table-wrap { padding: 0 16px 32px; }
       table.results tbody td[data-col="conference"] { min-width: 120px; max-width: 42vw; }
     }
-    table.results th .arrow { color: #9fd0cf; font-size: 11px; }
+    table.results th .arrow { color: var(--accent); font-size: 11px; }
     table.results tr:last-child td { border-bottom: none; }
     /* Free-text columns that otherwise wrap into tall, narrow cells. */
     table.results td[data-col="conference"] { min-width: 160px; }
@@ -404,16 +411,16 @@
     table.results th .filt {
       border: none;
       background: none;
-      color: #8fa09d;
+      color: var(--muted);
       font-size: 11px;
       margin-left: 4px;
       padding: 1px 4px;
       border-radius: 0;
       vertical-align: 1px;
     }
-    table.results th .filt:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
-    table.results th .filt.on { color: var(--ink); background: #9fd0cf; }
-    /* A categorical cell opens the same checkbox list, preset to its value. */
+    table.results th .filt:hover { color: var(--accent); background: rgba(191, 87, 0, 0.12); }
+    table.results th .filt.on { color: #fff; background: var(--accent); }
+    /* A click on a categorical cell filters its column to that value. */
     table.results td.facet-cell { cursor: pointer; }
     table.results td.facet-cell:hover { background: var(--accent-weak); }
     table.results td.facet-cell .cat-tag:hover { outline: 1px solid var(--accent); }
@@ -1203,7 +1210,7 @@
 
         // Category (the broad bucket, derived) and subcategory (the specific
         // field) are both multi-valued; render each as comma-split tags.
-        // `data-v` lets a click on one tag preset the column filter to it.
+        // `data-v` lets a click on one tag filter the column to it.
         const tagList = (vals) => (vals.length
           ? vals.map((v) => `<span class="cat-tag" data-v="${escapeHtml(v)}">${v}</span>`).join("")
           : '<span class="muted">—</span>');
@@ -1347,9 +1354,7 @@
       return true;
     }
 
-    // `preset`, when given (a click on a cell), is the set of values to check
-    // instead of the column's current selection.
-    function openFilter(col, btn, preset) {
+    function openFilter(col, btn) {
       const facet = col.facet;
       const label = (v) => (v === BLANK ? "(blank)" : facet.label ? facet.label(v) : v);
       const kept = filters[col.key];
@@ -1379,7 +1384,7 @@
         || (facet.rank ? facet.rank(a.v) - facet.rank(b.v) : byLabel(a, b)));
       items.forEach((it, i) => {
         it.i = i;
-        it.on = preset ? preset.has(it.v) : !kept || kept.has(it.v);
+        it.on = !kept || kept.has(it.v);
       });
 
       fp = { col, btn, items };
@@ -1484,9 +1489,9 @@
       search();
     }
 
-    // A click on a categorical cell opens its column's list beside it with that
-    // row's value checked (just the clicked tag, when a tag was clicked), so
-    // OK narrows the table to it and other values can be ticked first.
+    // A click on a categorical cell filters its column to that row's value
+    // (just the clicked tag, when a tag was clicked) at once; clicking the same
+    // value again removes the filter. The header's ■ list picks several values.
     function openCellFilter(e) {
       const td = e.target.closest("td.facet-cell");
       if (!td || e.target.closest("a") || String(window.getSelection())) return;
@@ -1499,8 +1504,11 @@
       $("columns-panel").hidden = true;
       if (np) closeNotify();
       if (cp) closeCal();
-      if (fp && fp.btn === (tag || td)) { closeFilter(); return; }
-      openFilter(col, tag || td, new Set(vals.length ? vals : [BLANK]));
+      const want = vals.length ? [...new Set(vals)] : [BLANK];
+      const kept = filters[col.key];
+      if (kept && kept.size === want.length && want.every((v) => kept.has(v))) delete filters[col.key];
+      else filters[col.key] = new Set(want);
+      search();
     }
 
     function clearFilter(key) {
