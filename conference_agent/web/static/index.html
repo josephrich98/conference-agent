@@ -108,8 +108,8 @@
       font-weight: 600;
       line-height: 1.2;
       color: var(--text);
-      background: var(--accent-weak);
-      border: 1px solid var(--accent-line);
+      background: var(--panel);
+      border: 1px solid var(--border);
       border-radius: 0;
       cursor: pointer;
     }
@@ -491,9 +491,6 @@
       margin-top: 4px;
       border-top: 1px solid var(--border);
     }
-    #filter-pop .fp-foot .spacer { flex: 1; }
-    #filter-pop .fp-foot button { padding: 6px 12px; font-size: 13px; }
-    #filter-pop .fp-foot button:disabled { opacity: 0.5; cursor: default; }
     #fp-clear { color: var(--accent); cursor: pointer; font-size: 12px; }
     #fp-clear[hidden] { display: none; }
     #toast {
@@ -596,9 +593,6 @@
     <div id="fp-list"></div>
     <div class="fp-foot">
       <a id="fp-clear">Clear filter</a>
-      <span class="spacer"></span>
-      <button id="fp-cancel">Cancel</button>
-      <button class="primary" id="fp-ok">OK</button>
     </div>
   </div>
 
@@ -1127,6 +1121,7 @@
           fb.textContent = "■";
           fb.title = on ? "Filtered: change" : "Filter by value";
           fb.setAttribute("aria-label", `Filter ${col.label} by value`);
+          fb.dataset.filt = col.key;
           fb.addEventListener("click", (e) => {
             e.stopPropagation(); // not a sort click
             $("columns-panel").hidden = true;
@@ -1317,8 +1312,9 @@
       return { rows, status, byRelevance };
     }
 
-    function search() {
-      closeFilter();
+    // keepFilter: a change made inside the open ■ list, which stays open.
+    function search({ keepFilter = false } = {}) {
+      if (!keepFilter) closeFilter();
       const { rows, status, byRelevance } = runQuery(DATA.conferences.filter((r) => passesFilters(r)));
       renderHeader(!byRelevance);
       state.rows = rows;
@@ -1329,6 +1325,7 @@
       renderRows(rows);
       renderFieldsBar();
       syncUrl();
+      if (fp) reanchorFilter();
     }
 
     // ---------------------------------------------------------- column filters
@@ -1429,7 +1426,15 @@
       all.checked = vis.length > 0 && on === vis.length;
       all.indeterminate = on > 0 && on < vis.length;
       $("fp-all-label").textContent = $("fp-search").value.trim() ? "Select all search results" : "Select all";
-      $("fp-ok").disabled = !vis.some((it) => it.on);
+    }
+
+    // After a live update rebuilds the header, hang the open list from its new ■.
+    function reanchorFilter() {
+      const btn = document.querySelector(`th .filt[data-filt="${fp.col.key}"]`);
+      if (!btn) { closeFilter(); return; }
+      fp.btn = btn;
+      $("fp-clear").hidden = !(fp.col.key in filters);
+      placeFilter();
     }
 
     function closeFilter() {
@@ -1472,21 +1477,16 @@
       if (btn) { tp.btn = btn; placeTimePop(); } else closeTimePop();
     }
 
-    // Keep the checked values. With a search typed, only the checked values
-    // among the results count, as in Excel. Everything checked means no filter.
-    function applyFilter() {
+    // Changes apply as they are made. The checked values are kept (the search
+    // box only narrows the list); everything checked means no filter. Enter in
+    // the search box keeps just the checked values among its results, as in Excel.
+    function applyFilter({ onlyVisible = false } = {}) {
       const vis = new Set(visibleItems());
-      const on = fp.items.filter((it) => it.on && vis.has(it));
+      const on = fp.items.filter((it) => it.on && (!onlyVisible || vis.has(it)));
       const key = fp.col.key;
       if (on.length === fp.items.length) delete filters[key];
       else filters[key] = new Set(on.map((it) => it.v));
-      // A month column's "Sort starting in January" box: a sort setting shared by
-      // every month column, applied with the filter on OK.
-      if (!$("fp-jan-row").hidden) {
-        monthFromJanuary = $("fp-jan").checked;
-        try { localStorage.setItem(MONTH_JAN_KEY, monthFromJanuary ? "1" : "0"); } catch (e) { /* storage blocked */ }
-      }
-      search();
+      search({ keepFilter: true });
     }
 
     // A click on a categorical cell filters its column to that row's value
@@ -1511,9 +1511,9 @@
       search();
     }
 
-    function clearFilter(key) {
+    function clearFilter(key, opts) {
       if (key) delete filters[key]; else filters = {};
-      search();
+      search(opts);
     }
 
     // --------------------------------------------------------- browse by field
@@ -2000,20 +2000,33 @@
     });
     $("fp-search").addEventListener("input", renderFilterList);
     $("fp-search").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !$("fp-ok").disabled) applyFilter();
+      if (e.key === "Enter" && visibleItems().some((it) => it.on)) applyFilter({ onlyVisible: true });
+      if (e.key === "Escape") closeFilter();
     });
     $("fp-list").addEventListener("change", (e) => {
       const it = fp.items[Number(e.target.dataset.i)];
-      if (it) it.on = e.target.checked;
+      if (!it) return;
+      it.on = e.target.checked;
       updateFilterControls();
+      applyFilter();
     });
     $("fp-all").addEventListener("change", (e) => {
       visibleItems().forEach((it) => { it.on = e.target.checked; });
       renderFilterList();
+      applyFilter();
     });
-    $("fp-ok").addEventListener("click", applyFilter);
-    $("fp-cancel").addEventListener("click", closeFilter);
-    $("fp-clear").addEventListener("click", () => clearFilter(fp.col.key));
+    $("fp-clear").addEventListener("click", () => {
+      fp.items.forEach((it) => { it.on = true; });
+      renderFilterList();
+      clearFilter(fp.col.key, { keepFilter: true });
+    });
+    // A month column's "Sort starting in January": a sort setting shared by
+    // every month column, applied at once.
+    $("fp-jan").addEventListener("change", (e) => {
+      monthFromJanuary = e.target.checked;
+      try { localStorage.setItem(MONTH_JAN_KEY, monthFromJanuary ? "1" : "0"); } catch (err) { /* storage blocked */ }
+      search({ keepFilter: true });
+    });
     $("tp-military").addEventListener("change", (e) => {
       militaryTime = e.target.checked;
       try { localStorage.setItem(MILITARY_KEY, militaryTime ? "1" : "0"); } catch (err) { /* storage blocked */ }
