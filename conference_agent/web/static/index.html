@@ -237,6 +237,8 @@
       max-height: calc(100vh - 16px);
       max-height: calc(100dvh - 16px);
       border: 1px solid var(--border);
+      /* Panning is done by the axis-locking touch handler in the script. */
+      touch-action: pinch-zoom;
     }
     table.results {
       width: 100%;
@@ -2064,6 +2066,99 @@
       h.style.display = showing ? "none" : "block";
       $("help-toggle").textContent = showing ? "show details" : "hide details";
     });
+
+    // Touch scrolling in the table moves along one axis per gesture: the first
+    // few pixels of movement pick horizontal or vertical, and the gesture (and
+    // its momentum) stays on that axis. Browsers have no CSS for this (a box
+    // that scrolls both ways pans diagonally), so the table's touch panning is
+    // done here: each touchmove is canceled and the locked axis's movement is
+    // applied to the innermost scrollable box under the finger, then the table,
+    // then (vertically) the page, as native scroll chaining would.
+    (function lockTouchScrollAxis() {
+      const box = document.querySelector(".table-scroll");
+      const LOCK_PX = 6, FRICTION = 0.998, MIN_SPEED = 0.02;
+      let g = null, inertia = 0, suppressClickUntil = 0;
+      const page = () => document.scrollingElement || document.documentElement;
+      function scrollChain(target, axis) {
+        const chain = [];
+        for (let el = target; el && el !== box; el = el.parentElement) {
+          const s = getComputedStyle(el), ov = axis === "x" ? s.overflowX : s.overflowY;
+          if (ov === "auto" || ov === "scroll") chain.push(el);
+        }
+        chain.push(box);
+        if (axis === "y") chain.push(page());
+        return chain;
+      }
+      // Scroll by d pixels along the axis, passing what one box cannot take to
+      // the next; returns whether anything moved.
+      function apply(chain, axis, d) {
+        const key = axis === "x" ? "scrollLeft" : "scrollTop";
+        let moved = false;
+        for (const el of chain) {
+          if (Math.abs(d) < 0.5) break;
+          const before = el[key];
+          el[key] = before + d;
+          const used = el[key] - before;
+          if (used) { moved = true; d -= used; }
+        }
+        return moved;
+      }
+      function stopInertia() { if (inertia) cancelAnimationFrame(inertia); inertia = 0; }
+      box.addEventListener("touchstart", (e) => {
+        stopInertia();
+        if (e.touches.length !== 1) { g = null; return; }
+        const t = e.touches[0];
+        g = { target: e.target, x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY,
+              axis: null, chain: null, samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }] };
+      }, { passive: true });
+      box.addEventListener("touchmove", (e) => {
+        if (!g) return;
+        if (e.touches.length !== 1) { g = null; return; }  // pinch zoom stays native
+        if (e.cancelable) e.preventDefault();
+        const t = e.touches[0];
+        if (!g.axis) {
+          const dx = t.clientX - g.x0, dy = t.clientY - g.y0;
+          if (Math.max(Math.abs(dx), Math.abs(dy)) < LOCK_PX) return;
+          g.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+          g.chain = scrollChain(g.target, g.axis);
+          g.x = g.x0; g.y = g.y0;  // apply the movement made before the lock too
+        }
+        const delta = g.axis === "x" ? g.x - t.clientX : g.y - t.clientY;
+        if (Math.abs(delta) >= 1) {  // a slow drag's sub-pixel moves add up first
+          apply(g.chain, g.axis, delta);
+          g.x = t.clientX; g.y = t.clientY;
+        }
+        g.samples.push({ t: e.timeStamp, x: t.clientX, y: t.clientY });
+        while (g.samples.length > 2 && e.timeStamp - g.samples[0].t > 100) g.samples.shift();
+      }, { passive: false });
+      function release() {
+        const cur = g; g = null;
+        if (!cur || !cur.axis) return;
+        suppressClickUntil = performance.now() + 400;
+        const a = cur.samples[0], b = cur.samples[cur.samples.length - 1];
+        const dt = b.t - a.t;
+        if (dt <= 0 || performance.now() - b.t > 100) return;  // finger rested before lifting
+        let v = (cur.axis === "x" ? a.x - b.x : a.y - b.y) / dt;  // px per ms, in scroll direction
+        let prev = performance.now(), carry = 0;
+        const step = (now) => {
+          const ms = Math.max(0, now - prev); prev = now;
+          const d = v * ms + carry;
+          carry = 0;
+          if (Math.abs(d) < 0.5) carry = d;  // keep sub-pixel steps until they add up
+          else if (!apply(cur.chain, cur.axis, d)) { inertia = 0; return; }  // hit the end
+          v *= Math.pow(FRICTION, ms);
+          if (Math.abs(v) < MIN_SPEED) { inertia = 0; return; }
+          inertia = requestAnimationFrame(step);
+        };
+        if (Math.abs(v) >= MIN_SPEED) inertia = requestAnimationFrame(step);
+      }
+      box.addEventListener("touchend", release);
+      box.addEventListener("touchcancel", () => { g = null; });
+      // A drag that ends over a link or button is not a tap on it.
+      box.addEventListener("click", (e) => {
+        if (performance.now() < suppressClickUntil) { e.preventDefault(); e.stopPropagation(); }
+      }, true);
+    })();
 
     renderColumnsMenu();
     applyColumnVisibility();
