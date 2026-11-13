@@ -44,6 +44,8 @@ from conference_agent.models import (
     RemoteOption,
     name_id,
     normalize_categories,
+    normalize_ccf_rank,
+    normalize_core_rank,
     normalize_formats,
     normalize_guidelines,
     normalize_registration,
@@ -125,6 +127,10 @@ class ConferenceRow(Base):
     # boolean search can substring-match any format uniformly; the ``Conference``
     # model splits it back into a list. Indexed for that filtering; NULL when unknown.
     format: Mapped[Optional[str]] = mapped_column(String, index=True)
+    # Published CS venue rankings (``models.CCF_RANKS`` / ``CORE_RANKS``), filled
+    # from the official lists by ``scripts/fill_rankings.py``; NULL when unlisted.
+    ccf_rank: Mapped[Optional[str]] = mapped_column(String, index=True)
+    core_rank: Mapped[Optional[str]] = mapped_column(String, index=True)
     # Time of day (24-hour HH:MM) and zone each deadline kind closes at -- the
     # stored source of truth (see ``Conference.abstract_time`` etc.). Per series,
     # not per edition; the deadline columns themselves stay pure dates.
@@ -148,6 +154,16 @@ class ConferenceRow(Base):
     abstract_deadline_extension: Mapped[Optional[str]] = mapped_column(Text)
     late_abstract_deadline_extension: Mapped[Optional[str]] = mapped_column(Text)
     paper_deadline_extension: Mapped[Optional[str]] = mapped_column(Text)
+    # Past deadlines per kind beyond the two edition slots: newline-separated
+    # ISO dates, most recent first, without duplicates. A date is archived here
+    # by ``_archive_deadlines`` when its edition leaves the prior / upcoming
+    # slots (``roll_past_editions`` or a write that moves in a newer edition),
+    # and dates entered by hand (``add``'s ``past_deadlines``) are added. The
+    # table's Past column is this history plus the prior edition's deadline
+    # plus an upcoming one that has passed (``past_deadlines``). NULL when none.
+    abstract_deadline_history: Mapped[Optional[str]] = mapped_column(Text)
+    late_abstract_deadline_history: Mapped[Optional[str]] = mapped_column(Text)
+    paper_deadline_history: Mapped[Optional[str]] = mapped_column(Text)
     # Attendance is the objective input; ``size`` is the bucket derived from it
     # (see ``models.size_for_attendance``). ``size`` is stored denormalized so the
     # search/filter machinery can query it as a column, but it is only ever set by
@@ -418,6 +434,188 @@ def _add_extensions(row: "ConferenceRow", entries, today: Optional[date] = None)
     return changed
 
 
+# --- Past deadline history -------------------------------------------------
+
+HISTORY_COLUMNS = tuple(f"{kind}_deadline_history" for kind in KINDS)
+
+
+def parse_deadline_history(value) -> List[date]:
+    """The dates of a stored history value (or a list), most recent first, unique.
+
+    Unreadable entries are skipped.
+    """
+    if value in (None, ""):
+        return []
+    items = re.split(r"[;\n,\s]+", value) if isinstance(value, str) else list(value)
+    dates: set = set()
+    for item in items:
+        try:
+            parsed = _coerce_date(item)
+        except (TypeError, ValueError):
+            continue
+        if parsed is not None:
+            dates.add(parsed)
+    return sorted(dates, reverse=True)
+
+
+def format_deadline_history(dates) -> Optional[str]:
+    """Stored form of a set of dates: ISO lines, most recent first; None if empty."""
+    return "\n".join(d.isoformat() for d in parse_deadline_history(dates)) or None
+
+
+def _value(row, field):
+    """A field of an ORM row or a serialized row dict, as a date when it is one."""
+    value = row.get(field) if isinstance(row, dict) else getattr(row, field, None)
+    if isinstance(value, str) and field.endswith(("_deadline", "_date")):
+        try:
+            return _coerce_date(value)
+        except ValueError:
+            return None
+    return value
+
+
+def upcoming_deadline(row, kind: str, today: Optional[date] = None) -> Optional[date]:
+    """The upcoming edition's ``kind`` deadline while it is still ahead, else None.
+
+    ``row`` is an ORM row or a serialized row dict. A deadline counts as passed
+    from the day after it (the browser judges the exact instant from the time
+    and zone; see ``deadlineInstant`` in ``calendar.js``).
+    """
+    today = today or date.today()
+    value = _value(row, f"upcoming_{kind}_deadline")
+    return value if value is not None and value >= today else None
+
+
+def past_deadlines(row, kind: str, today: Optional[date] = None) -> List[date]:
+    """Every known past ``kind`` deadline, most recent first, without duplicates.
+
+    The stored history, the prior edition's deadline, and the upcoming edition's
+    deadline once it has passed (see :func:`upcoming_deadline`).
+    """
+    today = today or date.today()
+    dates = parse_deadline_history(_value(row, f"{kind}_deadline_history"))
+    prior = _value(row, f"prior_{kind}_deadline")
+    if prior is not None:
+        dates.append(prior)
+    upcoming = _value(row, f"upcoming_{kind}_deadline")
+    if upcoming is not None and upcoming < today:
+        dates.append(upcoming)
+    return parse_deadline_history(dates)
+
+
+def _history_snapshot(row: "ConferenceRow") -> dict:
+    """The row's edition deadlines and start dates, taken before a write."""
+    return {
+        f"{edition}_{field}": getattr(row, f"{edition}_{field}")
+        for edition in ("prior", "upcoming")
+        for field in (*(f"{k}_deadline" for k in KINDS), "start_date")
+    }
+
+
+def _archive_deadlines(
+    row: "ConferenceRow", before: dict, today: Optional[date] = None
+) -> bool:
+    """Keep the past deadlines a write moved out of the edition slots.
+
+    A deadline held before the write (prior or upcoming) is added to its kind's
+    history when it has passed, no slot holds it any more, and its edition is
+    gone too: no slot still holds a meeting starting within
+    ``NEW_EDITION_GAP_DAYS`` of its edition's start (or, when a start is
+    unknown, a same-kind deadline within that many days of it). A date that
+    left while its edition stayed was a correction, so it is dropped. Returns
+    whether any history column changed.
+    """
+    today = today or date.today()
+    gap = NEW_EDITION_GAP_DAYS
+    changed = False
+    for kind in KINDS:
+        column = f"{kind}_deadline_history"
+        current = {
+            getattr(row, f"{edition}_{kind}_deadline") for edition in ("prior", "upcoming")
+        }
+        archived = []
+        for edition in ("prior", "upcoming"):
+            old = before.get(f"{edition}_{kind}_deadline")
+            if old is None or old >= today or old in current:
+                continue
+            old_start = before.get(f"{edition}_start_date")
+            same_edition = False
+            for slot in ("prior", "upcoming"):
+                new_start = getattr(row, f"{slot}_start_date")
+                new_date = getattr(row, f"{slot}_{kind}_deadline")
+                if old_start and new_start:
+                    same_edition = abs((new_start - old_start).days) <= gap
+                elif new_date is not None:
+                    same_edition = abs((new_date - old).days) <= gap
+                if same_edition:
+                    break
+            if not same_edition:
+                archived.append(old)
+        if archived:
+            value = format_deadline_history(
+                [*parse_deadline_history(getattr(row, column)), *archived]
+            )
+            if value != getattr(row, column):
+                setattr(row, column, value)
+                changed = True
+    return changed
+
+
+def parse_past_deadlines(value) -> List[tuple]:
+    """Parse entered past deadlines into ``(kind, date)`` tuples.
+
+    ``value`` is a list of ``{"type", "date"}`` objects (the ``add --json`` /
+    website form shape), a list of ``[TYPE, DATE]`` pairs (the repeated flag),
+    or text with one ``TYPE DATE`` entry per line or per ``;`` (a CSV cell).
+    TYPE is abstract, late abstract, or paper; the date is ISO ``YYYY-MM-DD``.
+    Raises ``ValueError`` on an unknown type or an unreadable date.
+    """
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        value = [part.split() for part in re.split(r"[;\n]", value) if part.strip()]
+    if isinstance(value, dict):
+        value = [value]
+    entries = []
+    for item in value:
+        if isinstance(item, dict):
+            parts = [item.get("type") or item.get("kind"), item.get("date")]
+        else:
+            parts = list(item)
+            # "late abstract 2025-01-05" splits the type in two.
+            if len(parts) == 3 and str(parts[0]).lower() == "late":
+                parts = [f"{parts[0]}_{parts[1]}", parts[2]]
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(f"past deadline {item!r}: give a type and a date.")
+        kind = re.sub(r"[\s-]+", "_", str(parts[0]).strip().lower()).removesuffix("_deadline")
+        if kind not in KINDS:
+            raise ValueError(
+                f"past deadline type '{parts[0]}' must be one of: "
+                + ", ".join(k.replace("_", " ") for k in KINDS) + "."
+            )
+        try:
+            when = _coerce_date(parts[1])
+        except ValueError:
+            raise ValueError(f"past deadline {item!r}: the date must be YYYY-MM-DD.") from None
+        entries.append((kind, when))
+    return entries
+
+
+def _add_past_deadlines(row: "ConferenceRow", entries) -> bool:
+    """Add entered ``(kind, date)`` entries to the row's history columns."""
+    by_kind: dict = {}
+    for kind, when in parse_past_deadlines(entries):
+        by_kind.setdefault(kind, []).append(when)
+    changed = False
+    for kind, dates in by_kind.items():
+        column = f"{kind}_deadline_history"
+        value = format_deadline_history([*parse_deadline_history(getattr(row, column)), *dates])
+        if value != getattr(row, column):
+            setattr(row, column, value)
+            changed = True
+    return changed
+
+
 # --- Airports --------------------------------------------------------------
 
 
@@ -501,6 +699,8 @@ def _row_to_model(row: ConferenceRow) -> Conference:
         "notes": row.notes,
         "stable_location": bool(row.stable_location),
         "remote_option": RemoteOption(row.remote_option) if row.remote_option else None,
+        "ccf_rank": row.ccf_rank,
+        "core_rank": row.core_rank,
         "attendance": row.attendance,
         "attendance_year": row.attendance_year,
         "attendance_source": row.attendance_source,
@@ -555,6 +755,8 @@ def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     row.deadline_time = conf.deadline_time
     row.url = _normalize_url(row.url)
     row.remote_option = conf.remote_option.value if conf.remote_option else None
+    row.ccf_rank = conf.ccf_rank
+    row.core_rank = conf.core_rank
     # Store the joined formats, collapsing an empty list to NULL so the presence
     # test (``format:*``) and search treat "no formats recorded" as unset.
     row.format = conf.format or None
@@ -722,7 +924,7 @@ def _migrate_unknown_remote_to_null(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                f"UPDATE {ConferenceRow.__tablename__} SET remote_option = NULL "
+                f"UPDATE {ConferenceRow.__tablename__} SET remote_option = NULL "  # nosec B608
                 "WHERE remote_option = 'unknown'"
             )
         )
@@ -824,11 +1026,17 @@ def get_engine(db_url: str = DEFAULT_DATABASE_URL) -> Engine:
     return engine
 
 
+# The published venue-ranking columns. Discovery never researches them, so a
+# discovery write keeps the stored values (``upsert_conferences``).
+RANK_FIELDS = ("ccf_rank", "core_rank")
+_RANK_NORMALIZERS = {"ccf_rank": normalize_ccf_rank, "core_rank": normalize_core_rank}
+
+
 # Stored columns that can be pinned: every researched input. Derived columns
 # (size, months, deadline_time) follow their pinned inputs.
 PINNABLE_FIELDS = (
     "acronym", "subcategory", "category", "format", "url", "remote_option",
-    "stable_location", "attendance", "attendance_year", "attendance_source", "notes",
+    *RANK_FIELDS, "stable_location", "attendance", "attendance_year", "attendance_source", "notes",
     *_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS, *GUIDELINE_FIELDS,
 )
 
@@ -911,16 +1119,23 @@ def upsert_conferences(
             name = row.name
             stable = bool(row.stable_location)
             category = row.category
+            ranks = {f: getattr(row, f) for f in RANK_FIELDS}
             guidelines = {f: getattr(row, f) for f in GUIDELINE_FIELDS}
             registration = {f: getattr(row, f) for f in REGISTRATION_COLUMNS}
             pins = {} if manual else _pin_snapshot(row)
             before = _extension_snapshot(row)
+            history_before = _history_snapshot(row)
             _apply_model_to_row(row, conf)
             row.name = name
             if not manual:
                 # A run that reports no category keeps the stored one.
                 if not conf.categories:
                     row.category = category
+                # Discovery does not research the venue rankings, so one it
+                # does not report keeps the stored value.
+                for field, value in ranks.items():
+                    if getattr(conf, field) is None:
+                        setattr(row, field, value)
                 # The survey does not research guidelines (a dedicated pass
                 # does), so one it does not report keeps the stored text.
                 for field, value in guidelines.items():
@@ -936,6 +1151,7 @@ def upsert_conferences(
                 row.stable_location = conf.stable_location or stable
                 _restore_pins(row, pins)
             _record_extensions(row, before)
+            _archive_deadlines(row, history_before)
             _sync_airports(row)
             session.flush()
             written += 1
@@ -1069,6 +1285,7 @@ def merge_records(
 
             changed = False
             before = _extension_snapshot(row)
+            history_before = _history_snapshot(row)
             for field in _DATE_FIELDS:
                 if field in record and record[field] not in (None, ""):
                     setattr(row, field, _coerce_date(record[field]))
@@ -1078,6 +1295,19 @@ def merge_records(
             # Extension history entered by hand (`add`, the website form).
             if _add_extensions(row, record.get("deadline_extensions")):
                 changed = True
+            # Deadlines of an edition the new dates replaced, and past deadlines
+            # entered by hand (`add`, the website form); the CSV export's
+            # history columns re-import the same way.
+            if _archive_deadlines(row, history_before):
+                changed = True
+            if _add_past_deadlines(row, record.get("past_deadlines")):
+                changed = True
+            for kind in KINDS:
+                column = f"{kind}_deadline_history"
+                if record.get(column) not in (None, "", []) and _add_past_deadlines(
+                    row, [(kind, d) for d in parse_deadline_history(record[column])]
+                ):
+                    changed = True
             for field in _MERGEABLE_TEXT_FIELDS:
                 if field == "name":
                     continue  # the index; set on insert above, never merged
@@ -1160,6 +1390,21 @@ def merge_records(
             # clears them, and the next lookup re-runs.
             if _sync_airports(row):
                 changed = True
+            # Venue rankings: only a valid, non-blank value overwrites (an
+            # invalid one is rejected by ``add`` before it gets here).
+            for field, normalize in _RANK_NORMALIZERS.items():
+                raw = record.get(field)
+                if raw in (None, ""):
+                    raw = record.get(field.removesuffix("_rank"))
+                if raw in (None, ""):
+                    continue
+                try:
+                    rank = normalize(raw)
+                except ValueError:
+                    continue
+                if rank and getattr(row, field) != rank:
+                    setattr(row, field, rank)
+                    changed = True
             remote = record.get("remote_option")
             if remote not in (None, ""):
                 try:
@@ -1293,8 +1538,10 @@ def apply_refreshed_conferences(
             if row is None:
                 continue
             pins = _pin_snapshot(row)
+            history_before = _history_snapshot(row)
             _roll_editions(row, conf)
             _restore_pins(row, pins)
+            _archive_deadlines(row, history_before)
             record = _conference_to_record(conf)
             # The record's keys for the pinned columns (the tag lists travel
             # under their plural names).
@@ -1323,7 +1570,8 @@ def roll_past_editions(
     - **rolled**: the upcoming meeting is over (its end date, or its start date
       when no end is known, is before ``today``) and no upcoming deadline is
       still ahead. The upcoming edition replaces the prior one, and the upcoming
-      slots are cleared.
+      slots are cleared. The replaced prior edition's deadlines move to the
+      deadline history columns (``_archive_deadlines``).
 
     The table, the derived months, and the deadline-time text all read
     "upcoming, falling back to prior", so a roll does not change what they show.
@@ -1339,6 +1587,8 @@ def roll_past_editions(
                 pruned = _prune_extensions(getattr(row, column), today)
                 if pruned != getattr(row, column):
                     setattr(row, column, pruned)
+            # The rolled-out prior edition's deadlines move to the history.
+            history_before = _history_snapshot(row)
             if row.prior_start_date and row.prior_start_date == row.upcoming_start_date:
                 for suffix in _EDITION_SUFFIXES:
                     if getattr(row, f"upcoming_{suffix}") in (None, ""):
@@ -1346,17 +1596,19 @@ def roll_past_editions(
                     setattr(row, f"prior_{suffix}", None)
                 out["duplicate"].append(row.id)
             end = row.upcoming_end_date or row.upcoming_start_date
-            if end is None or end >= today:
-                continue
             deadlines = (
                 row.upcoming_abstract_deadline,
                 row.upcoming_late_abstract_deadline,
                 row.upcoming_paper_deadline,
             )
-            if any(d is not None and d >= today for d in deadlines):
-                continue
-            _shift_to_prior(row)
-            out["rolled"].append(row.id)
+            if not (
+                end is None
+                or end >= today
+                or any(d is not None and d >= today for d in deadlines)
+            ):
+                _shift_to_prior(row)
+                out["rolled"].append(row.id)
+            _archive_deadlines(row, history_before, today)
         for row in session.scalars(select(ConferenceRow)):
             _sync_airports(row)
         session.commit()

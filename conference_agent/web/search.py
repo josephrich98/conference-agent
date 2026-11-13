@@ -76,8 +76,11 @@ late-breaking round), ``paper_due``, ``conference_dates``,
 ``paper_month`` (the month fields
 are integers 1-12, derived from the displayed dates, e.g. ``conference_month:11``,
 ``abstract_month:<=April``, or ``abstract_month>=June``). Each date field
-matches the value the column actually shows — the upcoming edition's date,
-falling back to the prior edition's. A handful of legacy names (``name``,
+matches the value its column shows: ``abstract_due`` / ``late_abstract_due`` /
+``paper_due`` the upcoming deadline while it is still ahead;
+``past_abstract_due`` / ``past_late_abstract_due`` / ``past_paper_due`` the
+most recent past deadline of that kind; ``conference_dates`` the upcoming
+meeting, falling back to the prior one. A handful of legacy names (``name``,
 ``acronym``, ``remote_option``, ``abstract``, ``upcoming``, …) remain accepted
 as hidden aliases so older shared query URLs keep working.
 """
@@ -91,10 +94,17 @@ from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional, Tuple, Union
 
-from sqlalchemy import and_, case, func, not_, or_
+from sqlalchemy import String, and_, case, cast, func, not_, or_
 
 from conference_agent.database import ConferenceRow
-from conference_agent.models import CATEGORIES, CONFERENCE_FORMATS, ConferenceSize, RemoteOption
+from conference_agent.models import (
+    CATEGORIES,
+    CCF_RANKS,
+    CONFERENCE_FORMATS,
+    CORE_RANKS,
+    ConferenceSize,
+    RemoteOption,
+)
 
 
 class QueryError(Exception):
@@ -115,6 +125,8 @@ RESULT_COLUMNS = [
     "attendance",
     "attendance_year",
     "remote_option",
+    "ccf_rank",
+    "core_rank",
     "url",
     "abstract_month",
     "upcoming_abstract_deadline",
@@ -141,8 +153,59 @@ RESULT_COLUMNS = [
     "prior_paper_deadline",
     "prior_start_date",
     "prior_end_date",
+    # Past deadlines of earlier editions (newline-separated ISO dates, most
+    # recent first); the Past columns add the prior edition's and a passed
+    # upcoming deadline (``database.past_deadlines``).
+    "abstract_deadline_history",
+    "late_abstract_deadline_history",
+    "paper_deadline_history",
     "notes",
 ]
+
+# The structured deadline times (a 24-hour time and a zone per deadline kind).
+# Carried in each serialized row for the browser -- it colors a date the moment its
+# time passes and can show the time in 24-hour form -- but deliberately not in
+# ``RESULT_COLUMNS``: they are not table columns, and the CSV / API column list
+# stays the user-facing ``deadline_time`` text derived from them.
+TIME_COLUMNS = [
+    f"{kind}_{part}"
+    for kind in ("abstract", "late_abstract", "paper")
+    for part in ("time", "timezone")
+]
+
+# Observed deadline extensions (newline-separated "MM/DD/YYYY – MM/DD/YYYY" lines;
+# see ``database._record_extensions``). Carried in each serialized row only so the
+# table can mark an extended deadline with a hover note -- like the times above,
+# they are not table columns and stay out of the CSV / API column list.
+EXTENSION_COLUMNS = [
+    f"{kind}_deadline_extension" for kind in ("abstract", "late_abstract", "paper")
+]
+
+# Whether the displayed location is a specific place rather than a city (see
+# ``ConferenceRow.location_venue``). Carried so the table can link a venue to a
+# map; not a table column.
+PLACE_COLUMNS = ["location_venue"]
+
+
+def row_to_dict(row) -> dict:
+    """Serialize a ``ConferenceRow`` to a JSON-friendly dict (dates as ISO strings).
+
+    The shape of ``/api/search`` rows, the static ``c/<id>/data.json`` files, and
+    ``conference-agent info --json``; ``add --json`` accepts it back (derived keys
+    such as ``size`` and the ``*_month`` columns are ignored on write). Defined
+    here rather than in ``app`` so the core CLI can use it without FastAPI.
+    """
+    out: dict = {}
+    for col in (*RESULT_COLUMNS, *TIME_COLUMNS, *EXTENSION_COLUMNS, *PLACE_COLUMNS):
+        value = getattr(row, col)
+        if hasattr(value, "isoformat"):
+            value = value.isoformat()
+        out[col] = value
+    # NULL (a row predating the column) means false.
+    out["stable_location"] = bool(out["stable_location"])
+    out["location_venue"] = bool(out["location_venue"])
+    return out
+
 
 # The queryable fields exposed to users mirror the table's column headers exactly
 # (see COLUMNS in conference_agent/web/static/index.html), so the search box and the displayed
@@ -179,19 +242,26 @@ _TEXT_FIELDS = {
     "paper_guidelines": ("paper_guidelines",),
 }
 
-# Public date field → (upcoming column, prior column). Comparisons run against
-# the value the column actually shows: the upcoming edition's date, falling back
-# to the prior edition's (coalesce), matching the table's "upcoming ?? prior ?? —".
+# Public date field → how its value is found. Comparisons run against the value
+# the column actually shows:
+# - ("upcoming", kind): the Upcoming deadline columns -- the upcoming edition's
+#   deadline while it is still ahead (on or after today), else nothing.
+# - ("past", kind): the Past deadline columns -- the most recent past deadline
+#   (a passed upcoming one, the prior edition's, or the stored history); the
+#   column lists them all, and sorts by this one.
+# - (upcoming column, prior column): the upcoming edition's date, falling back
+#   to the prior edition's (coalesce), as the Conference dates column shows.
+# The late abstract deadline is the second, later abstract deadline some series
+# publish (a poster-only deadline, or a late-breaking / late-poster round); its
+# own field rather than a second value on ``abstract_due`` so both stay
+# sortable dates.
 _DATE_FIELDS = {
-    "abstract_due": ("upcoming_abstract_deadline", "prior_abstract_deadline"),
-    # The second, later abstract deadline some series publish (a poster-only
-    # deadline, or a late-breaking / late-poster round). Its own field rather
-    # than a second value on ``abstract_due`` so both stay sortable dates.
-    "late_abstract_due": (
-        "upcoming_late_abstract_deadline",
-        "prior_late_abstract_deadline",
-    ),
-    "paper_due": ("upcoming_paper_deadline", "prior_paper_deadline"),
+    "abstract_due": ("upcoming", "abstract"),
+    "past_abstract_due": ("past", "abstract"),
+    "late_abstract_due": ("upcoming", "late_abstract"),
+    "past_late_abstract_due": ("past", "late_abstract"),
+    "paper_due": ("upcoming", "paper"),
+    "past_paper_due": ("past", "paper"),
     "conference_dates": ("upcoming_start_date", "prior_start_date"),
 }
 
@@ -215,6 +285,14 @@ _NUMBER_FIELDS = {
 # Size buckets ranked by magnitude, for comparisons such as ``size>=large``.
 _SIZE_RANK = {"small": 1, "medium": 2, "large": 3, "massive": 4}
 
+# Public venue-ranking field -> (column, {rank: order}). A rank matches exactly
+# (``core:A`` is not ``core:A*``), case-insensitively; a comparison runs on the
+# order, better ranks being greater (``core>=A`` is A* or A).
+_RANK_FIELDS = {
+    "ccf": ("ccf_rank", {r: len(CCF_RANKS) - i for i, r in enumerate(CCF_RANKS)}),
+    "core": ("core_rank", {r: len(CORE_RANKS) - i for i, r in enumerate(CORE_RANKS)}),
+}
+
 # Data type descriptor shown next to each field in the help panel. Categorical
 # fields list their controlled vocabulary (derived from the enums so the help
 # stays in sync); everything else is free text or a date.
@@ -228,14 +306,19 @@ _FIELD_TYPES = {
     "size": "cat: " + ", ".join(t.value for t in ConferenceSize),
     "attendance": "int: count, e.g. 5000 or 5k",
     "remote": "cat: " + ", ".join(o.value for o in RemoteOption),
+    "ccf": "cat: " + ", ".join(CCF_RANKS),
+    "core": "cat: " + ", ".join(CORE_RANKS),
     "cost": "string",
     "registration": "string",
     "deadline_time": "string",
     "abstract_guidelines": "string",
     "paper_guidelines": "string",
     "abstract_due": "date",
+    "past_abstract_due": "date",
     "late_abstract_due": "date",
+    "past_late_abstract_due": "date",
     "paper_due": "date",
+    "past_paper_due": "date",
     "conference_dates": "date",
     "conference_month": "int: 1-12 or month name",
     "abstract_month": "int: 1-12 or month name",
@@ -273,18 +356,23 @@ _ALIASES = {
     "acronym": "conference",
     "formats": "format",
     "remote_option": "remote",
+    "ccf_rank": "ccf",
+    "core_rank": "core",
     "abstract": "abstract_due",
     "deadline": "abstract_due",
     "upcoming_abstract_deadline": "abstract_due",
-    "prior_abstract": "abstract_due",
+    "prior_abstract": "past_abstract_due",
+    "past_abstract": "past_abstract_due",
     "late_abstract": "late_abstract_due",
     "late_breaking": "late_abstract_due",
     "poster_due": "late_abstract_due",
     "upcoming_late_abstract_deadline": "late_abstract_due",
-    "prior_late_abstract": "late_abstract_due",
+    "prior_late_abstract": "past_late_abstract_due",
+    "past_late_abstract": "past_late_abstract_due",
     "paper": "paper_due",
     "upcoming_paper_deadline": "paper_due",
-    "prior_paper": "paper_due",
+    "prior_paper": "past_paper_due",
+    "past_paper": "past_paper_due",
     "upcoming": "conference_dates",
     "date": "conference_dates",
     "upcoming_start_date": "conference_dates",
@@ -303,6 +391,7 @@ def _resolve_field(name: str) -> str:
         and key not in _DATE_FIELDS
         and key not in _INT_FIELDS
         and key not in _NUMBER_FIELDS
+        and key not in _RANK_FIELDS
     ):
         raise QueryError(f"Unknown field: {name!r}")
     return key
@@ -319,14 +408,21 @@ _FIELD_DESCRIPTIONS = {
     "compare by rank, e.g. size>=large",
     "attendance": "most recent annual attendance, e.g. attendance>=5000",
     "remote": "whether the meeting is in-person, virtual, or hybrid",
+    "ccf": "China Computer Federation recommended-list rank (A, B, C); exact match, "
+    "or compare by rank, e.g. ccf>=B",
+    "core": "ICORE conference rank (A*, A, B, C); exact match (core:A is not A*), "
+    "or compare by rank, e.g. core>=A",
     "cost": "registration fee or fee range of the upcoming (or most recent) meeting",
     "registration": "registration windows, e.g. early bird and regular periods",
     "deadline_time": "time of day and time zone that submissions close",
     "abstract_guidelines": "abstract submission requirements, e.g. word or character limits and required sections",
     "paper_guidelines": "full-paper submission requirements, e.g. page limit, template, and anonymization",
-    "abstract_due": "earliest (primary) abstract deadline",
-    "late_abstract_due": "later abstract deadline: poster-only or late-breaking round",
-    "paper_due": "full-paper submission deadline",
+    "abstract_due": "upcoming earliest (primary) abstract deadline, while still ahead",
+    "past_abstract_due": "most recent past abstract deadline (the Past column lists them all)",
+    "late_abstract_due": "upcoming later abstract deadline: poster-only or late-breaking round",
+    "past_late_abstract_due": "most recent past late abstract deadline",
+    "paper_due": "upcoming full-paper submission deadline, while still ahead",
+    "past_paper_due": "most recent past full-paper deadline",
     "conference_dates": "start and end dates of the meeting",
     "conference_month": "month of the conference (1-12), for sorting by season",
     "abstract_month": "month of the abstract deadline (1-12)",
@@ -337,7 +433,7 @@ _FIELD_DESCRIPTIONS = {
 
 def field_help() -> dict:
     """Return the queryable fields, data types, and descriptions (for the UI help panel)."""
-    order = list(_TEXT_FIELDS) + list(_NUMBER_FIELDS) + list(_DATE_FIELDS) + list(_INT_FIELDS)
+    order = list(_TEXT_FIELDS) + list(_RANK_FIELDS) + list(_NUMBER_FIELDS) + list(_DATE_FIELDS) + list(_INT_FIELDS)
     return {
         "fields": [
             {"field": f, "type": _FIELD_TYPES[f], "description": _FIELD_DESCRIPTIONS[f]}
@@ -553,15 +649,47 @@ def _parse_date_bounds(value: str) -> Tuple[date, date]:
     raise QueryError(f"Invalid date: {value!r}")
 
 
+def upcoming_deadline_expr(kind: str):
+    """The Upcoming deadline column: the upcoming deadline while on/after today."""
+    col = getattr(ConferenceRow, f"upcoming_{kind}_deadline")
+    return case((col >= date.today(), col), else_=None)
+
+
+def _latest(a, b):
+    """The later of two nullable ISO-text expressions (NULL only when both are)."""
+    return case((a.is_(None), b), (b.is_(None), a), (a > b, a), else_=b)
+
+
+def past_deadline_expr(kind: str):
+    """The most recent past ``kind`` deadline, as ISO text (sorts like a date).
+
+    The later of a passed upcoming deadline, the prior edition's, and the first
+    (most recent) line of the stored history. Text, not a date, because the
+    history column is text; ``CAST(date AS VARCHAR)`` is ISO in SQLite and
+    PostgreSQL alike.
+    """
+    upcoming = getattr(ConferenceRow, f"upcoming_{kind}_deadline")
+    prior = cast(getattr(ConferenceRow, f"prior_{kind}_deadline"), String)
+    history = func.substr(getattr(ConferenceRow, f"{kind}_deadline_history"), 1, 10)
+    passed = case((upcoming < date.today(), cast(upcoming, String)), else_=None)
+    return _latest(_latest(passed, prior), history)
+
+
 def _date_expr(field: str):
-    """The displayed date for a public date field: upcoming, falling back to prior."""
-    upcoming, prior = _DATE_FIELDS[field]
-    return func.coalesce(getattr(ConferenceRow, upcoming), getattr(ConferenceRow, prior))
+    """The displayed value of a public date field (see ``_DATE_FIELDS``)."""
+    first, second = _DATE_FIELDS[field]
+    if first == "upcoming":
+        return upcoming_deadline_expr(second)
+    if first == "past":
+        return past_deadline_expr(second)
+    return func.coalesce(getattr(ConferenceRow, first), getattr(ConferenceRow, second))
 
 
 def _compile_date_term(term: Term):
     expr = _date_expr(term.field)
     lower, upper = _parse_date_bounds(term.value)
+    if _DATE_FIELDS[term.field][0] == "past":
+        lower, upper = lower.isoformat(), upper.isoformat()
     op = term.op or "="
     if op == "=":
         return and_(expr.isnot(None), expr >= lower, expr <= upper)
@@ -656,9 +784,24 @@ def _compile_size_rank_term(term: Term):
     return _compare(case(_SIZE_RANK, value=ConferenceRow.size), term.op, rank)
 
 
+def _compile_rank_term(term: Term):
+    column, order = _RANK_FIELDS[term.field]
+    rank = term.value.strip().upper()
+    if rank not in order:
+        raise QueryError(
+            f"Invalid {term.field} rank: {term.value!r} (use {', '.join(order)})"
+        )
+    expr = getattr(ConferenceRow, column)
+    if not term.op or term.op == "=":
+        return func.coalesce(expr, "") == rank
+    return _compare(case(order, value=expr), term.op, order[rank])
+
+
 def _compile_term(term: Term):
     # Presence test: field:* — the column shows a value.
     if term.presence:
+        if term.field in _RANK_FIELDS:
+            return getattr(ConferenceRow, _RANK_FIELDS[term.field][0]).isnot(None)
         if term.field in _DATE_FIELDS:
             return _date_expr(term.field).isnot(None)
         if term.field in _INT_FIELDS:
@@ -685,6 +828,10 @@ def _compile_term(term: Term):
     if term.field in _NUMBER_FIELDS:
         expr = getattr(ConferenceRow, _NUMBER_FIELDS[term.field])
         return _compare(expr, term.op, _parse_count(term.value))
+
+    # Venue rankings: an exact rank, or a comparison by rank order.
+    if term.field in _RANK_FIELDS:
+        return _compile_rank_term(term)
 
     # Size with a comparison operator compares by rank (size>=large).
     if term.field == "size" and term.op:
@@ -817,7 +964,7 @@ _KEYWORD_SYNONYMS = {
 }
 
 _KNOWN_FIELD_NAMES = {
-    *_TEXT_FIELDS, *_DATE_FIELDS, *_INT_FIELDS, *_NUMBER_FIELDS, *_ALIASES,
+    *_TEXT_FIELDS, *_DATE_FIELDS, *_INT_FIELDS, *_NUMBER_FIELDS, *_RANK_FIELDS, *_ALIASES,
 }  # fmt: skip
 
 _YEAR_RE = re.compile(r"(19|20)\d\d")

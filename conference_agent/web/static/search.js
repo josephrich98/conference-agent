@@ -35,15 +35,17 @@ const TEXT_FIELDS = {
   paper_guidelines: ["paper_guidelines"],
 };
 
-// Public date field -> [upcoming column, prior column]. Comparisons run against
-// the displayed value: upcoming, falling back to prior.
+// Public date field -> how its value is found. Comparisons run against the
+// value the column shows: ["upcoming", kind] the upcoming deadline while it is
+// still ahead; ["past", kind] the most recent past deadline of that kind;
+// [upcoming column, prior column] upcoming, falling back to prior.
 const DATE_FIELDS = {
-  abstract_due: ["upcoming_abstract_deadline", "prior_abstract_deadline"],
-  late_abstract_due: [
-    "upcoming_late_abstract_deadline",
-    "prior_late_abstract_deadline",
-  ],
-  paper_due: ["upcoming_paper_deadline", "prior_paper_deadline"],
+  abstract_due: ["upcoming", "abstract"],
+  past_abstract_due: ["past", "abstract"],
+  late_abstract_due: ["upcoming", "late_abstract"],
+  past_late_abstract_due: ["past", "late_abstract"],
+  paper_due: ["upcoming", "paper"],
+  past_paper_due: ["past", "paper"],
   conference_dates: ["upcoming_start_date", "prior_start_date"],
 };
 
@@ -62,6 +64,14 @@ const NUMBER_FIELDS = {
 
 // Size buckets ranked by magnitude, for comparisons such as `size>=large`.
 const SIZE_QUERY_RANK = { small: 1, medium: 2, large: 3, massive: 4 };
+
+// Public venue-ranking field -> [column, {rank: order}]. A rank matches exactly
+// (`core:A` is not `core:A*`), case-insensitively; a comparison runs on the
+// order, better ranks being greater (`core>=A` is A* or A).
+const RANK_FIELDS = {
+  ccf: ["ccf_rank", { A: 3, B: 2, C: 1 }],
+  core: ["core_rank", { "A*": 4, A: 3, B: 2, C: 1 }],
+};
 
 // Columns scanned by a bare (unscoped) keyword.
 const BARE_SEARCH_COLUMNS = [
@@ -91,18 +101,23 @@ const ALIASES = {
   acronym: "conference",
   formats: "format",
   remote_option: "remote",
+  ccf_rank: "ccf",
+  core_rank: "core",
   abstract: "abstract_due",
   deadline: "abstract_due",
   upcoming_abstract_deadline: "abstract_due",
-  prior_abstract: "abstract_due",
+  prior_abstract: "past_abstract_due",
+  past_abstract: "past_abstract_due",
   late_abstract: "late_abstract_due",
   late_breaking: "late_abstract_due",
   poster_due: "late_abstract_due",
   upcoming_late_abstract_deadline: "late_abstract_due",
-  prior_late_abstract: "late_abstract_due",
+  prior_late_abstract: "past_late_abstract_due",
+  past_late_abstract: "past_late_abstract_due",
   paper: "paper_due",
   upcoming_paper_deadline: "paper_due",
-  prior_paper: "paper_due",
+  prior_paper: "past_paper_due",
+  past_paper: "past_paper_due",
   upcoming: "conference_dates",
   date: "conference_dates",
   upcoming_start_date: "conference_dates",
@@ -117,7 +132,7 @@ function resolveField(name) {
   key = ALIASES[key] || key;
   if (
     !(key in TEXT_FIELDS) && !(key in DATE_FIELDS) && !(key in INT_FIELDS) &&
-    !(key in NUMBER_FIELDS)
+    !(key in NUMBER_FIELDS) && !(key in RANK_FIELDS)
   ) {
     throw new QueryError(`Unknown field: ${JSON.stringify(name)}`);
   }
@@ -327,10 +342,53 @@ function parseDateBounds(value) {
   throw bad();
 }
 
+// --- Upcoming / past deadlines (mirror database.upcoming_deadline / past_deadlines)
+//
+// A deadline has passed once the instant it closes has (calendar.js
+// `deadlineInstant`: the end of its stated minute in its zone, else the end of
+// the day AoE) when calendar.js is loaded, as in the browser; without it (the
+// Node parity tests, matching Python) from the day after the date. `now` is ms.
+function localIso(ms) {
+  const d = new Date(ms);
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  return `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function deadlinePassed(row, kind, date, now = Date.now()) {
+  const cal = typeof ConferenceCalendar !== "undefined" ? ConferenceCalendar : null;
+  if (cal && cal.deadlineInstant) {
+    return cal.deadlineInstant(String(date).slice(0, 10), row[`${kind}_time`], row[`${kind}_timezone`]) <= now;
+  }
+  return String(date).slice(0, 10) < localIso(now);
+}
+
+/** The upcoming edition's `kind` deadline while it is still ahead, else null. */
+function upcomingDeadline(row, kind, now = Date.now()) {
+  const d = row[`upcoming_${kind}_deadline`];
+  return isPresent(d) && !deadlinePassed(row, kind, d, now) ? d : null;
+}
+
+/**
+ * Every known past `kind` deadline (ISO strings), most recent first, without
+ * duplicates: the stored history, the prior edition's, and the upcoming one
+ * once it has passed.
+ */
+function pastDeadlines(row, kind, now = Date.now()) {
+  const dates = String(row[`${kind}_deadline_history`] || "")
+    .split(/[;\n,\s]+/).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+  const prior = row[`prior_${kind}_deadline`];
+  if (isPresent(prior)) dates.push(String(prior).slice(0, 10));
+  const up = row[`upcoming_${kind}_deadline`];
+  if (isPresent(up) && deadlinePassed(row, kind, up, now)) dates.push(String(up).slice(0, 10));
+  return [...new Set(dates)].sort().reverse();
+}
+
 function dateValue(row, field) {
-  const [upcoming, prior] = DATE_FIELDS[field];
-  const u = row[upcoming];
-  return isPresent(u) ? u : row[prior] ?? null;
+  const [first, second] = DATE_FIELDS[field];
+  if (first === "upcoming") return upcomingDeadline(row, second);
+  if (first === "past") return pastDeadlines(row, second)[0] ?? null;
+  const u = row[first];
+  return isPresent(u) ? u : row[second] ?? null;
 }
 
 const MONTH_NAMES = (() => {
@@ -426,9 +484,25 @@ function compileSizeRankTerm(term) {
   return compareTerm(term.op, rank, (row) => SIZE_QUERY_RANK[row.size] ?? null);
 }
 
+function compileRankTerm(term) {
+  const [col, order] = RANK_FIELDS[term.field];
+  const rank = term.value.trim().toUpperCase();
+  if (!(rank in order)) {
+    throw new QueryError(
+      `Invalid ${term.field} rank: ${JSON.stringify(term.value)} (use ${Object.keys(order).join(", ")})`,
+    );
+  }
+  if (!term.op || term.op === "=") return (row) => (row[col] ?? "") === rank;
+  return compareTerm(term.op, order[rank], (row) => order[row[col]] ?? null);
+}
+
 function compileTerm(term) {
   // Presence test: field:*
   if (term.presence) {
+    if (term.field in RANK_FIELDS) {
+      const col = RANK_FIELDS[term.field][0];
+      return (row) => isPresent(row[col]);
+    }
     if (term.field in DATE_FIELDS) return (row) => isPresent(dateValue(row, term.field));
     if (term.field in INT_FIELDS) {
       const col = INT_FIELDS[term.field];
@@ -450,6 +524,7 @@ function compileTerm(term) {
   if (term.field in DATE_FIELDS) return compileDateTerm(term);
   if (term.field in INT_FIELDS) return compileIntTerm(term);
   if (term.field in NUMBER_FIELDS) return compileNumberTerm(term);
+  if (term.field in RANK_FIELDS) return compileRankTerm(term);
   if (term.field === "size" && term.op) return compileSizeRankTerm(term);
 
   // Scoped text field.
@@ -491,17 +566,25 @@ const SORTABLE = new Set([
   "attendance", "remote_option", "upcoming_start_date", "upcoming_abstract_deadline",
   "upcoming_late_abstract_deadline", "upcoming_paper_deadline", "conference_month",
   "abstract_month", "late_abstract_month", "paper_month",
+  "past_abstract_deadline", "past_late_abstract_deadline", "past_paper_deadline",
+  "ccf_rank", "core_rank",
 ]);
 
-// Date sort columns (and location) fall back to the prior edition's value,
-// matching the table.
+// The conference-dates sort (and location) falls back to the prior edition's
+// value, matching the table.
 const DATE_SORT_FALLBACK = {
   upcoming_location: "prior_location",
   upcoming_start_date: "prior_start_date",
-  upcoming_abstract_deadline: "prior_abstract_deadline",
-  upcoming_late_abstract_deadline: "prior_late_abstract_deadline",
-  upcoming_paper_deadline: "prior_paper_deadline",
 };
+
+// The deadline sorts: each Upcoming column on its deadline while still ahead,
+// each Past column on its most recent past deadline. Mirrors ``_DEADLINE_SORT``
+// in conference_agent/web/app.py.
+const DEADLINE_SORT = {};
+for (const kind of ["abstract", "late_abstract", "paper"]) {
+  DEADLINE_SORT[`upcoming_${kind}_deadline`] = (row) => upcomingDeadline(row, kind);
+  DEADLINE_SORT[`past_${kind}_deadline`] = (row) => pastDeadlines(row, kind)[0] ?? null;
+}
 
 // The derived-month sorts break ties on the day of the month of the underlying
 // displayed date (upcoming, falling back to prior), so the order is seasonal and
@@ -518,7 +601,7 @@ const MONTH_SORT_TIEBREAKER = {
 
 const NUMERIC_SORT = new Set([
   "attendance", "conference_month", "abstract_month", "late_abstract_month",
-  "paper_month", "size",
+  "paper_month", "size", "ccf_rank", "core_rank",
 ]);
 
 // Size sorts by magnitude, not alphabetically: ascending is massive -> small.
@@ -535,8 +618,16 @@ function rollingMonth(month, day, startMonth, startDay) {
   return (Number(month) * 31 + d - (startMonth * 31 + startDay) + 372) % 372;
 }
 
+// The venue rankings sort best first ascending (A* before A before B).
+// Mirrors ``_RANK_SORT`` in conference_agent/web/app.py.
+const RANK_SORT = {
+  ccf_rank: { A: 1, B: 2, C: 3 },
+  core_rank: { "A*": 1, A: 2, B: 3, C: 4 },
+};
+
 function coalesce(row, col, fallbackCol) {
   if (col === "size") return SIZE_SORT_RANK[row.size] ?? null;
+  if (col in RANK_SORT) return RANK_SORT[col][row[col]] ?? null;
   const v = row[col];
   if (isPresent(v)) return v;
   return fallbackCol ? row[fallbackCol] ?? null : null;
@@ -579,7 +670,7 @@ function sortRows(rows, sort, order, monthStart, dayStart) {
   };
   const key = tiebreak
     ? (row) => rollingMonth(row[sort], day(row), monthStart, dayStart)
-    : (row) => coalesce(row, sort, fallback);
+    : DEADLINE_SORT[sort] || ((row) => coalesce(row, sort, fallback));
 
   return rows.slice().sort((ra, rb) => {
     const a = key(ra);
@@ -781,7 +872,8 @@ function keywordIndex(row) {
 // query that fell through to keyword search is dropped rather than searched for.
 const KNOWN_FIELD_NAMES = new Set([
   ...Object.keys(TEXT_FIELDS), ...Object.keys(DATE_FIELDS),
-  ...Object.keys(INT_FIELDS), ...Object.keys(NUMBER_FIELDS), ...Object.keys(ALIASES),
+  ...Object.keys(INT_FIELDS), ...Object.keys(NUMBER_FIELDS), ...Object.keys(RANK_FIELDS),
+  ...Object.keys(ALIASES),
 ]);
 
 /** Split a query into keyword terms: quoted phrases stay whole, filler words drop. */
@@ -883,7 +975,13 @@ function keywordSearch(query, rows) {
 
 // Browser global + CommonJS export (for the Node-based tests).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError };
+  module.exports = {
+    buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError,
+    upcomingDeadline, pastDeadlines,
+  };
 } else {
-  window.ConferenceSearch = { buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError };
+  window.ConferenceSearch = {
+    buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError,
+    upcomingDeadline, pastDeadlines,
+  };
 }

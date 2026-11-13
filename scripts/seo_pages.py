@@ -231,6 +231,8 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Cost", row.get("upcoming_cost")),
         ("Submission types", row.get("format")),
         ("Fields", row.get("subcategory")),
+        ("CCF rank", row.get("ccf_rank")),
+        ("CORE rank", row.get("core_rank")),
         (
             "Annual attendance",
             f"{row['attendance']:,}" + (f" ({row['attendance_year']})" if row.get("attendance_year") else "")
@@ -253,8 +255,23 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         body = "".join(f"<tr><th>{_e(k)}</th><td>{_e(v)}</td></tr>" for k, v in items if v)
         return f"<table>{body}</table>" if body else ""
 
+    # Deadlines of editions before the prior one (the stored history), most
+    # recent first; the table's Past columns list these with the prior edition's.
+    earlier = [
+        (
+            f"{label_} deadlines",
+            "; ".join(
+                _fmt_date(d)
+                for d in (x.strip() for x in str(row.get(f"{kind}_deadline_history") or "").split("\n"))
+                if d and d != row.get(f"prior_{kind}_deadline")
+            ) or None,
+        )
+        for kind, label_ in (("abstract", "Abstract"), ("late_abstract", "Late abstract"), ("paper", "Paper"))
+    ]
+
     upcoming_tbl = table(rows)
     prior_tbl = table(prior)
+    earlier_tbl = table(earlier)
     parts = [f"<h1>{_e(label)}{' ' + _e(year) if year else ''} deadlines and dates</h1>"]
     parts.append(f"<p>{_e(full)}.</p>")
     if site:
@@ -266,6 +283,8 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
     )
     if prior_tbl:
         parts.append(f"<h2>Prior edition</h2>{prior_tbl}")
+    if earlier_tbl:
+        parts.append(f"<h2>Earlier editions</h2>{earlier_tbl}")
     for heading, key in (("Abstract guidelines", "abstract_guidelines"), ("Paper guidelines", "paper_guidelines")):
         if row.get(key):
             parts.append(f"<h2>{heading}</h2>{_guidelines_html(row[key])}")
@@ -359,6 +378,9 @@ its JSON instead of searching the web.
 
 - `upcoming_abstract_deadline`, `upcoming_late_abstract_deadline`,
   `upcoming_paper_deadline` (ISO dates; `prior_*` counterparts hold the last edition).
+- `abstract_deadline_history`, `late_abstract_deadline_history`,
+  `paper_deadline_history`: deadlines of earlier editions, newline-separated ISO
+  dates, most recent first.
 - `abstract_time` (24-hour HH:MM) with `abstract_timezone` (ET, AoE, UTC, ...);
   likewise `late_abstract_*` and `paper_*`. `deadline_time` is the display text.
 - `upcoming_start_date`, `upcoming_end_date`, `upcoming_location`,

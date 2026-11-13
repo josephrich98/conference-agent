@@ -169,6 +169,55 @@ def normalize_formats(value: "str | list | tuple | None") -> List[str]:
     return [fmt for fmt in CONFERENCE_FORMATS if fmt in present]
 
 
+# Published computer-science venue rankings, filled from the official lists by
+# ``scripts/fill_rankings.py`` (never researched by discovery). CCF is the China
+# Computer Federation's recommended list (A / B / C); CORE is the ICORE
+# conference ranking (A* / A / B / C). CORE's other labels (National: <country>,
+# Regional, Australasian B/C, Unranked, Journal Published) are not ranks on the
+# A*-C scale, so they are stored as no value.
+CCF_RANKS = ("A", "B", "C")
+CORE_RANKS = ("A*", "A", "B", "C")
+CCF_EDITION = "CCF 2022 (7th edition, with the 2024 name revisions)"
+CORE_EDITION = "ICORE2026"
+_CORE_NON_RANKS = re.compile(
+    r"^(national|regional|australasian|unranked|not ranked|journal published|multiconference|tbr|none|-)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_rank(value, vocabulary: tuple, label: str, non_ranks=None) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if non_ranks is not None and non_ranks.match(text):
+        return None
+    # Accept "CCF-A", "CCF A", "CORE A*", "Rank A", "a*", "A类".
+    core = re.sub(rf"^(?:{label}|rank)[\s:_-]*", "", text, flags=re.IGNORECASE)
+    core = core.removesuffix("类").strip().upper()
+    if core in vocabulary:
+        return core
+    raise ValueError(f"{label.upper()} rank must be one of {', '.join(vocabulary)}, got {value!r}")
+
+
+def normalize_ccf_rank(value) -> Optional[str]:
+    """A CCF rank (``A`` / ``B`` / ``C``), or ``None`` when blank.
+
+    Raises ``ValueError`` for any other value.
+    """
+    return _normalize_rank(value, CCF_RANKS, "ccf")
+
+
+def normalize_core_rank(value) -> Optional[str]:
+    """A CORE rank (``A*`` / ``A`` / ``B`` / ``C``), or ``None`` when blank or a
+    CORE label off that scale (National, Regional, Australasian, Unranked, ...).
+
+    Raises ``ValueError`` for any other value.
+    """
+    return _normalize_rank(value, CORE_RANKS, "core", _CORE_NON_RANKS)
+
+
 def normalize_guidelines(value) -> Optional[str]:
     """Clean submission-guideline text: ``\\n`` line endings, no trailing spaces
     on a line, no blank lines at either end, and runs of blank lines collapsed
@@ -572,6 +621,30 @@ class Conference(BaseModel):
             if text in ("false", "no", "n", "0"):
                 return False
         return value
+
+    # Published CS venue rankings (see ``CCF_RANKS`` / ``CORE_RANKS``): set by
+    # hand or by ``scripts/fill_rankings.py`` from the official lists, never by
+    # discovery (a survey that reports none keeps the stored value).
+    ccf_rank: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("ccf_rank", "ccf"),
+        description="China Computer Federation recommended-list rank: A / B / C",
+    )
+    core_rank: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("core_rank", "core"),
+        description="ICORE conference rank: A* / A / B / C",
+    )
+
+    @field_validator("ccf_rank", mode="before")
+    @classmethod
+    def _normalize_ccf(cls, value):
+        return normalize_ccf_rank(value)
+
+    @field_validator("core_rank", mode="before")
+    @classmethod
+    def _normalize_core(cls, value):
+        return normalize_core_rank(value)
 
     @field_validator("remote_option", mode="before")
     @classmethod

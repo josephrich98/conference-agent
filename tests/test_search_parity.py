@@ -50,14 +50,14 @@ _ROWS = [
         size="large", attendance=2500, remote_option="hybrid", prior_cost="$$",
         upcoming_paper_deadline=date(2026, 3, 10), upcoming_start_date=date(2026, 9, 20),
         upcoming_end_date=date(2026, 9, 24), format="paper, oral",
-        url="https://miccai.org",
+        url="https://miccai.org", ccf_rank="B", core_rank="A",
     ),
     dict(
         id="NEURIPS", acronym="NeurIPS", name="Neural Information Processing Systems",
         subcategory="machine learning", category="artificial intelligence", size="large",
         attendance=15000, remote_option="virtual", upcoming_cost=None,
         upcoming_paper_deadline=date(2026, 5, 15), upcoming_start_date=date(2026, 12, 7),
-        upcoming_end_date=date(2026, 12, 13), format="paper",
+        upcoming_end_date=date(2026, 12, 13), format="paper", ccf_rank="A", core_rank="A*",
     ),
     dict(
         id="SPR", acronym="SPR", name="Society for Pediatric Radiology",
@@ -66,7 +66,8 @@ _ROWS = [
         upcoming_abstract_deadline=date(2026, 1, 15), upcoming_start_date=date(2026, 5, 12),
         upcoming_end_date=date(2026, 5, 16), format="abstract",
     ),
-    # Upcoming dates not yet announced — date queries must fall back to prior.
+    # Upcoming dates not yet announced — conference dates fall back to prior,
+    # and the prior deadlines are past deadlines.
     dict(
         id="ESGAR", acronym="ESGAR", name="European Society of Gastrointestinal and Abdominal Radiology",
         subcategory="radiology", category="medicine", size="medium", attendance=600,
@@ -91,7 +92,8 @@ _ROWS = [
         id="ASCO", acronym="ASCO", name="American Society of Clinical Oncology",
         subcategory="oncology", category="medicine", size="large", attendance=40000,
         remote_option="hybrid", upcoming_cost="$$$$",
-        upcoming_abstract_deadline=date(2027, 2, 10), upcoming_start_date=date(2027, 6, 4),
+        upcoming_abstract_deadline=date(2027, 2, 10), abstract_deadline_history="2025-02-11",
+        upcoming_start_date=date(2027, 6, 4),
         upcoming_end_date=date(2027, 6, 8), format="abstract",
         upcoming_registration="Member: opens Jan; Non-member: opens Feb",
         # A late-breaking abstract window after the main deadline.
@@ -109,13 +111,15 @@ _ROWS = [
         upcoming_start_date=date(2026, 11, 11), upcoming_end_date=date(2026, 11, 14),
         format="abstract, poster, oral",
     ),
-    # Late abstract known only for the prior edition — date queries must fall
-    # back to it exactly as they do for the other date fields.
+    # Late abstract known only for the prior edition (a past deadline), with
+    # older abstract deadlines in the history.
     dict(
         id="ISMBX", acronym="ISMBX", name="Intelligent Systems for Molecular Biology",
         subcategory="genomics", category="biology", size="large", attendance=2000,
         remote_option="hybrid", upcoming_cost="$800",
         prior_abstract_deadline=date(2025, 4, 9),
+        abstract_deadline_history="2024-04-10\n2023-04-05",
+        paper_deadline_history="2022-01-20",
         prior_late_abstract_deadline=date(2025, 5, 7), late_abstract_month=5,
         prior_start_date=date(2025, 7, 13), prior_end_date=date(2025, 7, 17),
         format="abstract, paper, poster",
@@ -192,6 +196,20 @@ _QUERIES = [
     "conference:neurips",
     "name:oncology",  # alias for conference
     "deadline:<2026",  # alias for abstract_due
+    # Past deadlines: the most recent of a passed upcoming deadline, the prior
+    # edition's, and the stored history.
+    "past_abstract_due:*",
+    "NOT past_abstract_due:*",
+    "past_abstract_due:2025",
+    "past_abstract_due:2026",
+    "past_abstract_due:<2025",
+    "past_abstract_due:>=2026-02",
+    "past_paper_due:*",
+    "past_paper_due:2022",
+    "past_late_abstract_due:*",
+    "past_late_abstract_due:<today",
+    "prior_abstract:2025",  # alias for past_abstract_due
+    "abstract_due:* AND past_abstract_due:*",
     "date:2026",       # alias for conference_dates
     "(category:medicine OR category:stats) AND NOT remote:virtual",
     "size>=large",
@@ -207,6 +225,21 @@ _QUERIES = [
     "attendance>2.5k",
     "attendance=600",
     "attendance>=1k AND attendance<=10k",
+    "ccf:A",
+    "ccf:b",
+    "ccf:*",
+    "NOT ccf:*",
+    "NOT ccf:A",
+    "ccf>=B",
+    "ccf_rank:B",  # alias
+    "core:A*",
+    "core:A",
+    "core:a*",
+    "core>=A",
+    "core:>A",
+    "core<A*",
+    "core:* AND category:medicine",
+    "core:A* OR ccf:B",
 ]
 
 
@@ -269,6 +302,11 @@ def test_browser_search_matches_server(tmp_path):
         ("attendance:<1,000", ["CSHL-BIODATA", "ESGAR", "SPR", "TINYCONF"]),
         ("attendance>2.5k", ["ASCO", "JSM", "NEURIPS", "RSNA"]),
         ("attendance=2500", ["MICCAI"]),
+        ("core:A", ["MICCAI"]),
+        ("core:A*", ["NEURIPS"]),
+        ("core>=A", ["MICCAI", "NEURIPS"]),
+        ("ccf:A", ["NEURIPS"]),
+        ("ccf>=B", ["MICCAI", "NEURIPS"]),
     ],
 )
 def test_size_rank_and_attendance_queries(tmp_path, query, expected):
@@ -280,7 +318,9 @@ def test_size_rank_and_attendance_queries(tmp_path, query, expected):
         assert sorted(session.scalars(stmt)) == expected
 
 
-@pytest.mark.parametrize("query", ["size>=huge", "attendance>lots", "attendance>1.5"])
+@pytest.mark.parametrize(
+    "query", ["size>=huge", "attendance>lots", "attendance>1.5", "ccf:A*", "core:D", "core>=Z"]
+)
 def test_invalid_size_rank_and_attendance_values_raise(query):
     from conference_agent.web.search import QueryError
 

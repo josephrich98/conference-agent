@@ -9,7 +9,7 @@ Features:
 - Keep up to date with conference news such as venue announcements, submission deadline posting, and submission deadline extension via calendar events and email reminders
 - Organize conferences by category and subcategory, size, submission deadlines, and more
 - Search with keywords (e.g. "radiology november") or boolean logic
-- Sort conferences by those with the nearest submission deadlines, color-coded by timeframe
+- Sort conferences by those with the nearest submission deadlines, color-coded by timeframe; each deadline type has an Upcoming column and a Past column listing earlier deadlines, most recent first
 - See deadline times in your current timezone
 - Read each conference's abstract and paper submission guidelines (word or page limits, required structure, templates)
 - View conferences that have a history of extending deadlines
@@ -99,6 +99,11 @@ by searching `acronym`/`name` in the catalog.
 - Whole catalog (`conferences` list plus `fields` metadata): `https://conferenceagent.vercel.app/data/conferences.json`
 - Agent guide: `/llms.txt`
 - Calendar feeds: `/c/<id>/calendar.ics`, `/field/<tag>/calendar.ics`, `/calendar.ics`
+
+Deadlines are stored per edition (`upcoming_*_deadline`, `prior_*_deadline`);
+deadlines of earlier editions are in `abstract_deadline_history`,
+`late_abstract_deadline_history`, and `paper_deadline_history`
+(newline-separated ISO dates, most recent first).
 
 ```bash
 # AUA abstract deadline date and time of day

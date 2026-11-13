@@ -68,6 +68,17 @@ conference-agent add --update \
   --abstract-guidelines $'- 2,200 characters maximum, excluding title and authors\n- Structured: Purpose, Methods, Results, Conclusion\n- One figure or table allowed'
 ```
 
+Deadlines of editions before the prior one go in `--past-deadlines TYPE DATE`
+(repeat the flag; `{"type", "date"}` objects in JSON, `;`-separated
+`TYPE DATE` entries in a CSV cell). They are added to the stored history and
+listed in the website's Past deadline columns:
+
+```bash
+conference-agent add --update \
+  --conference-name "Radiological Society of North America Annual Meeting" \
+  --past-deadlines abstract 2024-05-01 --past-deadlines abstract 2023-05-03
+```
+
 The `--registration` field holds the upcoming edition's registration dates, one
 `Label: date` item per published date (newline- or `;`-separated, any date
 spelling, stored as `YYYY-MM-DD`): `Opens`, `Early bird deadline`, `Final
@@ -186,11 +197,34 @@ conference-agent discover \
   --backend api
 ```
 
+### CCF and CORE ranks
+
+The CCF and CORE columns are copied from the official lists, not researched by
+`discover`. To refresh them (for example after a new ICORE or CCF edition, or
+after adding computer-science conferences):
+
+```bash
+python scripts/fill_rankings.py --download --dry-run   # fetch the lists, report the matches
+python scripts/fill_rankings.py                        # write them
+```
+
+`--download` saves the ICORE CSV export and the CCF list to `data/rankings/`;
+without it the saved files are used. A conference gets a rank only when a list
+entry has the same acronym and a similar name; the report lists the
+acronym-only and name-only near misses, which stay blank. A venue listed under
+another acronym or a former name can be added to `CONFIRMED` in the script
+after checking it by hand. Values are only filled or changed, never cleared;
+set one by hand with `conference-agent add --update --conference-name NAME
+--ccf A --core A*`. When a new edition of either list is published, update
+`CORE_EDITION` / `CCF_EDITION` in `conference_agent/models.py` (and the CCF
+page slugs in the script if they change).
+
 ## Local to website database conversion
 
 - *underscores replaced with spaces, and capitalization applied as appropriate*
 - acronym + name + url --> conference ([ACRONYM](URL) — NAME)
-- upcoming_* + prior_* --> one column each, showing the upcoming value and falling back to the prior one
+- upcoming_* + prior_* --> one column each, showing the upcoming value and falling back to the prior one (except the deadlines, below)
+- each deadline kind (abstract, late abstract, paper) --> two columns: Upcoming (the upcoming deadline until it closes) and Past (abstract_deadline_history etc. + the prior deadline + a passed upcoming one, one per line, most recent first; sorts by the most recent)
 - upcoming_start_date + upcoming_end_date --> conference dates (START – END)
 - abstract_month, late_abstract_month, paper_month, conference_month (all derived from date columns) --> month names (1 --> January)
 - attendance + attendance_year --> attendance (45,000 (2025))
@@ -231,8 +265,9 @@ whole field, only when:
 At most 18 series are researched per run; the rest wait for the next day.
 Targeted results are merged without clearing fields the agent did not re-find.
 Once a meeting is over (and no deadline of that edition is still ahead), its
-dates move from the upcoming columns to the prior ones; an edition recorded in
-both is merged into one.
+dates move from the upcoming columns to the prior ones, and the replaced prior
+edition's deadlines move to the deadline history columns; an edition recorded
+in both is merged into one.
 
 Each run also:
 

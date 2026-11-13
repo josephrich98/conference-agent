@@ -234,8 +234,11 @@
        (like Excel's frozen panes) while the rest scrolls. */
     .table-scroll {
       overflow: auto;
+      /* svh (the height with the browser's toolbars shown) rather than dvh:
+         dvh changes as a phone's address bar hides and reappears, which would
+         resize this box, and the page around it, in the middle of a scroll. */
       max-height: calc(100vh - 16px);
-      max-height: calc(100dvh - 16px);
+      max-height: calc(100svh - 16px);
       border: 1px solid var(--border);
       /* Panning is done by the axis-locking touch handler in the script. */
       touch-action: pinch-zoom;
@@ -536,6 +539,115 @@
     <div class="sub-chips" id="sub-chips"></div>
   </nav>
 
+  <style>
+    .view-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 10px; }
+    .view-toolbar .vt-slot { display: contents; }
+    .view-toolbar { padding: 0 24px; }
+    .view-toolbar button { padding: 6px 11px; font-size: 13px; }
+    .view-toolbar button.on { border-color: var(--accent); color: var(--accent); }
+    .vt-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    .vt-menu { position: relative; }
+    .vt-panel {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 10;
+      min-width: 180px;
+      max-width: calc(100vw - 32px);
+      padding: 6px;
+      background: var(--panel);
+      border: 1px solid var(--rule-strong);
+      border-radius: 0;
+      box-shadow: 0 3px 0 rgba(28, 42, 48, 0.08);
+    }
+    .vt-panel[hidden] { display: none; }
+    .vt-panel label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 6px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .vt-panel label:hover { background: var(--accent-weak); }
+    .vt-panel .vt-clear { display: block; padding: 6px 6px 2px; margin-top: 4px; border-top: 1px solid var(--border); color: var(--accent); cursor: pointer; font-size: 12px; }
+    .vt-panel .vt-clear[hidden] { display: none; }
+    .vt-menu[hidden] { display: none; }
+    .vt-sort-panel { max-height: min(420px, 70vh); overflow-y: auto; }
+    .vt-sep { border-top: 1px solid var(--border); margin: 4px 0; }
+    button:disabled { opacity: 0.45; cursor: default; border-color: var(--border); }
+    /* Tile and List views (#vt-view): the same rows as the table, one card each.
+       Both are built by cardHtml(); only the layout differs. */
+    .cards[hidden] { display: none; }
+    .cards.tile {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 10px;
+    }
+    .card {
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+    .cards.tile .card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
+    .card .conf-name { font-size: 15px; overflow-wrap: anywhere; }
+    .rank-badges { white-space: nowrap; }
+    .card .rank-badge {
+      font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; padding: 0 5px;
+      vertical-align: 2px; cursor: pointer; background: transparent;
+      border: 1px solid var(--rule-strong); border-left-width: 1px;
+    }
+    .card .rank-badge:hover { outline: 1px solid var(--accent); }
+    .card-full { color: var(--muted); font-size: 12px; margin-top: 1px; overflow-wrap: anywhere; }
+    .card-tags { margin-top: 5px; }
+    .card-tags .cat-tag { cursor: pointer; white-space: normal; }
+    .card-tags .cat-tag:hover { outline: 1px solid var(--accent); }
+    .card-tags .cat-tag.sub { border-left-color: var(--rule-strong); background: transparent; border: 1px solid var(--border); border-left-width: 2px; }
+    .card-facts > div { overflow-wrap: anywhere; }
+    .fact-label, .dl-label { color: var(--muted); }
+    .fact-label { display: inline-block; min-width: 62px; }
+    .card-deadlines { border-top: 1px solid var(--border); padding-top: 7px; }
+    .dl-item + .dl-item { margin-top: 2px; }
+    .dl-past { font-size: 12px; }
+    .dl-past .dl-label { font-style: italic; }
+    .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+    .card-empty { padding: 12px 0; }
+    /* List: one row per conference (two on a phone). */
+    .cards.list { border: 1px solid var(--border); background: var(--panel); }
+    .cards.list .card {
+      display: grid;
+      grid-template-columns: minmax(0, 2.1fr) minmax(0, 1.5fr) minmax(0, 1.6fr) auto;
+      gap: 4px 16px;
+      align-items: start;
+      padding: 8px 12px;
+      border: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .cards.list .card:last-child { border-bottom: none; }
+    .cards.list .card .conf-name { font-size: 14px; }
+    .cards.list .card-tags { margin-top: 2px; }
+    .cards.list .card-tags .cat-tag { font-size: 11px; }
+    .cards.list .fact-label { display: none; }
+    .cards.list .card-facts > div:not(:first-child) { color: var(--muted); }
+    .cards.list .card-deadlines { border-top: none; padding-top: 0; }
+    .cards.list .card-actions { margin-top: 0; flex-wrap: nowrap; }
+    .cards.list .cal-btn { padding: 4px 8px; }
+    .cards.list .card-facts > div { display: inline; }
+    .cards.list .card-facts > div + div::before { content: " · "; color: var(--muted); }
+    .card a.map-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
+    .card a.map-link:hover { color: var(--accent); }
+    @media (max-width: 760px) {
+      .cards.list .card { grid-template-columns: minmax(0, 1fr) auto; }
+      .cards.list .card-main, .cards.list .card-facts { grid-column: 1 / -1; }
+      .cards.list .card-actions { align-self: center; }
+    }
+    @media (max-width: 600px) {
+      .cards.tile { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
   <div class="controls">
     <input id="query" type="text" placeholder='Search by field, month, place, or name (radiology november), or a boolean query (size:large AND remote:hybrid)' autocomplete="off" />
     <button class="primary" id="search-btn">Search</button>
@@ -550,6 +662,67 @@
       </div>
     </div>
     <button id="csv-btn">Export CSV</button>
+  </div>
+
+  <!-- Display toolbar below the search bar. Each slot is filled by its own feature. -->
+  <div class="view-toolbar" id="view-toolbar">
+    <span class="vt-slot" id="vt-view">
+      <div class="vt-menu">
+        <button type="button" id="vt-view-btn" aria-haspopup="true" aria-expanded="false" title="Show the results as a table, tiles, or a list">View: Table ▾</button>
+        <div class="vt-panel" id="vt-view-panel" hidden role="menu" aria-label="View">
+          <label><input type="radio" name="vt-view" value="table" /><span>Table</span></label>
+          <label><input type="radio" name="vt-view" value="tile" /><span>Tile</span></label>
+          <label><input type="radio" name="vt-view" value="list" /><span>List</span></label>
+        </div>
+      </div>
+      <div class="vt-menu" id="vt-sort-menu" hidden>
+        <button type="button" id="vt-sort-btn" aria-haspopup="true" aria-expanded="false" title="Sort the tiles or list (the same order as the table's column headers)">Sort ▾</button>
+        <div class="vt-panel vt-sort-panel" id="vt-sort-panel" hidden role="menu" aria-label="Sort by">
+          <div id="vt-sort-list"></div>
+          <div class="vt-sep"></div>
+          <label><input type="radio" name="vt-order" value="asc" /><span>Ascending</span></label>
+          <label><input type="radio" name="vt-order" value="desc" /><span>Descending</span></label>
+        </div>
+      </div>
+    </span>
+    <span class="vt-slot" id="vt-display">
+      <label class="vt-check" title="Hide conferences with no abstract, late abstract, or paper deadline still ahead"><input type="checkbox" id="vt-hide-past" /><span>Hide past deadlines</span></label>
+      <div class="vt-menu">
+        <button type="button" id="vt-date-btn" aria-haspopup="true" aria-expanded="false" title="How dates are written in the table">Date format ▾</button>
+        <div class="vt-panel" id="vt-date-panel" hidden role="menu" aria-label="Date format"></div>
+      </div>
+      <div class="vt-menu">
+        <button type="button" id="vt-time-btn" aria-haspopup="true" aria-expanded="false" title="12- or 24-hour deadline times">Time format ▾</button>
+        <div class="vt-panel" id="vt-time-panel" hidden role="menu" aria-label="Time format">
+          <label><input type="radio" name="vt-time" value="12" /><span>Standard (12-hour)</span></label>
+          <label><input type="radio" name="vt-time" value="24" /><span>Military (24-hour)</span></label>
+        </div>
+      </div>
+      <div class="vt-menu">
+        <button type="button" id="vt-size-btn" aria-haspopup="true" aria-expanded="false" title="Filter by size (annual attendance)">Size ▾</button>
+        <div class="vt-panel" id="vt-size-panel" hidden role="menu" aria-label="Filter by size">
+          <div id="vt-size-list"></div>
+          <a class="vt-clear" id="vt-size-clear">Clear filter</a>
+        </div>
+      </div>
+      <button type="button" id="vt-minimal" title="Show only the main columns">Minimal columns</button>
+    </span>
+    <span class="vt-slot" id="vt-rank">
+      <div class="vt-menu">
+        <button type="button" id="vt-ccf-btn" aria-haspopup="true" aria-expanded="false" title="Filter by CCF rank (China Computer Federation recommended list, computer-science venues)">CCF ▾</button>
+        <div class="vt-panel" id="vt-ccf-panel" hidden role="menu" aria-label="Filter by CCF rank">
+          <div id="vt-ccf-list"></div>
+          <a class="vt-clear" id="vt-ccf-clear">Clear filter</a>
+        </div>
+      </div>
+      <div class="vt-menu">
+        <button type="button" id="vt-core-btn" aria-haspopup="true" aria-expanded="false" title="Filter by CORE rank (ICORE conference ranking)">CORE ▾</button>
+        <div class="vt-panel" id="vt-core-panel" hidden role="menu" aria-label="Filter by CORE rank">
+          <div id="vt-core-list"></div>
+          <a class="vt-clear" id="vt-core-clear">Clear filter</a>
+        </div>
+      </div>
+    </span>
   </div>
 
   <div class="syntax">
@@ -569,22 +742,15 @@
       <tbody id="results-body"></tbody>
     </table>
     </div>
+    <div id="cards" class="cards" hidden></div>
     <p class="add-more">Don't see your conference? <a href="add/">Add it here</a>.</p>
     <p class="add-more">To check out the command-line interface or contribute to this open-source repository, visit the <a href="https://github.com/josephrich98/conference-agent" target="_blank" rel="noopener noreferrer">GitHub Repository</a>.</p>
   </div>
 
   <div id="toast"></div>
 
-  <div id="time-pop" class="opt-pop" hidden role="dialog" aria-label="Deadline time display">
-    <label><input type="checkbox" id="tp-military" /><span>Military time (24-hour)</span></label>
-  </div>
-
   <div id="airport-pop" class="opt-pop" hidden role="dialog" aria-label="Airports display">
     <label><input type="checkbox" id="ap-small" /><span>Include all airports</span></label>
-  </div>
-
-  <div id="past-pop" class="opt-pop" hidden role="dialog" aria-label="Past dates">
-    <label title="When sorting a deadline or Conference dates column ascending"><input type="checkbox" id="pp-past" /><span>Include past deadlines</span></label>
   </div>
 
   <div id="filter-pop" hidden role="dialog" aria-label="Filter by value">
@@ -640,6 +806,13 @@
       rank: (v) => Number(v),
     });
     const SIZE_RANK = { massive: 1, large: 2, medium: 3, small: 4 };
+    // The published venue rankings, best first (the order the value lists and
+    // the toolbar's CCF / CORE menus use).
+    const RANK_ORDER = { ccf_rank: ["A", "B", "C"], core_rank: ["A*", "A", "B", "C"] };
+    const rankFacet = (key) => ({
+      values: (r) => (r[key] ? [r[key]] : []),
+      rank: (v) => { const i = RANK_ORDER[key].indexOf(v); return i < 0 ? 9 : i; },
+    });
 
     const COLUMNS = [
       { key: "id", label: "ID", sort: null, defaultHidden: true,
@@ -653,12 +826,22 @@
       { key: "attendance", field: "attendance", label: "Attendance", sort: "attendance" },
       { key: "remote_option", field: "remote", label: "Remote", sort: "remote_option",
         facet: { values: (r) => (r.remote_option ? [r.remote_option] : []) } },
+      { key: "ccf_rank", field: "ccf", label: "CCF", sort: "ccf_rank", facet: rankFacet("ccf_rank"),
+        note: "China Computer Federation recommended-list rank (A, B, C), for computer-science venues on the list" },
+      { key: "core_rank", field: "core", label: "CORE", sort: "core_rank", facet: rankFacet("core_rank"),
+        note: "ICORE conference rank (A*, A, B, C); blank when unlisted or ranked National, Regional, or Unranked" },
       { key: "abstract_month", field: "abstract_month", label: "Abstract month", sort: "abstract_month", facet: monthFacet("abstract_month") },
-      { key: "upcoming_abstract_deadline", field: "abstract_due", label: "Abstract due", sort: "upcoming_abstract_deadline" },
+      { key: "upcoming_abstract_deadline", field: "abstract_due", label: "Upcoming abstract due", sort: "upcoming_abstract_deadline" },
+      { key: "past_abstract_deadline", field: "past_abstract_due", label: "Past abstract due", sort: "past_abstract_deadline",
+        note: "Past abstract deadlines, most recent first (sorts by the most recent)" },
       { key: "late_abstract_month", field: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month", facet: monthFacet("late_abstract_month") },
-      { key: "upcoming_late_abstract_deadline", field: "late_abstract_due", label: "Late abstract due", sort: "upcoming_late_abstract_deadline" },
+      { key: "upcoming_late_abstract_deadline", field: "late_abstract_due", label: "Upcoming late abstract due", sort: "upcoming_late_abstract_deadline" },
+      { key: "past_late_abstract_deadline", field: "past_late_abstract_due", label: "Past late abstract due", sort: "past_late_abstract_deadline",
+        note: "Past late abstract deadlines, most recent first (sorts by the most recent)" },
       { key: "paper_month", field: "paper_month", label: "Paper month", sort: "paper_month", facet: monthFacet("paper_month") },
-      { key: "upcoming_paper_deadline", field: "paper_due", label: "Paper due", sort: "upcoming_paper_deadline" },
+      { key: "upcoming_paper_deadline", field: "paper_due", label: "Upcoming paper due", sort: "upcoming_paper_deadline" },
+      { key: "past_paper_deadline", field: "past_paper_due", label: "Past paper due", sort: "past_paper_deadline",
+        note: "Past paper deadlines, most recent first (sorts by the most recent)" },
       { key: "deadline_time", field: "deadline_time", label: "Deadline time", sort: null },
       { key: "abstract_guidelines", field: "abstract_guidelines", label: "Abstract guidelines", sort: null },
       { key: "paper_guidelines", field: "paper_guidelines", label: "Paper guidelines", sort: null },
@@ -713,6 +896,7 @@
         .map((k) => `[data-col="${k}"] { display: none; }`)
         .join("\n");
       $("col-style").textContent = rules;
+      syncMinimalButton();
       try {
         localStorage.setItem(COLS_KEY, JSON.stringify([...hiddenCols]));
         localStorage.setItem(SHOWN_KEY, JSON.stringify([...shownCols]));
@@ -754,6 +938,36 @@
     // Full month names indexed 1-12 (index 0 unused), for the derived month columns.
     const MONTHS = ["", "January", "February", "March", "April", "May", "June",
       "July", "August", "September", "October", "November", "December"];
+
+    // How dates are written in the table, chosen in the toolbar's Date format
+    // menu (remembered per browser; default ISO, as stored). Display only:
+    // search, sorting, and the data-date attributes keep ISO. `day` formats a
+    // YYYY-MM-DD date, `month` a YYYY-MM one (a registration month).
+    const DATE_FORMAT_KEY = "conference-agent.date-format";
+    const mon = (m) => MONTHS[m].slice(0, 3);
+    const DATE_FORMATS = {
+      iso: { day: (y, m, d) => `${y}-${pad2(m)}-${pad2(d)}`, month: (y, m) => `${y}-${pad2(m)}` },
+      mdy: { day: (y, m, d) => `${mon(m)} ${d}, ${y}`, month: (y, m) => `${mon(m)} ${y}` },
+      dmy: { day: (y, m, d) => `${d} ${mon(m)} ${y}`, month: (y, m) => `${mon(m)} ${y}` },
+      us: { day: (y, m, d) => `${pad2(m)}/${pad2(d)}/${y}`, month: (y, m) => `${pad2(m)}/${y}` },
+      eu: { day: (y, m, d) => `${pad2(d)}/${pad2(m)}/${y}`, month: (y, m) => `${pad2(m)}/${y}` },
+    };
+    const DATE_FORMAT_ORDER = ["iso", "mdy", "dmy", "us", "eu"];
+    let dateFormat = "iso";
+    try {
+      const saved = localStorage.getItem(DATE_FORMAT_KEY);
+      if (saved in DATE_FORMATS) dateFormat = saved;
+    } catch (e) { /* storage blocked */ }
+    // The one place a date is turned into display text. Anything that is not an
+    // ISO day or month is returned unchanged (escaped by the caller as before).
+    function fmtDate(value) {
+      const s = String(value ?? "");
+      let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+      if (m) return DATE_FORMATS[dateFormat].day(+m[1], +m[2], +m[3]);
+      m = /^(\d{4})-(\d{2})$/.exec(s);
+      if (m && +m[2] >= 1 && +m[2] <= 12) return DATE_FORMATS[dateFormat].month(+m[1], +m[2]);
+      return s;
+    }
     // A derived month cell, colored like the date it was derived from (the same
     // coalesced upcoming-else-prior date its neighboring column shows), so the
     // urgency signal survives when the full date columns are hidden. The color is
@@ -773,18 +987,12 @@
     const monthStart = () => (monthFromJanuary ? 1 : NOW.getMonth() + 1);
     const dayStart = () => (monthFromJanuary ? 1 : NOW.getDate());
 
-    // An ascending sort on a deadline or Conference dates column hides the rows
-    // whose shown date (upcoming, else prior) is before today, so the list starts
-    // with what is still ahead; "Include past deadlines" in those columns' ⚙ box
-    // (remembered per browser, default off) keeps them. Rows with no date stay,
-    // sorted last. A meeting counts as past only once its last day is.
-    const PAST_KEY = "conference-agent.include-past";
-    let includePast = false;
-    try { includePast = localStorage.getItem(PAST_KEY) === "1"; } catch (e) { /* storage blocked */ }
+    // The deadline columns come in pairs (Upcoming / Past), so a deadline sort
+    // needs no hiding: a passed deadline has already moved to its Past column.
+    // An ascending Conference dates sort still hides the meetings whose last day
+    // (upcoming, else prior) is before today, so the list starts with what is
+    // ahead; a descending sort lists them. Rows with no date stay, sorted last.
     const PAST_DATE = {
-      upcoming_abstract_deadline: (r) => r.upcoming_abstract_deadline || r.prior_abstract_deadline,
-      upcoming_late_abstract_deadline: (r) => r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline,
-      upcoming_paper_deadline: (r) => r.upcoming_paper_deadline || r.prior_paper_deadline,
       upcoming_start_date: (r) => (r.upcoming_start_date
         ? r.upcoming_end_date || r.upcoming_start_date
         : r.prior_end_date || r.prior_start_date),
@@ -798,7 +1006,7 @@
     // The rows to drop under the current sort, or null when none are dropped.
     function pastFilter() {
       const date = PAST_DATE[state.sort];
-      if (includePast || !date || state.order !== "asc") return null;
+      if (!date || state.order !== "asc") return null;
       const today = todayIso();
       return (r) => {
         const d = date(r);
@@ -829,8 +1037,8 @@
 
     function dateRange(start, end) {
       if (!start) return '<span class="muted">—</span>';
-      if (end && end !== start) return `<span class="nobreak">${start}</span> – <span class="nobreak">${end}</span>`;
-      return `<span class="nobreak">${start}</span>`;
+      if (end && end !== start) return `<span class="nobreak">${fmtDate(start)}</span> – <span class="nobreak">${fmtDate(end)}</span>`;
+      return `<span class="nobreak">${fmtDate(start)}</span>`;
     }
 
     // Wrap a rendered date value, coloring it by how its (start) date sits
@@ -838,22 +1046,45 @@
     // itself, not by which edition it came from.
     // The span carries its date and the instant it passes so recolorDates() can
     // re-judge it as time moves, without re-rendering or redeploying anything.
-    function dateSpan(inner, refDate, spec = {}) {
+    // `attrs` adds attributes to the span (an Upcoming deadline is marked
+    // data-up, so the page re-renders when it passes; see recolorDates).
+    function dateSpan(inner, refDate, spec = {}, attrs = "") {
       if (!refDate) return `<span>${inner}</span>`;
       const at = ConferenceCalendar.deadlineInstant(refDate, spec.time, spec.tz);
       const dc = dateClass(refDate, at);
       const cls = dc ? ` class="${dc}"` : "";
-      return `<span${cls} data-date="${refDate}" data-at="${at}">${inner}</span>`;
+      return `<span${cls} data-date="${refDate}" data-at="${at}"${attrs}>${inner}</span>`;
     }
 
-    function dateOrPrior(upcoming, prior, spec, extensions) {
-      const value = upcoming || prior;
+    // The Upcoming deadline cell of one kind: the upcoming edition's deadline
+    // until the instant it closes (ConferenceSearch.upcomingDeadline), then
+    // nothing, since it has moved to the Past cell. Carries the ⏩ marker of
+    // past extensions (and + when the date is itself an extended one).
+    function upcomingDeadlineCell(r, kind) {
+      const value = ConferenceSearch.upcomingDeadline(r, kind);
       if (!value) return '<span class="muted">—</span>';
-      const lines = extensionLines(extensions);
+      const lines = extensionLines(r[`${kind}_deadline_extension`]);
       const plus = extendedMark(value, lines);
       const [mark, note] = extensionMark(lines);
-      if (!mark && !plus) return dateSpan(value, value, spec);
-      return `<span class="nobreak">${dateSpan(value, value, spec)}${plus}${mark}</span>${note}`;
+      const span = dateSpan(fmtDate(value), value, specFor(r, kind), " data-up");
+      if (!mark && !plus) return span;
+      return `<span class="nobreak">${span}${plus}${mark}</span>${note}`;
+    }
+
+    // The Past deadline cell of one kind: every known past deadline, one per
+    // line, most recent first (ConferenceSearch.pastDeadlines: the stored
+    // history, the prior edition's, and an upcoming one that has passed). With
+    // no upcoming deadline shown, the ⏩ marker goes on the most recent one.
+    function pastDeadlineCell(r, kind) {
+      const dates = ConferenceSearch.pastDeadlines(r, kind);
+      if (!dates.length) return '<span class="muted">—</span>';
+      const lines = extensionLines(r[`${kind}_deadline_extension`]);
+      const [mark, note] = ConferenceSearch.upcomingDeadline(r, kind) ? ["", ""] : extensionMark(lines);
+      const spec = specFor(r, kind);
+      return dates.map((d, i) => {
+        const tail = extendedMark(d, lines) + (i === 0 ? mark : "");
+        return `<div class="nobreak">${dateSpan(fmtDate(d), d, spec)}${tail}</div>`;
+      }).join("") + note;
     }
 
     // The recorded extensions (newline-separated "MM/DD/YYYY – MM/DD/YYYY",
@@ -875,7 +1106,7 @@
     function extendedMark(value, lines) {
       const hit = lines.find(([, , ext]) => ext === value);
       if (!hit) return "";
-      const text = `Extended deadline (originally ${hit[0].split(" – ")[0]})`;
+      const text = `Extended deadline (originally ${hit[1] ? fmtDate(hit[1]) : hit[0].split(" – ")[0]})`;
       return `<sup class="ext-plus" title="${escapeHtml(text)}" aria-label="${escapeHtml(text)}">+</sup>`;
     }
 
@@ -889,7 +1120,7 @@
       const past = lines.filter(([, , ext]) => ext && ext < today);
       if (!past.length) return ["", ""];
       const text = `Past deadline extension${past.length > 1 ? "s" : ""}:\n` +
-        past.map(([l]) => l.replace(" – ", " → ")).join("\n");
+        past.map(([l, orig, ext]) => (orig && ext ? `${fmtDate(orig)} → ${fmtDate(ext)}` : l.replace(" – ", " → "))).join("\n");
       return [
         `<span class="ext-mark" role="button" tabindex="0" title="${escapeHtml(text)}" ` +
           `aria-label="${escapeHtml(text)}">⏩</span>`,
@@ -902,13 +1133,19 @@
     // a day), and when the tab becomes visible again after sleeping in the background.
     let recolorTimer = null;
     function recolorDates() {
-      // A new day: re-run the search so an ascending date sort drops the dates
-      // that are now past (search() re-renders, which recolors and re-arms).
+      const now = Date.now();
+      // An Upcoming deadline just closed: re-run the search so it moves to its
+      // Past column (and re-sorts/re-filters); search() re-renders, which
+      // recolors and re-arms.
+      for (const el of document.querySelectorAll("[data-up][data-at]")) {
+        if (Number(el.dataset.at) <= now) { pastDay = todayIso(); search(); return; }
+      }
+      // A new day: re-run the search so an ascending Conference dates sort
+      // drops the meetings that are now past.
       if (pastDay !== todayIso()) {
         pastDay = todayIso();
         if (pastFilter()) { search(); return; }
       }
-      const now = Date.now();
       for (const el of document.querySelectorAll("[data-at]")) {
         el.className = dateClass(el.dataset.date, Number(el.dataset.at), now);
       }
@@ -1050,7 +1287,9 @@
       const rows = items.map(([label, text]) => {
         if (label === "Notes") return `<div class="reg-notes">${escapeHtml(text)}</div>`;
         const isDay = /^\d{4}-\d{2}-\d{2}$/.test(text);
-        const shown = isDay && label !== "Opens" ? dateSpan(text, text) : escapeHtml(text);
+        const isDate = isDay || /^\d{4}-\d{2}$/.test(text);
+        const shown = isDay && label !== "Opens" ? dateSpan(fmtDate(text), text)
+          : escapeHtml(isDate ? fmtDate(text) : text);
         return `<div class="nobreak"><span class="reg-label">${label}:</span> ${shown}</div>`;
       });
       const title = upcoming ? "" : ' title="Previous edition"';
@@ -1058,7 +1297,7 @@
     }
 
     // 24-hour ("military") display of the Deadline time column, chosen in the
-    // header's ⚙ box (remembered per browser). Display only: the stored times are
+    // toolbar's Time format menu (remembered per browser). Display only: the stored times are
     // always 24-hour, and search and the calendar notes are unaffected.
     const MILITARY_KEY = "conference-agent.military-time";
     let militaryTime = false;
@@ -1134,7 +1373,7 @@
         }
         if (col.key in OPTION_POPS) {
           // Not a value filter: a small box of display choices for the column
-          // (12/24-hour times; whether to list all airports).
+          // (whether to list all airports).
           const tb = document.createElement("button");
           tb.className = "filt";
           tb.textContent = "⚙";
@@ -1171,6 +1410,42 @@
       }
     }
 
+    // The conference's name, shared by the table and the Tile / List views. The
+    // URL hyperlinks the acronym, with the full name in plain text after it.
+    // When the row has no distinct acronym (none stored, or it equals the
+    // name), the link wraps the full name instead and the dash is dropped.
+    function confName(r) {
+      const acronym = (r.acronym || "").trim();
+      const fullName = (r.name || "").trim();
+      const hasAcronym = Boolean(acronym) && acronym.toLowerCase() !== fullName.toLowerCase();
+      const linkText = escapeHtml(hasAcronym ? acronym : (fullName || acronym));
+      const linked = r.url
+        ? `<a href="${attr(externalUrl(r.url))}" target="_blank" rel="noopener">${linkText}</a>`
+        : linkText;
+      return { linked, fullName, hasAcronym };
+    }
+
+    const sizeCell = (r) => (r.size
+      ? `<span class="size ${escapeHtml(r.size)}">${escapeHtml(r.size)}</span>`
+      : '<span class="muted">—</span>');
+
+    // Attendance figure with the year it describes in parentheses, e.g.
+    // "45,000 (2025)". The size bucket is derived from this number.
+    const attendanceText = (r) => ((r.attendance != null)
+      ? `${Number(r.attendance).toLocaleString()}${r.attendance_year ? ` (${r.attendance_year})` : ""}`
+      : '<span class="muted">—</span>');
+
+    // Category (the broad bucket) and subcategory (the specific field) are
+    // both multi-valued; render each as comma-split tags. `data-v` lets a
+    // click on one tag filter the column to it; the Tile / List views also
+    // name the column (`facet`), since their tags are not inside a column cell.
+    function tagList(vals, facet = "", cls = "") {
+      if (!vals.length) return '<span class="muted">—</span>';
+      const f = facet ? ` data-facet="${facet}" role="button" tabindex="0" title="Filter by ${facet}"` : "";
+      return vals.map((v) =>
+        `<span class="cat-tag${cls}" data-v="${attr(v)}"${f}>${escapeHtml(v)}</span>`).join("");
+    }
+
     function renderRows(rows) {
       const body = $("results-body");
       body.innerHTML = "";
@@ -1183,34 +1458,12 @@
       for (const r of rows) {
         const tr = document.createElement("tr");
 
-        // The URL hyperlinks the acronym, with the full name in plain text after
-        // it. When the row has no distinct acronym (none stored, or it equals the
-        // name), the link wraps the full name instead and the dash is dropped.
-        const acronym = (r.acronym || "").trim();
-        const fullName = (r.name || "").trim();
-        const hasAcronym = acronym && acronym.toLowerCase() !== fullName.toLowerCase();
-        const linkText = hasAcronym ? acronym : (fullName || acronym);
-        const linked = r.url
-          ? `<a href="${externalUrl(r.url)}" target="_blank" rel="noopener">${linkText}</a>`
-          : linkText;
-        const name = hasAcronym ? `${linked} — ${fullName}` : linked;
+        const { linked, fullName, hasAcronym } = confName(r);
+        const name = hasAcronym ? `${linked} — ${escapeHtml(fullName)}` : linked;
 
-        const sizeHtml = r.size
-          ? `<span class="size ${r.size}">${r.size}</span>`
-          : '<span class="muted">—</span>';
+        const sizeHtml = sizeCell(r);
+        const attendanceHtml = attendanceText(r);
 
-        // Attendance figure with the year it describes in parentheses, e.g.
-        // "45,000 (2025)". The size bucket above is derived from this number.
-        const attendanceHtml = (r.attendance != null)
-          ? `${Number(r.attendance).toLocaleString()}${r.attendance_year ? ` (${r.attendance_year})` : ""}`
-          : '<span class="muted">—</span>';
-
-        // Category (the broad bucket, derived) and subcategory (the specific
-        // field) are both multi-valued; render each as comma-split tags.
-        // `data-v` lets a click on one tag filter the column to it.
-        const tagList = (vals) => (vals.length
-          ? vals.map((v) => `<span class="cat-tag" data-v="${escapeHtml(v)}">${v}</span>`).join("")
-          : '<span class="muted">—</span>');
         const catHtml = tagList(splitList(r.category));
         const subcatHtml = tagList(splitList(r.subcategory));
 
@@ -1227,12 +1480,17 @@
           <td data-col="size">${sizeHtml}</td>
           <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
           <td data-col="remote_option">${r.remote_option ? r.remote_option : '<span class="muted">—</span>'}</td>
+          <td data-col="ccf_rank" class="nobreak">${r.ccf_rank ? escapeHtml(r.ccf_rank) : '<span class="muted">—</span>'}</td>
+          <td data-col="core_rank" class="nobreak">${r.core_rank ? escapeHtml(r.core_rank) : '<span class="muted">—</span>'}</td>
           <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
-          <td data-col="upcoming_abstract_deadline">${dateOrPrior(r.upcoming_abstract_deadline, r.prior_abstract_deadline, specFor(r, "abstract"), r.abstract_deadline_extension)}</td>
+          <td data-col="upcoming_abstract_deadline">${upcomingDeadlineCell(r, "abstract")}</td>
+          <td data-col="past_abstract_deadline">${pastDeadlineCell(r, "abstract")}</td>
           <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month, r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline, specFor(r, "late_abstract"))}</td>
-          <td data-col="upcoming_late_abstract_deadline">${dateOrPrior(r.upcoming_late_abstract_deadline, r.prior_late_abstract_deadline, specFor(r, "late_abstract"), r.late_abstract_deadline_extension)}</td>
+          <td data-col="upcoming_late_abstract_deadline">${upcomingDeadlineCell(r, "late_abstract")}</td>
+          <td data-col="past_late_abstract_deadline">${pastDeadlineCell(r, "late_abstract")}</td>
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline, specFor(r, "paper"))}</td>
-          <td data-col="upcoming_paper_deadline">${dateOrPrior(r.upcoming_paper_deadline, r.prior_paper_deadline, specFor(r, "paper"), r.paper_deadline_extension)}</td>
+          <td data-col="upcoming_paper_deadline">${upcomingDeadlineCell(r, "paper")}</td>
+          <td data-col="past_paper_deadline">${pastDeadlineCell(r, "paper")}</td>
           <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
           <td data-col="abstract_guidelines">${guidelinesCell(r.abstract_guidelines)}</td>
           <td data-col="paper_guidelines">${guidelinesCell(r.paper_guidelines)}</td>
@@ -1262,6 +1520,96 @@
       scheduleRecolor();
     }
 
+    // ------------------------------------------------- Tile / List views
+    // One card per row of the current results (same search, filters, and
+    // sort as the table), built from the table's cell helpers so the date
+    // coloring, extension markers, and the recolor timer work unchanged.
+    // The tile grid and the compact list differ only in CSS (.cards.tile /
+    // .cards.list).
+    const DEADLINE_LABELS = { abstract: "Abstract", late_abstract: "Late abstract", paper: "Paper" };
+
+    // The upcoming deadlines; with none ahead, the most recent past one (of
+    // any kind), shown smaller, so a finished call still has a reference date.
+    function cardDeadlines(r) {
+      const up = DEADLINE_KINDS.filter((k) => ConferenceSearch.upcomingDeadline(r, k));
+      if (up.length) {
+        return up.map((k) =>
+          `<div class="dl-item"><span class="dl-label">${DEADLINE_LABELS[k]} due</span> ${upcomingDeadlineCell(r, k)}</div>`).join("");
+      }
+      let best = null;
+      for (const kind of DEADLINE_KINDS) {
+        const d = ConferenceSearch.pastDeadlines(r, kind)[0];
+        if (d && (!best || d > best.d)) best = { kind, d };
+      }
+      if (!best) return '<div class="dl-item muted">No deadlines listed</div>';
+      const lines = extensionLines(r[`${best.kind}_deadline_extension`]);
+      const [mark, note] = extensionMark(lines);
+      const span = dateSpan(fmtDate(best.d), best.d, specFor(r, best.kind));
+      return `<div class="dl-item dl-past"><span class="dl-label">Last ${DEADLINE_LABELS[best.kind].toLowerCase()} due</span> ` +
+        `<span class="nobreak">${span}${extendedMark(best.d, lines)}${mark}</span>${note}</div>`;
+    }
+
+    // The CCF / CORE ranks as small badges beside the name; a click filters
+    // that column to the rank (like a tag), through the .cat-tag[data-facet]
+    // handler.
+    function rankBadges(r) {
+      return [["ccf_rank", "CCF"], ["core_rank", "CORE"]]
+        .filter(([key]) => r[key])
+        .map(([key, label]) =>
+          `<span class="cat-tag rank-badge" data-facet="${key}" data-v="${attr(r[key])}" role="button" tabindex="0" ` +
+          `title="${label} rank ${attr(r[key])} (filter by it)">${label} ${escapeHtml(r[key])}</span>`)
+        .join("");
+    }
+
+    function cardHtml(r) {
+      const { linked, fullName, hasAcronym } = confName(r);
+      const id = attr(r.id);
+      const size = r.size
+        ? `<span title="${attr(`Attendance: ${String(attendanceText(r)).replace(/<[^>]+>/g, "")}`)}">${sizeCell(r)}</span>`
+        : sizeCell(r);
+      const fact = (label, html) => `<div><span class="fact-label">${label}</span> ${html}</div>`;
+      const cats = splitList(r.category);
+      const subs = splitList(r.subcategory);
+      const tags = (cats.length ? tagList(cats, "category") : "") + (subs.length ? tagList(subs, "subcategory", " sub") : "");
+      return `<article class="card" data-conf-id="${id}">
+        <div class="card-main">
+          <div class="conf-name">${linked}${r.ccf_rank || r.core_rank ? ` <span class="rank-badges">${rankBadges(r)}</span>` : ""}</div>
+          ${hasAcronym ? `<div class="card-full">${escapeHtml(fullName)}</div>` : ""}
+          <div class="card-tags">${tags}</div>
+        </div>
+        <div class="card-facts">
+          ${fact("Dates", rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date))}
+          ${fact("Location", locationCell(r))}
+          ${fact("Size", size)}
+        </div>
+        <div class="card-deadlines">${cardDeadlines(r)}</div>
+        <div class="card-actions">
+          <button class="cal-btn cal-open" data-conf-id="${id}" title="Add this conference's deadlines and dates to your calendar">📅 cal</button>
+          <button class="cal-btn notify-btn" data-conf-id="${id}" title="Email me when this conference's deadlines or dates change, and a week before each deadline">✉️ subscribe</button>
+        </div>
+      </article>`;
+    }
+
+    function renderCards(rows) {
+      $("cards").innerHTML = rows.length
+        ? rows.map(cardHtml).join("")
+        : '<p class="muted card-empty">No conferences match.</p>';
+      scheduleRecolor();
+    }
+
+    // Draw the results in the chosen view, emptying the other one so its dates
+    // do not linger in the recolor timer's [data-at] scan.
+    function renderResults(rows) {
+      applyViewMode();
+      if (view === "table") {
+        $("cards").innerHTML = "";
+        renderRows(rows);
+      } else {
+        $("results-body").innerHTML = "";
+        renderCards(rows);
+      }
+    }
+
     // Run the active query over the in-memory catalog. The exact boolean search
     // mirrors the former server endpoints (see search.js / the old /api/search).
     // When it matches nothing, or the text does not parse as a boolean query
@@ -1286,8 +1634,8 @@
         if (past) {
           const kept = rows.filter((r) => !past(r));
           if (kept.length < rows.length) {
-            status = `${plural(kept.length)} (${rows.length - kept.length} with past dates hidden; `
-              + "check Include past deadlines in the column's ⚙ box).";
+            status = `${plural(kept.length)} (${rows.length - kept.length} past meetings hidden; `
+              + "sort Conference dates descending to list them).";
             rows = kept;
           }
         }
@@ -1320,11 +1668,15 @@
       const { rows, status, byRelevance } = runQuery(DATA.conferences.filter((r) => passesFilters(r)));
       renderHeader(!byRelevance);
       state.rows = rows;
+      state.byRelevance = byRelevance;
       const active = COLUMNS.filter((c) => c.key in filters).map((c) => c.label);
       $("status").innerHTML = escapeHtml(status) + (active.length
         ? ` Column filters: ${escapeHtml(active.join(", "))} · <a id="clear-filters">clear</a>`
+        : "") + (hidePast
+        ? ' Conferences with no deadline ahead are hidden · <a id="show-past">show</a>'
         : "");
-      renderRows(rows);
+      renderResults(rows);
+      syncToolbar();
       renderFieldsBar();
       syncUrl();
       if (fp) reanchorFilter();
@@ -1344,6 +1696,7 @@
     const FP_MAX = 500; // values listed at once; the popup search narrows the rest
 
     function passesFilters(r, skipKey) {
+      if (hidePast && !hasDeadlineAhead(r)) return false;
       for (const key in filters) {
         if (key === skipKey) continue;
         const vals = COLUMNS.find((c) => c.key === key).facet.values(r);
@@ -1354,6 +1707,7 @@
     }
 
     function openFilter(col, btn) {
+      closeToolbarMenu();
       const facet = col.facet;
       const label = (v) => (v === BLANK ? "(blank)" : facet.label ? facet.label(v) : v);
       const kept = filters[col.key];
@@ -1444,18 +1798,14 @@
       $("filter-pop").hidden = true;
     }
 
-    // Column display boxes (the header ⚙): Deadline time's "Military time"
-    // and Airports' "Include all airports".
+    // Column display boxes (the header ⚙): Airports' "Include all airports".
+    // (The 12/24-hour choice is the toolbar's Time format menu.)
     const OPTION_POPS = {
-      deadline_time: { pop: "time-pop", title: "Time display", sync: () => { $("tp-military").checked = militaryTime; } },
       airports: { pop: "airport-pop", title: "Airport display", sync: () => { $("ap-small").checked = smallAirports; } },
     };
-    // The four date columns share one "Include past deadlines" box.
-    for (const key of ["upcoming_abstract_deadline", "upcoming_late_abstract_deadline", "upcoming_paper_deadline", "upcoming_dates"]) {
-      OPTION_POPS[key] = { pop: "past-pop", title: "Past dates", sync: () => { $("pp-past").checked = includePast; } };
-    }
     let tp = null; // the open box: { key, btn } (the header button it hangs from)
     function openTimePop(btn, key) {
+      closeToolbarMenu();
       tp = { key, btn };
       OPTION_POPS[key].sync();
       $(OPTION_POPS[key].pop).hidden = false;
@@ -1502,20 +1852,237 @@
       if (!col || !row) return;
       e.stopPropagation(); // not an outside click that closes the popup
       const tag = e.target.closest("[data-v]");
-      const vals = tag ? [tag.dataset.v] : col.facet.values(row);
+      toggleFacet(col.key, tag ? [tag.dataset.v] : col.facet.values(row));
+    }
+
+    // Filter a column to these values, or remove the filter when it already
+    // keeps exactly them (also a tag click in the Tile / List views).
+    function toggleFacet(key, vals) {
       $("columns-panel").hidden = true;
       if (np) closeNotify();
       if (cp) closeCal();
       const want = vals.length ? [...new Set(vals)] : [BLANK];
-      const kept = filters[col.key];
-      if (kept && kept.size === want.length && want.every((v) => kept.has(v))) delete filters[col.key];
-      else filters[col.key] = new Set(want);
+      const kept = filters[key];
+      if (kept && kept.size === want.length && want.every((v) => kept.has(v))) delete filters[key];
+      else filters[key] = new Set(want);
       search();
     }
 
     function clearFilter(key, opts) {
       if (key) delete filters[key]; else filters = {};
       search(opts);
+    }
+
+    // ------------------------------------------------------- display toolbar
+    // The controls below the search bar (#vt-display): Hide past deadlines,
+    // Date format, Time format, Size, and Minimal columns. Each choice is
+    // remembered per browser; Size and Minimal columns drive the existing
+    // column value filter and column visibility, so the header ■ and the
+    // Columns ▾ menu stay in sync with them.
+
+    // Hide past deadlines: drop rows with no abstract / late abstract / paper
+    // deadline still ahead, judged by the same instant as the Upcoming columns
+    // (ConferenceSearch.upcomingDeadline). When one of the shown deadlines
+    // passes, recolorDates re-runs the search, which re-applies this.
+    const HIDE_PAST_KEY = "conference-agent.hide-past-deadlines";
+    // DEADLINE_KINDS (abstract, late_abstract, paper) comes from calendar.js.
+    let hidePast = false;
+    try { hidePast = localStorage.getItem(HIDE_PAST_KEY) === "1"; } catch (e) { /* storage blocked */ }
+    const hasDeadlineAhead = (r) => DEADLINE_KINDS.some((k) => ConferenceSearch.upcomingDeadline(r, k));
+    function setHidePast(on) {
+      hidePast = on;
+      try { localStorage.setItem(HIDE_PAST_KEY, on ? "1" : "0"); } catch (e) { /* storage blocked */ }
+      search();
+    }
+
+    function setDateFormat(key) {
+      dateFormat = key;
+      try { localStorage.setItem(DATE_FORMAT_KEY, key); } catch (e) { /* storage blocked */ }
+      search({ keepFilter: true });
+    }
+
+    function setMilitaryTime(on) {
+      militaryTime = on;
+      try { localStorage.setItem(MILITARY_KEY, on ? "1" : "0"); } catch (e) { /* storage blocked */ }
+      search({ keepFilter: true });
+    }
+
+    // Size: the size column's value filter (filters.size), the same state the
+    // header ■ edits. Everything checked means no filter.
+    const SIZE_VALUES = ["massive", "large", "medium", "small", BLANK];
+    const sizeLabel = (v) => (v === BLANK ? "unknown" : v);
+    function toggleSize(v, on) {
+      const kept = new Set(filters.size || SIZE_VALUES);
+      if (on) kept.add(v); else kept.delete(v);
+      if (SIZE_VALUES.every((x) => kept.has(x))) delete filters.size;
+      else filters.size = kept;
+      search({ keepFilter: true });
+    }
+
+    // CCF / CORE (#vt-rank): each rank column's value filter (filters.ccf_rank /
+    // filters.core_rank), the same state the header ■ edits, like Size above.
+    const RANK_MENUS = {
+      ccf: { key: "ccf_rank", label: "CCF", values: [...RANK_ORDER.ccf_rank, BLANK] },
+      core: { key: "core_rank", label: "CORE", values: [...RANK_ORDER.core_rank, BLANK] },
+    };
+    const rankLabel = (v) => (v === BLANK ? "not ranked" : v);
+    function toggleRank(name, v, on) {
+      const { key, values } = RANK_MENUS[name];
+      const kept = new Set(filters[key] || values);
+      if (on) kept.add(v); else kept.delete(v);
+      if (values.every((x) => kept.has(x))) delete filters[key];
+      else filters[key] = kept;
+      search({ keepFilter: true });
+    }
+    function buildRankToolbar() {
+      for (const [name, { values }] of Object.entries(RANK_MENUS)) {
+        $(`vt-${name}-list`).innerHTML = values.map((v, i) =>
+          `<label><input type="checkbox" data-i="${i}" /><span>${escapeHtml(rankLabel(v))}</span></label>`).join("");
+      }
+    }
+    function syncRankToolbar() {
+      for (const [name, { key, label, values }] of Object.entries(RANK_MENUS)) {
+        const kept = filters[key];
+        for (const el of $(`vt-${name}-list`).querySelectorAll("input")) {
+          el.checked = !kept || kept.has(values[Number(el.dataset.i)]);
+        }
+        $(`vt-${name}-clear`).hidden = !kept;
+        $(`vt-${name}-btn`).classList.toggle("on", Boolean(kept));
+        $(`vt-${name}-btn`).textContent = kept
+          ? `${label}: ${values.filter((v) => kept.has(v)).map(rankLabel).join(", ") || "none"} ▾`
+          : `${label} ▾`;
+      }
+    }
+
+    // Minimal columns: the Conference column plus a short list; the button then
+    // offers "Show all columns" (every column but ID). Both just set the
+    // Columns ▾ menu's hidden set.
+    const MINIMAL_COLS = ["conference", "size", "upcoming_abstract_deadline",
+      "upcoming_paper_deadline", "upcoming_dates", "location", "cal", "email"];
+    const isMinimal = () => COLUMNS.every((c) => hiddenCols.has(c.key) !== MINIMAL_COLS.includes(c.key));
+    function toggleMinimal() {
+      const keep = isMinimal() ? COLUMNS.map((c) => c.key).filter((k) => k !== "id") : MINIMAL_COLS;
+      hiddenCols = new Set(COLUMNS.map((c) => c.key).filter((k) => !keep.includes(k)));
+      applyColumnVisibility();
+      renderColumnsMenu();
+    }
+
+    // View (#vt-view): Table (default), Tile, or List, remembered per browser
+    // and mirrored in the URL (&view=tile). Tile and List draw the same rows
+    // (renderResults); the Sort menu beside the View button stands in for the
+    // table's sortable headers, editing the same state.sort / state.order.
+    // Columns ▾ and Minimal columns apply only to the table, so they are
+    // disabled in the other views.
+    const VIEW_KEY = "conference-agent.view";
+    const VIEWS = { table: "Table", tile: "Tile", list: "List" };
+    const isView = (v) => typeof v === "string" && Object.hasOwn(VIEWS, v);
+    let view = "table";
+    try {
+      const saved = localStorage.getItem(VIEW_KEY);
+      if (isView(saved)) view = saved;
+    } catch (e) { /* storage blocked */ }
+
+    function setView(v) {
+      if (!isView(v)) return;
+      closeToolbarMenu();
+      if (v === view) return;
+      view = v;
+      try { localStorage.setItem(VIEW_KEY, v); } catch (e) { /* storage blocked */ }
+      if (np) closeNotify();
+      if (cp) closeCal();
+      search();
+    }
+
+    function applyViewMode() {
+      const table = view === "table";
+      document.querySelector(".table-scroll").hidden = !table;
+      $("cards").hidden = table;
+      $("cards").className = `cards ${view}`;
+      $("vt-sort-menu").hidden = table;
+      for (const id of ["columns-btn", "vt-minimal"]) $(id).disabled = !table;
+      if (!table) $("columns-panel").hidden = true;
+    }
+
+    // The sortable columns, in table order, for the Sort menu.
+    const SORT_OPTIONS = COLUMNS.filter((c) => c.sort);
+    function setSort(sort, order) {
+      if (sort && sort !== state.sort) { state.sort = sort; state.order = "asc"; }
+      if (order) state.order = order;
+      state.relevance = false;
+      search({ keepFilter: true });
+    }
+
+    let vtOpen = null; // the open toolbar menu's id prefix ("view" / "sort" / "date" / "time" / "size" / "ccf" / "core")
+    function closeToolbarMenu() {
+      if (!vtOpen) return;
+      $(`vt-${vtOpen}-panel`).hidden = true;
+      $(`vt-${vtOpen}-btn`).setAttribute("aria-expanded", "false");
+      vtOpen = null;
+    }
+    function openToolbarMenu(name) {
+      closeToolbarMenu();
+      closeFilter();
+      if (tp) closeTimePop();
+      $("columns-panel").hidden = true;
+      vtOpen = name;
+      syncToolbar();
+      const panel = $(`vt-${name}-panel`);
+      panel.hidden = false;
+      $(`vt-${name}-btn`).setAttribute("aria-expanded", "true");
+      // Keep the panel on screen on a narrow phone.
+      panel.style.left = "0px";
+      const over = panel.getBoundingClientRect().right - (document.documentElement.clientWidth - 8);
+      if (over > 0) panel.style.left = `${-over}px`;
+    }
+
+    // Fill the Date format and Size menus once (their inputs are then only
+    // re-checked, so a click inside an open menu never loses its target).
+    function buildToolbar() {
+      const sample = "2026-11-12";
+      const saved = dateFormat;
+      $("vt-date-panel").innerHTML = DATE_FORMAT_ORDER.map((k) => {
+        dateFormat = k;
+        return `<label><input type="radio" name="vt-date" value="${k}" /><span>${escapeHtml(fmtDate(sample))}</span></label>`;
+      }).join("");
+      dateFormat = saved;
+      $("vt-size-list").innerHTML = SIZE_VALUES.map((v, i) =>
+        `<label><input type="checkbox" data-i="${i}" /><span>${escapeHtml(sizeLabel(v))}</span></label>`).join("");
+      buildRankToolbar();
+      $("vt-sort-list").innerHTML = SORT_OPTIONS.map((c) =>
+        `<label><input type="radio" name="vt-sort" value="${attr(c.sort)}" /><span>${escapeHtml(c.label)}</span></label>`).join("");
+    }
+
+    function syncMinimalButton() {
+      const minimal = isMinimal();
+      $("vt-minimal").textContent = minimal ? "Show all columns" : "Minimal columns";
+      $("vt-minimal").title = minimal ? "Show every column except ID" : "Show only the main columns";
+    }
+
+    // Reflect the current state in the toolbar (run after every search).
+    function syncToolbar() {
+      $("vt-hide-past").checked = hidePast;
+      for (const el of document.querySelectorAll('input[name="vt-date"]')) el.checked = el.value === dateFormat;
+      for (const el of document.querySelectorAll('input[name="vt-time"]')) el.checked = (el.value === "24") === militaryTime;
+      const kept = filters.size;
+      for (const el of $("vt-size-list").querySelectorAll("input")) {
+        el.checked = !kept || kept.has(SIZE_VALUES[Number(el.dataset.i)]);
+      }
+      $("vt-size-clear").hidden = !kept;
+      $("vt-size-btn").classList.toggle("on", Boolean(kept));
+      $("vt-size-btn").textContent = kept
+        ? `Size: ${SIZE_VALUES.filter((v) => kept.has(v)).map(sizeLabel).join(", ") || "none"} ▾`
+        : "Size ▾";
+      syncRankToolbar();
+      syncMinimalButton();
+      for (const el of document.querySelectorAll('input[name="vt-view"]')) el.checked = el.value === view;
+      $("vt-view-btn").textContent = `View: ${VIEWS[view]} ▾`;
+      const rel = Boolean(state.byRelevance);
+      for (const el of document.querySelectorAll('input[name="vt-sort"]')) el.checked = !rel && el.value === state.sort;
+      for (const el of document.querySelectorAll('input[name="vt-order"]')) el.checked = !rel && el.value === state.order;
+      const sortCol = SORT_OPTIONS.find((c) => c.sort === state.sort);
+      $("vt-sort-btn").textContent = rel || !sortCol
+        ? "Sort: Relevance ▾"
+        : `Sort: ${sortCol.label} ${state.order === "asc" ? "▲" : "▼"} ▾`;
     }
 
     // --------------------------------------------------------- browse by field
@@ -1635,6 +2202,7 @@
       }
       const q = $("query").value.trim();
       if (q) parts.push(`q=${encodeURIComponent(q)}`);
+      if (view !== "table") parts.push(`view=${view}`);
       return location.pathname + (parts.length ? `?${parts.join("&")}` : "") + location.hash;
     }
 
@@ -1652,11 +2220,14 @@
         : BASE_TITLE;
     }
 
-    // Read the category, subcategory, and search text from the URL (slugs or
-    // plain names). Unknown values are ignored.
+    // Read the category, subcategory, search text, and view from the URL
+    // (slugs or plain names). Unknown values are ignored. A link's view applies
+    // to this visit without replacing the viewer's remembered choice; with no
+    // view in the URL, the current one stays.
     function applyUrlState() {
       const p = new URLSearchParams(location.search);
       $("query").value = p.get("q") || "";
+      if (isView(p.get("view"))) view = p.get("view");
       for (const [key, known] of [["category", FIELD_BAR.cats], ["subcategory", FIELD_BAR.subs]]) {
         const want = new Set((p.get(key) || "").split(",").map((v) => v.trim()).filter(Boolean).map(fieldSlug));
         const hit = [...known.keys()].filter((v) => want.has(fieldSlug(v)));
@@ -1714,6 +2285,7 @@
     let np = null; // { id, btn } while the form is open
 
     function openNotify(id, btn) {
+      closeToolbarMenu();
       closeFilter();
       $("columns-panel").hidden = true;
       const r = DATA.byId[id];
@@ -1728,7 +2300,8 @@
       placeNotify();
       const input = $("np-email");
       input.focus({ preventScroll: true });
-      input.setSelectionRange(saved.length, saved.length);
+      // type="email" inputs do not support selection ranges in Chromium.
+      try { input.setSelectionRange(saved.length, saved.length); } catch (e) { /* unsupported */ }
     }
 
     function placeNotify() {
@@ -1793,6 +2366,7 @@
     let cp = null; // { id, btn } while the box is open
 
     function openCal(id, btn) {
+      closeToolbarMenu();
       closeFilter();
       if (np) closeNotify();
       $("columns-panel").hidden = true;
@@ -1865,6 +2439,7 @@
         ['subcategory:"machine learning" AND abstract_due:>=2026-10-01 AND abstract_due:<2027-01-01', "abstracts due in Q4 2026"],
         ['subcategory:"machine learning" AND paper_due:>=2026-10', "paper deadline in October 2026 or later"],
         ['abstract_due:>=today', "abstract deadline today or later (today / now = the current date)"],
+        ['past_abstract_due:2025', "most recent past abstract deadline in 2025"],
         ['subcategory:"machine learning" AND conference_month:>=jun AND conference_month:<=aug', "summer meetings, any year"],
       ]],
       ["Chaining with boolean logic", [
@@ -1935,36 +2510,49 @@
 
     $("search-btn").addEventListener("click", newSearch);
     $("csv-btn").addEventListener("click", exportCsv);
-    // Per-row calendar and email buttons (delegated, since rows re-render on each search).
-    $("results-body").addEventListener("click", (e) => {
+    // Per-row calendar and email buttons and ⏩ markers (delegated, since rows
+    // re-render on each search), shared by the table and the Tile / List
+    // cards. Returns whether the click was one of them.
+    function rowAction(e) {
       const mark = e.target.closest(".ext-mark");
       if (mark) {
         e.stopPropagation();
-        const note = mark.closest("td").querySelector(".ext-note");
+        const note = mark.closest("td, .dl-item").querySelector(".ext-note");
         if (note) note.hidden = !note.hidden;
-        return;
+        return true;
       }
       const nb = e.target.closest(".notify-btn");
       if (nb) {
         e.stopPropagation();
         if (cp) closeCal();
         if (np && np.btn === nb) closeNotify(); else openNotify(nb.dataset.confId, nb);
-        return;
+        return true;
       }
       const btn = e.target.closest(".cal-open");
-      if (!btn) {
-        openCellFilter(e);
-        return;
-      }
+      if (!btn) return false;
       e.stopPropagation();
       if (cp && cp.btn === btn) closeCal(); else openCal(btn.dataset.confId, btn);
+      return true;
+    }
+    $("results-body").addEventListener("click", (e) => {
+      if (!rowAction(e)) openCellFilter(e);
     });
-    $("results-body").addEventListener("keydown", (e) => {
-      if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("ext-mark")) {
-        e.preventDefault();
-        e.target.click();
-      }
+    $("cards").addEventListener("click", (e) => {
+      if (rowAction(e)) return;
+      const tag = e.target.closest(".cat-tag[data-facet]");
+      if (!tag) return;
+      e.stopPropagation();
+      toggleFacet(tag.dataset.facet, [tag.dataset.v]);
     });
+    for (const box of [$("results-body"), $("cards")]) {
+      box.addEventListener("keydown", (e) => {
+        if ((e.key === "Enter" || e.key === " ")
+            && (e.target.classList.contains("ext-mark") || e.target.matches(".cat-tag[data-facet]"))) {
+          e.preventDefault();
+          e.target.click();
+        }
+      });
+    }
     $("cp-copy").addEventListener("click", copyFeedUrl);
     $("cp-download").addEventListener("click", () => {
       const row = cp && DATA.byId[cp.id];
@@ -1976,11 +2564,38 @@
       closeFilter();
       $("columns-panel").hidden = !$("columns-panel").hidden;
     });
+    $("vt-hide-past").addEventListener("change", (e) => setHidePast(e.target.checked));
+    $("vt-view-panel").addEventListener("change", (e) => setView(e.target.value));
+    $("vt-sort-list").addEventListener("change", (e) => setSort(e.target.value, null));
+    $("vt-sort-panel").addEventListener("change", (e) => {
+      if (e.target.name === "vt-order") setSort(null, e.target.value);
+    });
+    for (const name of ["view", "sort", "date", "time", "size"]) {
+      $(`vt-${name}-btn`).addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (vtOpen === name) closeToolbarMenu(); else openToolbarMenu(name);
+      });
+    }
+    $("vt-date-panel").addEventListener("change", (e) => setDateFormat(e.target.value));
+    $("vt-time-panel").addEventListener("change", (e) => setMilitaryTime(e.target.value === "24"));
+    $("vt-size-list").addEventListener("change", (e) => toggleSize(SIZE_VALUES[Number(e.target.dataset.i)], e.target.checked));
+    $("vt-size-clear").addEventListener("click", () => clearFilter("size", { keepFilter: true }));
+    for (const name of Object.keys(RANK_MENUS)) {
+      $(`vt-${name}-btn`).addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (vtOpen === name) closeToolbarMenu(); else openToolbarMenu(name);
+      });
+      $(`vt-${name}-list`).addEventListener("change", (e) =>
+        toggleRank(name, RANK_MENUS[name].values[Number(e.target.dataset.i)], e.target.checked));
+      $(`vt-${name}-clear`).addEventListener("click", () => clearFilter(RANK_MENUS[name].key, { keepFilter: true }));
+    }
+    $("vt-minimal").addEventListener("click", toggleMinimal);
     $("columns-all").addEventListener("click", () => setAllColumns(true));
     $("columns-none").addEventListener("click", () => setAllColumns(false));
     // Close the columns dropdown and the filter popup when clicking outside them.
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".columns-menu")) $("columns-panel").hidden = true;
+      if (vtOpen && !e.target.closest(".vt-menu")) closeToolbarMenu();
       if (fp && !e.target.closest("#filter-pop")) closeFilter();
       if (tp && !e.target.closest(".opt-pop")) closeTimePop();
       if (np && !e.target.closest("#notify-pop")) closeNotify();
@@ -1991,6 +2606,7 @@
     $("np-email").addEventListener("input", () => setNotifyError(""));
     $("status").addEventListener("click", (e) => {
       if (e.target.id === "clear-filters") clearFilter();
+      if (e.target.id === "show-past") setHidePast(false);
     });
     $("cat-grid").addEventListener("click", onFieldsBarClick);
     $("sub-chips").addEventListener("click", onFieldsBarClick);
@@ -2029,27 +2645,16 @@
       try { localStorage.setItem(MONTH_JAN_KEY, monthFromJanuary ? "1" : "0"); } catch (err) { /* storage blocked */ }
       search({ keepFilter: true });
     });
-    $("tp-military").addEventListener("change", (e) => {
-      militaryTime = e.target.checked;
-      try { localStorage.setItem(MILITARY_KEY, militaryTime ? "1" : "0"); } catch (err) { /* storage blocked */ }
-      search(); // re-render the rows in the chosen format; the box stays open
-      reanchorOptionPop();
-    });
     $("ap-small").addEventListener("change", (e) => {
       smallAirports = e.target.checked;
       try { localStorage.setItem(SMALL_AIRPORTS_KEY, smallAirports ? "1" : "0"); } catch (err) { /* storage blocked */ }
       search();
       reanchorOptionPop();
     });
-    $("pp-past").addEventListener("change", (e) => {
-      includePast = e.target.checked;
-      try { localStorage.setItem(PAST_KEY, includePast ? "1" : "0"); } catch (err) { /* storage blocked */ }
-      search();
-      reanchorOptionPop();
-    });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) recolorDates(); });
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
+      closeToolbarMenu();
       if (fp) closeFilter();
       if (tp) closeTimePop();
       if (np) closeNotify();
@@ -2073,7 +2678,11 @@
     // that scrolls both ways pans diagonally), so the table's touch panning is
     // done here: each touchmove is canceled and the locked axis's movement is
     // applied to the innermost scrollable box under the finger, then the table,
-    // then (vertically) the page, as native scroll chaining would.
+    // then (vertically) the page, as native scroll chaining would. The momentum
+    // after the finger lifts stays on the box that was moving, as native
+    // momentum does, and stops as soon as anything else scrolls or touches the
+    // page: a script writing scroll positions every frame against the browser's
+    // own scrolling makes the page jitter between the two.
     (function lockTouchScrollAxis() {
       const box = document.querySelector(".table-scroll");
       const LOCK_PX = 6, FRICTION = 0.998, MIN_SPEED = 0.02;
@@ -2090,26 +2699,29 @@
         return chain;
       }
       // Scroll by d pixels along the axis, passing what one box cannot take to
-      // the next; returns whether anything moved.
+      // the next; returns the last box that moved (null when none did).
       function apply(chain, axis, d) {
         const key = axis === "x" ? "scrollLeft" : "scrollTop";
-        let moved = false;
+        let moved = null;
         for (const el of chain) {
           if (Math.abs(d) < 0.5) break;
           const before = el[key];
           el[key] = before + d;
           const used = el[key] - before;
-          if (used) { moved = true; d -= used; }
+          if (used) { moved = el; d -= used; }
         }
         return moved;
       }
       function stopInertia() { if (inertia) cancelAnimationFrame(inertia); inertia = 0; }
+      // Any new touch or wheel anywhere ends the momentum, not just one in the
+      // table: a drag beside the table scrolls the page natively.
+      document.addEventListener("touchstart", stopInertia, { capture: true, passive: true });
+      document.addEventListener("wheel", stopInertia, { capture: true, passive: true });
       box.addEventListener("touchstart", (e) => {
-        stopInertia();
         if (e.touches.length !== 1) { g = null; return; }
         const t = e.touches[0];
         g = { target: e.target, x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY,
-              axis: null, chain: null, samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }] };
+              axis: null, chain: null, moved: null, samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }] };
       }, { passive: true });
       box.addEventListener("touchmove", (e) => {
         if (!g) return;
@@ -2125,7 +2737,7 @@
         }
         const delta = g.axis === "x" ? g.x - t.clientX : g.y - t.clientY;
         if (Math.abs(delta) >= 1) {  // a slow drag's sub-pixel moves add up first
-          apply(g.chain, g.axis, delta);
+          g.moved = apply(g.chain, g.axis, delta) || g.moved;
           g.x = t.clientX; g.y = t.clientY;
         }
         g.samples.push({ t: e.timeStamp, x: t.clientX, y: t.clientY });
@@ -2139,13 +2751,21 @@
         const dt = b.t - a.t;
         if (dt <= 0 || performance.now() - b.t > 100) return;  // finger rested before lifting
         let v = (cur.axis === "x" ? a.x - b.x : a.y - b.y) / dt;  // px per ms, in scroll direction
-        let prev = performance.now(), carry = 0;
+        // The momentum moves only the box the drag last moved; at its end it
+        // stops rather than spilling into the box (or page) around it.
+        const el = cur.moved, key = cur.axis === "x" ? "scrollLeft" : "scrollTop";
+        if (!el) return;
+        let prev = performance.now(), carry = 0, expect = el[key];
         const step = (now) => {
+          // Something else scrolled the box (the browser, a new gesture the
+          // touchstart listener missed, a script): leave the scrolling to it.
+          if (Math.abs(el[key] - expect) > 1) { inertia = 0; return; }
           const ms = Math.max(0, now - prev); prev = now;
           const d = v * ms + carry;
           carry = 0;
           if (Math.abs(d) < 0.5) carry = d;  // keep sub-pixel steps until they add up
-          else if (!apply(cur.chain, cur.axis, d)) { inertia = 0; return; }  // hit the end
+          else if (!apply([el], cur.axis, d)) { inertia = 0; return; }  // hit the end
+          expect = el[key];
           v *= Math.pow(FRICTION, ms);
           if (Math.abs(v) < MIN_SPEED) { inertia = 0; return; }
           inertia = requestAnimationFrame(step);
@@ -2160,8 +2780,11 @@
       }, true);
     })();
 
+    buildToolbar();
     renderColumnsMenu();
     applyColumnVisibility();
+    syncToolbar();
+    applyViewMode();
     loadData();
   </script>
 </body>

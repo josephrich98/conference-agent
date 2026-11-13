@@ -34,14 +34,20 @@ from conference_agent.discover import (
 )
 from conference_agent.models import (
     CATEGORIES,
+    CCF_EDITION,
+    CCF_RANKS,
     CONFERENCE_FORMATS,
+    CORE_EDITION,
+    CORE_RANKS,
     ConferenceSize,
     RemoteOption,
     name_id,
     normalize_categories,
+    normalize_ccf_rank,
+    normalize_core_rank,
     normalize_subcategories,
 )
-from conference_agent.web.search import RESULT_COLUMNS
+from conference_agent.web.search import RESULT_COLUMNS, row_to_dict
 
 # --- Field registry --------------------------------------------------------
 #
@@ -65,8 +71,14 @@ from conference_agent.web.search import RESULT_COLUMNS
 class _Field:
     column: str  # table-facing name: --flag / CSV header / JSON key
     field: str  # stored record field
-    kind: str  # "text" | "date" | "int" | "enum" | "bool" | "tags" | "dates" | "extensions"
+    kind: str  # "text" | "date" | "int" | "enum" | "bool" | "tags" | "dates" | "extensions" | "past_deadlines"
     help: str
+    # The allowed values of an "enum" field (blank: the remote options).
+    choices: tuple = ()
+
+    @property
+    def enum_choices(self) -> list[str]:
+        return list(self.choices) or [o.value for o in RemoteOption]
 
 
 # Scalar fields: one value, mapped straight through to a stored field. Generated
@@ -114,6 +126,20 @@ _SCALAR_FIELDS = (
     _Field(
         "remote_option", "remote_option", "enum",
         "Remote attendance option: " + " / ".join(o.value for o in RemoteOption),
+    ),
+    _Field(
+        "ccf", "ccf_rank", "enum",
+        "China Computer Federation recommended-list rank, as published in "
+        f"{CCF_EDITION}: " + " / ".join(CCF_RANKS) + ". Computer-science venues only; "
+        "leave unset when the venue is not on the list",
+        CCF_RANKS,
+    ),
+    _Field(
+        "core", "core_rank", "enum",
+        f"CORE conference rank, as published in {CORE_EDITION}: "
+        + " / ".join(CORE_RANKS) + ". Leave unset when the venue is unlisted or "
+        "listed as National, Regional, or Unranked",
+        CORE_RANKS,
     ),
     _Field("cost", "upcoming_cost", "text", "Upcoming edition's registration cost summary"),
     _Field("url", "url", "text", "Official conference website (the conference-name link)"),
@@ -255,6 +281,16 @@ _COMPOSITE_FIELDS = (
         "date. Added to the stored history; entries whose extended date is more "
         "than 5 years old are not kept",
     ),
+    _Field(
+        "past_deadlines",
+        "abstract_deadline_history + late_abstract_deadline_history "
+        "+ paper_deadline_history",
+        "past_deadlines",
+        "Past deadlines of earlier editions: one entry per date, each a type "
+        "(abstract / late abstract / paper) and the date (not after today). "
+        "Added to the stored history, which the Past columns list with the "
+        "prior edition's deadline",
+    ),
 )
 
 # Table-facing column -> stored field, for the scalar fields. The raw stored
@@ -371,6 +407,23 @@ def _build_record(fields: dict) -> dict:
         from conference_agent.database import parse_deadline_extensions
 
         record["deadline_extensions"] = parse_deadline_extensions(extensions)
+
+    # Past deadlines: {type, date} objects (json), TYPE DATE pairs (the repeated
+    # flag), or ";"-separated entries (csv). A table CSV export carries them as
+    # the per-kind history columns instead, which are folded in here too.
+    from conference_agent.database import (
+        HISTORY_COLUMNS,
+        parse_deadline_history,
+        parse_past_deadlines,
+    )
+
+    past = parse_past_deadlines(fields.get("past_deadlines"))
+    for column in HISTORY_COLUMNS:
+        if fields.get(column) not in (None, "", []):
+            kind = column.removesuffix("_deadline_history")
+            past += [(kind, d) for d in parse_deadline_history(fields[column])]
+    if past:
+        record["past_deadlines"] = past
     return record
 
 
@@ -599,6 +652,15 @@ def _add_maintainer_parsers(sub) -> None:
         "then the original and extended dates (YYYY-MM-DD). Repeat the flag for "
         "more entries.",
     )
+    p_add.add_argument(
+        "--past-deadlines",
+        nargs=2,
+        action="append",
+        metavar=("TYPE", "DATE"),
+        help="One past deadline of an earlier edition: TYPE (abstract, "
+        "late_abstract, or paper), then the date (YYYY-MM-DD). Repeat the flag "
+        "for more entries.",
+    )
     # Every scalar field gets a flag, generated from the registry so the flag
     # surface can never fall behind the CSV/JSON vocabulary.
     for spec in _SCALAR_FIELDS:
@@ -609,7 +671,9 @@ def _add_maintainer_parsers(sub) -> None:
         elif spec.kind == "date":
             kwargs["metavar"] = "YYYY-MM-DD"
         elif spec.kind == "enum":
-            kwargs["choices"] = [o.value for o in RemoteOption]
+            kwargs["choices"] = spec.enum_choices
+            if spec.choices:  # the rankings: accept "a*" for "A*"
+                kwargs["type"] = str.upper
         elif spec.kind == "bool":
             kwargs["choices"] = ["true", "false"]
             kwargs["type"] = str.lower
@@ -747,6 +811,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="COL",
         help="Columns to print (default: the entire row). Choices: "
         + ", ".join(_LOOKUP_COLUMNS),
+    )
+    p_info.add_argument(
+        "--json",
+        action="store_true",
+        help="Print JSON instead of text. Without columns this is the full record "
+        "(the shape of the site's c/<id>/data.json), which `add --json` accepts "
+        "back; with columns, an object of just those columns.",
     )
     p_info.add_argument("--local", action="store_true", help=_LOCAL_HELP)
     p_info.add_argument("--refresh", action="store_true", help=_REFRESH_HELP)
@@ -1077,6 +1148,7 @@ def _load_add_records(args) -> list[dict]:
         "conference_dates": args.conference_dates,
         "prior_conference_dates": args.prior_conference_dates,
         "deadline_extensions": args.deadline_extensions,
+        "past_deadlines": args.past_deadlines,
     }
     for spec in _SCALAR_FIELDS:
         fields[spec.column] = getattr(args, spec.column)
@@ -1197,11 +1269,28 @@ def _check_values(records: list[dict], matches: list, errors: list[str]) -> None
             if start and end and end < start:
                 errors.append(f"'{name}': {column} ends ({end}) before it starts ({start}).")
 
+        for field, normalize in (("ccf_rank", normalize_ccf_rank), ("core_rank", normalize_core_rank)):
+            value = record.get(field)
+            if value in (None, ""):
+                continue
+            try:
+                normalize(value)
+            except ValueError as exc:
+                errors.append(f"'{name}': {exc}.")
+
         for kind, original, extended in record.get("deadline_extensions") or []:
             if extended < extension_cutoff():
                 errors.append(
                     f"'{name}': the {kind.replace('_', ' ')} extension to {extended} is "
                     f"more than {EXTENSION_RETENTION_YEARS} years old (not kept)."
+                )
+
+        for kind, when in record.get("past_deadlines") or []:
+            if when > date.today():
+                errors.append(
+                    f"'{name}': the past {kind.replace('_', ' ')} deadline {when} is "
+                    "after today (enter an upcoming deadline as abstract_due, "
+                    "late_abstract_due, or paper_due)."
                 )
 
         for field, low, high in (
@@ -1357,12 +1446,17 @@ def _update_existing(records: list[dict], args) -> int:
                 print(f"Error: cannot build conference {record['name']}: {exc}", file=sys.stderr)
                 return 1
         written = upsert_conferences(conferences, db_url=args.db, manual=True)
-        # The model carries no extension history; add any entered entries.
+        # The model carries no extension or past-deadline history; add any
+        # entered entries.
         merge_records(
             [
-                {"id": match.id, "deadline_extensions": record["deadline_extensions"]}
+                {
+                    "id": match.id,
+                    "deadline_extensions": record.get("deadline_extensions"),
+                    "past_deadlines": record.get("past_deadlines"),
+                }
                 for record, match in zip(records, matches)
-                if record.get("deadline_extensions")
+                if record.get("deadline_extensions") or record.get("past_deadlines")
             ],
             db_url=args.db,
         )
@@ -1444,11 +1538,13 @@ _NOT_DISPLAYED = {
     "late_abstract_timezone": "integrated into Deadline time",
     "paper_time": "integrated into Deadline time",
     "paper_timezone": "integrated into Deadline time",
-    "prior_abstract_due": "integrated into Abstract due (shown when no upcoming date)",
-    "prior_late_abstract_due": (
-        "integrated into Late abstract due (shown when no upcoming date)"
+    "prior_abstract_due": "integrated into Past abstract due",
+    "prior_late_abstract_due": "integrated into Past late abstract due",
+    "prior_paper_due": "integrated into Past paper due",
+    "past_deadlines": (
+        "integrated into Past abstract / Past late abstract / Past paper due"
+        " (most recent first)"
     ),
-    "prior_paper_due": "integrated into Paper due (shown when no upcoming date)",
     "prior_registration": "integrated into Registration (shown when no upcoming value)",
     "prior_location": "integrated into Location (shown in orange when no upcoming value)",
     "prior_cost": "integrated into Cost (shown in orange when no upcoming value)",
@@ -1474,6 +1570,10 @@ _KIND_VALUE = {
     "extensions": (
         "TYPE ORIGINAL EXTENDED per entry (a repeated flag; ';'-separated in a "
         "cell; {type, original, extended} objects in JSON)"
+    ),
+    "past_deadlines": (
+        "TYPE DATE per entry (a repeated flag; ';'-separated in a cell; "
+        "{type, date} objects in JSON)"
     ),
 }
 
@@ -1529,7 +1629,11 @@ def add_field_schema() -> dict:
                 "name": f.column,
                 "flag": _flag_for(f.column),
                 "kind": f.kind,
-                "value": _KIND_VALUE[f.kind],
+                "value": (
+                    "one of: " + ", ".join(f.enum_choices)
+                    if f.kind == "enum" else _KIND_VALUE[f.kind]
+                ),
+                **({"choices": f.enum_choices} if f.kind == "enum" else {}),
                 "stored_as": f.field,
                 # One of the two identity fields is required per row.
                 "required": f.column in ("conference_acronym", "conference_name"),
@@ -1592,7 +1696,7 @@ def _lookup_values(rows: list[dict], column: str, sort: str) -> list:
             continue
         if column in _LOOKUP_TAG_COLUMNS:
             values.update(t.strip() for t in str(value).split(",") if t.strip())
-        elif column == "airports":
+        elif column == "airports" or column.endswith("_deadline_history"):
             values.update(t.strip() for t in str(value).split("\n") if t.strip())
         else:
             values.add(value)
@@ -1721,6 +1825,18 @@ def _cmd_info(args) -> int:
             col: getattr(row, f"upcoming_{col}") or getattr(row, f"prior_{col}")
             for col in _LOOKUP_DISPLAYED
         }
+        record = row_to_dict(row) if args.json and not args.columns else None
+
+    if args.json:
+        import json
+
+        if record is None:  # only the named columns
+            record = {
+                col: value.isoformat() if hasattr(value, "isoformat") else value
+                for col, value in ((c, values[c]) for c in columns)
+            }
+        print(json.dumps(record, ensure_ascii=False, indent=1))
+        return 0
 
     def text(value) -> str:
         if value is None or value == "":

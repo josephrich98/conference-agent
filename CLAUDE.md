@@ -17,7 +17,8 @@ artificial intelligence — though a custom one is kept), its **prior** and
 deadline, conference dates for
 each, plus a registration field per edition holding only the published items of
 Opens / Early bird deadline / Final deadline / Refund deadline / Notes, one
-"Label: date" line each), a derived conference
+"Label: date" line each; earlier editions' deadlines are kept in a per-kind
+history, and the table shows each deadline kind as Upcoming and Past columns), a derived conference
 month, abstract month, late abstract month, and paper
 month (each
 taken from the matching date so rows sort by season even when their years are
@@ -155,7 +156,8 @@ for the design.
   the daily cron job, `build_static.py` the static-site bundler,
   `notify_subscribers.py` the subscriber-email step of the cron job,
   `ingest_submissions.py` adds merged "Add or edit a conference" submissions,
-  `alert_failure.py` emails the log tail when the cron job fails)
+  `alert_failure.py` emails the log tail when the cron job fails,
+  `fill_rankings.py` fills the CCF / CORE columns from the official lists)
 - `scripts/seo_pages.py` — prerenders crawlable per-conference (`/c/<id>/`, with
   `Event` JSON-LD) and per-field (`/field/<tag>/`) pages, `sitemap.xml`,
   `robots.txt`, and the home page's browse links; called by `build_static.py`
@@ -265,7 +267,8 @@ dependencies there rather than installing ad hoc.
   always holds the **earliest, primary** deadline — in every case surveyed the
   earliest is also the main submission route, so sorting on it never overstates
   the time remaining. The pair is threaded through the search
-  (`late_abstract_due` / `late_abstract_month`), the table (two columns), the
+  (`late_abstract_due` / `late_abstract_month`), the table (a month column and
+  Upcoming / Past columns), the
   calendar (a fourth event, kind `late-abstract`), the discovery prompts, and
   the manual `add` paths.
 - **Deadline time of day is structured per deadline kind, and the display text
@@ -289,9 +292,9 @@ dependencies there rather than installing ad hoc.
   (`database.backfill_deadline_times`). The deadline columns stay pure dates so
   sorting, the derived months, the search's date comparisons, and the all-day
   calendar events are untouched. The table's "Deadline time" column
-  (substring-searchable as `deadline_time:`) has a ⚙ box with a "Military time
-  (24-hour)" checkbox (display only, remembered per browser; default 12-hour),
-  and the calendar feed puts the applicable time in each deadline event's note
+  (substring-searchable as `deadline_time:`) shows 12- or 24-hour times per
+  the toolbar's Time format menu (display only, remembered per browser;
+  default 12-hour), and the calendar feed puts the applicable time in each deadline event's note
   (`calendar_sync.deadline_time_for`, mirrored in `calendar.js`).
   **Coloring is instant:** each colored date carries the instant its deadline
   passes (`calendar.js` `deadlineInstant`: the end of its stated minute in its
@@ -348,6 +351,35 @@ dependencies there rather than installing ad hoc.
   deadline (earlier changes are treated as corrections). Entries whose extended
   date is more than five years old are pruned on write and by
   `roll_past_editions`.
+- **Each deadline kind is split into Upcoming and Past columns, backed by a
+  per-kind history.** Three text columns (`abstract_deadline_history`,
+  `late_abstract_deadline_history`, `paper_deadline_history`; newline-separated
+  ISO dates, most recent first, deduplicated) hold the deadlines of editions no
+  longer in the prior / upcoming slots. `database._archive_deadlines` runs in
+  every write path (`upsert_conferences`, `merge_records`,
+  `apply_refreshed_conferences`, `roll_past_editions`) and archives a passed
+  deadline that left the slots together with its edition (no slot still holds
+  a meeting within `NEW_EDITION_GAP_DAYS`); one that left while its edition
+  stayed was a correction and is dropped. The prior edition's deadline is not
+  copied into the history (it is merged in at read time), so a corrected prior
+  date leaves nothing stale, and an old database needs only the additive
+  columns. `database.past_deadlines` / `upcoming_deadline` (mirrored by
+  `ConferenceSearch.pastDeadlines` / `upcomingDeadline` in `search.js`) derive
+  the two columns: Upcoming is the upcoming deadline while still ahead; Past is
+  history + prior + an upcoming one that has passed, one per line, and sorts by
+  its most recent date. In the browser "passed" is the `deadlineInstant`
+  moment (an Upcoming span carries `data-up`, and `recolorDates` re-renders
+  when one closes); Python (and `search.js` without `calendar.js`, as in the
+  parity tests) uses the day after the date. Search fields: `abstract_due` /
+  `late_abstract_due` / `paper_due` match the Upcoming value and
+  `past_abstract_due` / `past_late_abstract_due` / `past_paper_due` the most
+  recent past date (`prior_abstract` etc. are aliases of the past fields).
+  `add` takes `past_deadlines` (a repeated `--past-deadlines TYPE DATE` flag,
+  `{type, date}` objects in JSON, `;`-separated `TYPE DATE` entries in a CSV
+  cell, or the exported `*_deadline_history` columns; no date after today);
+  the form's "Past deadlines" rows (type / date, + button) submit it. The
+  history columns are in the CSV / JSON export, and `/c/<id>/` pages list
+  them as "Earlier editions".
 - **Registration is per-edition "Label: date" lines, researched by its own
   pass.** `prior_registration` / `upcoming_registration` stay single Text
   columns, but hold one line per item the meeting publishes, in the order
@@ -454,6 +486,23 @@ dependencies there rather than installing ad hoc.
   reports none keeps the stored value (`upsert_conferences`). `discover --category` expands to the subcategories of
   the stored series in that category. The legacy single `category` column (granular tags) is renamed to
   `subcategory` in place on first open by `database._migrate_category_to_subcategory`.
+- **CCF and CORE ranks are copied from the official lists, never researched.**
+  `ccf_rank` (China Computer Federation recommended list, 2022 edition: A / B /
+  C) and `core_rank` (ICORE2026: A* / A / B / C) are nullable columns validated
+  by `models.normalize_ccf_rank` / `normalize_core_rank`; CORE's National,
+  Regional, Australasian, Unranked, and Journal Published labels are stored as
+  blank. They are `add` fields (`--ccf` / `--core`, enum choices that also drive
+  the form and `api/propose`), pinnable, search fields (`ccf:A`, `core:A*`: an
+  exact match, so `core:A` excludes A*; `core>=A` compares by rank), sortable
+  categorical columns (best first) with the ■ value filter, and the toolbar's
+  CCF / CORE menus (`#vt-rank`, the same `filters.ccf_rank` / `core_rank`
+  state); Tile / List cards show them as badges. Discovery never researches
+  them, and `upsert_conferences` keeps the stored values when a survey reports
+  none. `scripts/fill_rankings.py` (`--download` fetches the ICORE CSV export
+  and the ten CCF area pages into gitignored `data/rankings/`; `--dry-run`)
+  matches a list entry only when its acronym **and** name agree (plus a few
+  reviewed equivalences in `CONFIRMED`, e.g. CCF's `SIGKDD` for KDD) and writes
+  through `merge_records`, which never clears a rank.
 - **Deterministic, sourced size (not a subjective reputation label).** Size is a
   computed property, never a stored hand-set value: `models.size_for_attendance`
   buckets the `attendance` integer (≥10,000 → massive, ≥1,000 → large, ≥250 →
@@ -536,18 +585,35 @@ dependencies there rather than installing ad hoc.
   (clicking it again removes the filter). The chosen values are
   browser-only state held apart from the search box and ANDed with it, so they
   survive a new search and the boolean grammar (which has no exact-match
-  operator for text) stays unchanged. An ascending sort on Abstract / Late abstract /
-  Paper due or Conference dates hides rows whose shown date (upcoming, else
-  prior; a meeting's last day) is before today, and the status line counts
-  them; the ⚙ box on those four headers has "Include past deadlines"
-  (remembered per browser, default off) to keep them. Descending sorts and
-  relevance order are unaffected, and rows with no date stay (sorted last). A "Browse by field" bar above the search box (one
+  operator for text) stays unchanged. Each deadline kind has an Upcoming and a
+  Past column (see the deadline-history design decision), so deadline sorts
+  hide nothing; an ascending Conference dates sort hides rows whose meeting
+  (upcoming, else prior; its last day) ended before today, and the status line
+  counts them (a descending sort lists them). Relevance order is unaffected,
+  and rows with no date stay (sorted last). A "Browse by field" bar above the search box (one
   card per category with rows, then the chosen category's subcategories as
   chips: every subcategory tagging a series in that category) sets those
   same category / subcategory filters, and the page mirrors them and the
   search text in the URL (`/?category=<slug>`, `/?subcategory=machine-learning`,
   `&q=...`; back/forward step through selections), so a field's view is a
-  shareable link. The `/field/<tag>/` pages link to these URLs.
+  shareable link. The `/field/<tag>/` pages link to these URLs. A display
+  toolbar below the search bar (`#view-toolbar`; its `#vt-display` slot) has
+  "Hide past deadlines" (drops rows with no abstract / late abstract / paper
+  deadline still ahead, by `ConferenceSearch.upcomingDeadline`, ANDed with the
+  search and filters), Date format (every displayed date goes through
+  `fmtDate` in `index.html`; default ISO), Time format (12/24-hour deadline
+  times), Size (edits the size column's ■ filter state, so the two stay in
+  sync), and a Minimal columns / Show all columns toggle that sets the
+  Columns ▾ menu's hidden set. Each choice is remembered per browser. The
+  `#vt-view` slot's View menu switches between Table (default), Tile (a card
+  grid), and List (one compact row per conference); the choice is remembered
+  per browser and mirrored in the URL (`&view=tile`; a link's view does not
+  overwrite the stored one). Tile and List render the same result rows
+  (`renderResults` → `cardHtml`, built from the table's cell helpers, so date
+  coloring, ⏩ / + markers, the recolor timer, and the 📅 / ✉️ handlers
+  (`rowAction`) are shared); a Sort menu beside View edits the same
+  `state.sort` / `state.order` as the table headers, a tag click filters like
+  a table cell (`toggleFacet`), and Columns ▾ / Minimal columns are disabled.
 - **Optional natural-language search over a local LLM (dynamic backend only).**
   The table has no AI search button; this survives only as the AWS backend's
   `/api/translate` endpoint. `conference_agent/web/nl_query.py`

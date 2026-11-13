@@ -99,6 +99,24 @@ function extensions(value) {
   });
 }
 
+// Past deadlines of earlier editions: {type, date} entries, none after today
+// (with a day's slack for the submitter's time zone).
+const MAX_PAST_DEADLINES = 60;
+function pastDeadlines(value) {
+  if (!Array.isArray(value)) throw new InputError("past deadlines: expected a list.");
+  if (value.length > MAX_PAST_DEADLINES) throw new InputError("Too many past deadlines.");
+  const latest = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  return value.map((entry) => {
+    if (!entry || typeof entry !== "object") throw new InputError("past deadlines: malformed entry.");
+    const type = String(entry.type || "").trim().toLowerCase();
+    const date = String(entry.date || "").trim();
+    if (!EXTENSION_KINDS.includes(type)) throw new InputError("past deadlines: unknown submission type.");
+    if (!isDate(date)) throw new InputError("past deadlines: give a valid date.");
+    if (date > latest) throw new InputError("past deadlines: a date after today is an upcoming deadline.");
+    return { type, date };
+  });
+}
+
 function text(name, value, max = MAX_TEXT) {
   const s = String(value).trim();
   if (s.length > max) throw new InputError(`${name} is too long.`);
@@ -135,6 +153,9 @@ function cleanRecord(raw, schema, edit = false) {
     } else if (f.kind === "extensions") {
       const list = extensions(value);
       if (list.length) out[name] = list;
+    } else if (f.kind === "past_deadlines") {
+      const list = pastDeadlines(value);
+      if (list.length) out[name] = list;
     } else if (f.kind === "date") {
       const s = text(label, value);
       if (!isDate(s)) throw new InputError(`${label}: not a valid date.`);
@@ -153,9 +174,11 @@ function cleanRecord(raw, schema, edit = false) {
       if (!["true", "false"].includes(s)) throw new InputError(`${label}: must be true or false.`);
       out[name] = s === "true";
     } else if (f.kind === "enum") {
+      // The field's own choices (the rankings), else the remote options.
       const s = text(label, value).toLowerCase();
-      if (!schema.remote_options.includes(s)) throw new InputError(`${label}: unknown option.`);
-      out[name] = s;
+      const match = (f.choices || schema.remote_options).find((o) => o.toLowerCase() === s);
+      if (match === undefined) throw new InputError(`${label}: unknown option.`);
+      out[name] = match;
     } else {
       const s = text(label, value, /_guidelines$/.test(name) ? MAX_LONG_TEXT : MAX_TEXT);
       if (!s) continue;

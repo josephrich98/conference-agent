@@ -38,40 +38,32 @@ from conference_agent.database import (
     paper_date_expr,
 )
 from conference_agent.web.nl_query import LLMUnavailable, TranslationError, translate
-from conference_agent.web.search import RESULT_COLUMNS, QueryError, build_filter, field_help
+from conference_agent.web.search import (
+    EXTENSION_COLUMNS,
+    PLACE_COLUMNS,
+    RESULT_COLUMNS,
+    TIME_COLUMNS,
+    QueryError,
+    build_filter,
+    field_help,
+    past_deadline_expr,
+    row_to_dict,
+    upcoming_deadline_expr,
+)
 
 app = FastAPI(title="Conference Agent", description="Curated conference table + calendar sync.")
 
 _STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
-# Columns returned and exported, in display order (defined beside the search so
-# the CLI's `lookup` can use it without the web dependencies).
+# Columns returned and exported, in display order, and the row serializer (defined
+# beside the search so the CLI's `lookup` / `info --json` can use them without the
+# web dependencies).
 _RESULT_COLUMNS = RESULT_COLUMNS
-
-# The structured deadline times (a 24-hour time and a zone per deadline kind).
-# Carried in each serialized row for the browser -- it colors a date the moment its
-# time passes and can show the time in 24-hour form -- but deliberately not in
-# ``_RESULT_COLUMNS``: they are not table columns, and the CSV / API column list
-# stays the user-facing ``deadline_time`` text derived from them.
-_TIME_COLUMNS = [
-    f"{kind}_{part}"
-    for kind in ("abstract", "late_abstract", "paper")
-    for part in ("time", "timezone")
-]
-
-# Observed deadline extensions (newline-separated "MM/DD/YYYY – MM/DD/YYYY" lines;
-# see ``database._record_extensions``). Carried in each serialized row only so the
-# table can mark an extended deadline with a hover note -- like the times above,
-# they are not table columns and stay out of the CSV / API column list.
-_EXTENSION_COLUMNS = [
-    f"{kind}_deadline_extension" for kind in ("abstract", "late_abstract", "paper")
-]
-
-# Whether the displayed location is a specific place rather than a city (see
-# ``ConferenceRow.location_venue``). Carried so the table can link a venue to a
-# map; not a table column.
-_PLACE_COLUMNS = ["location_venue"]
+_TIME_COLUMNS = TIME_COLUMNS
+_EXTENSION_COLUMNS = EXTENSION_COLUMNS
+_PLACE_COLUMNS = PLACE_COLUMNS
+_row_to_dict = row_to_dict
 
 # Columns that may be used for sorting.
 _SORTABLE = {
@@ -84,14 +76,27 @@ _SORTABLE = {
     "size",
     "attendance",
     "remote_option",
+    "ccf_rank",
+    "core_rank",
     "upcoming_start_date",
     "upcoming_abstract_deadline",
     "upcoming_late_abstract_deadline",
     "upcoming_paper_deadline",
+    "past_abstract_deadline",
+    "past_late_abstract_deadline",
+    "past_paper_deadline",
     "conference_month",
     "abstract_month",
     "late_abstract_month",
     "paper_month",
+}
+
+# The deadline sorts: each Upcoming column sorts on its deadline while it is
+# still ahead, and each Past column on its most recent past deadline. Mirrors
+# ``DEADLINE_SORT`` in conference_agent/web/static/search.js.
+_DEADLINE_SORT = {
+    **{f"upcoming_{k}_deadline": (upcoming_deadline_expr, k) for k in ("abstract", "late_abstract", "paper")},
+    **{f"past_{k}_deadline": (past_deadline_expr, k) for k in ("abstract", "late_abstract", "paper")},
 }
 
 # Former sort keys, kept so older links still sort the same column.
@@ -101,6 +106,13 @@ _SORT_ALIASES = {"location": "upcoming_location"}
 # Mirrors ``SIZE_SORT_RANK`` in conference_agent/web/static/search.js.
 _SIZE_SORT_RANK = {"massive": 1, "large": 2, "medium": 3, "small": 4}
 
+# The venue rankings sort best first ascending (A* before A before B). Mirrors
+# ``RANK_SORT`` in conference_agent/web/static/search.js.
+_RANK_SORT = {
+    "ccf_rank": {"A": 1, "B": 2, "C": 3},
+    "core_rank": {"A*": 1, "A": 2, "B": 3, "C": 4},
+}
+
 # Date sort columns (and location) fall back to the prior edition's value, matching what the
 # table actually displays (upcoming ?? prior ?? "—"). Sorting on the bare
 # upcoming_* column alone bucketed every row whose upcoming date is not yet
@@ -109,9 +121,6 @@ _SIZE_SORT_RANK = {"massive": 1, "large": 2, "medium": 3, "small": 4}
 _DATE_SORT_FALLBACK = {
     "upcoming_location": "prior_location",
     "upcoming_start_date": "prior_start_date",
-    "upcoming_abstract_deadline": "prior_abstract_deadline",
-    "upcoming_late_abstract_deadline": "prior_late_abstract_deadline",
-    "upcoming_paper_deadline": "prior_paper_deadline",
 }
 
 # The derived-month sorts break ties on the day of the month of the underlying
@@ -145,20 +154,6 @@ def get_db_url() -> str:
     return os.environ.get("CONFERENCE_DATABASE_URL", DEFAULT_DATABASE_URL)
 
 
-def _row_to_dict(row: ConferenceRow) -> dict:
-    """Serialize a row to a JSON-friendly dict (dates as ISO strings)."""
-    out: dict = {}
-    for col in (*_RESULT_COLUMNS, *_TIME_COLUMNS, *_EXTENSION_COLUMNS, *_PLACE_COLUMNS):
-        value = getattr(row, col)
-        if hasattr(value, "isoformat"):
-            value = value.isoformat()
-        out[col] = value
-    # NULL (a row predating the column) means false.
-    out["stable_location"] = bool(out["stable_location"])
-    out["location_venue"] = bool(out["location_venue"])
-    return out
-
-
 # Hard ceiling on rows returned by a single search. Comfortably above the full
 # catalog, so it never truncates a normal result, but it bounds the work and
 # payload of any one request (defense-in-depth as the catalog grows).
@@ -189,13 +184,19 @@ def _run_search(
     sort = _SORT_ALIASES.get(sort, sort)
     if sort not in _SORTABLE:
         sort = "upcoming_start_date"
-    primary = getattr(ConferenceRow, sort)
     fallback = _DATE_SORT_FALLBACK.get(sort)
-    # Sort on the displayed value: the upcoming date, falling back to the prior
-    # one. Only rows with neither date are NULL here, so only they sort last.
-    sort_col = func.coalesce(primary, getattr(ConferenceRow, fallback)) if fallback else primary
+    if sort in _DEADLINE_SORT:
+        build, kind = _DEADLINE_SORT[sort]
+        sort_col = build(kind)
+    else:
+        primary = getattr(ConferenceRow, sort)
+        # Sort on the displayed value: the upcoming date, falling back to the prior
+        # one. Only rows with neither date are NULL here, so only they sort last.
+        sort_col = func.coalesce(primary, getattr(ConferenceRow, fallback)) if fallback else primary
     if sort == "size":
         sort_col = case(_SIZE_SORT_RANK, value=ConferenceRow.size)
+    if sort in _RANK_SORT:
+        sort_col = case(_RANK_SORT[sort], value=getattr(ConferenceRow, sort))
     if sort in _MONTH_SORT_TIEBREAKER:
         if month_start is None:
             today = date.today()

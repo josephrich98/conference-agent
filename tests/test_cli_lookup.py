@@ -76,3 +76,34 @@ def test_unknown_column_fails(capsys, url):
     code, _, err = _lookup(capsys, url, "--columns", "bogus")
     assert code == 1
     assert "bogus" in err
+
+
+def test_info_json_full_record_round_trips_through_add(capsys, url, tmp_path):
+    import json
+
+    assert main(["--db", url, "info", "ZZA", "--json"]) == 0
+    record = json.loads(capsys.readouterr().out)
+    assert record["id"] == "zeta-imaging-meeting"
+    assert record["upcoming_start_date"] == "2099-11-01"
+    assert record["attendance"] == 20000
+    assert record["stable_location"] is False
+
+    # The output is an `add --json` record: re-adding it under a new name copies the row.
+    record["name"] = "Zeta Imaging Meeting Copy"
+    record.pop("id")
+    path = tmp_path / "rec.json"
+    path.write_text(json.dumps(record))
+    assert main(["--db", url, "add", "--json", str(path)]) == 0
+    capsys.readouterr()
+    assert main(["--db", url, "info", "zeta-imaging-meeting-copy", "--json"]) == 0
+    copy = json.loads(capsys.readouterr().out)
+    assert {k: v for k, v in copy.items() if k not in ("id", "name")} == {
+        k: v for k, v in record.items() if k != "name"
+    }
+
+
+def test_info_json_named_columns(capsys, url):
+    import json
+
+    assert main(["--db", url, "info", "ZZB", "acronym", "attendance", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"acronym": "ZZB", "attendance": 100}

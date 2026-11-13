@@ -88,6 +88,7 @@
     .ext-head, .ext-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 28px; gap: 8px; align-items: center; }
     .ext-head { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
     .ext-row { margin-bottom: 6px; }
+    .ext-head.two, .ext-row.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; }
     .ext-row button, button.ext-add {
       border: 1px solid var(--border); border-radius: 0; background: #fff;
       color: var(--accent); cursor: pointer; font-size: 15px; line-height: 1;
@@ -190,10 +191,12 @@
       ["format"],
       ["attendance", "attendance_year", "attendance_source"],
       ["remote_option"],
+      ["ccf", "core"],
       ["abstract_due", "abstract_time", "abstract_timezone"],
       ["late_abstract_due", "late_abstract_time", "late_abstract_timezone"],
       ["paper_due", "paper_time", "paper_timezone"],
       ["deadline_extensions"],
+      ["past_deadlines"],
       ["abstract_guidelines"],
       ["paper_guidelines"],
       ["conference_dates"],
@@ -232,6 +235,8 @@
       subcategory: "Subcategory(s)",
       format: "Format",
       remote_option: "Remote",
+      ccf: "CCF rank",
+      core: "CORE rank",
       attendance: "Attendance",
       attendance_year: "Year of attendance",
       attendance_source: "Source of attendance",
@@ -240,6 +245,7 @@
       paper_due: "Paper deadline",
       conference_dates: "Conference dates",
       deadline_extensions: "Deadline extension history",
+      past_deadlines: "Past deadlines",
       abstract_guidelines: "Abstract guidelines",
       paper_guidelines: "Paper guidelines",
     };
@@ -259,6 +265,8 @@
     const HINTS = {
       conference_name: "", conference_acronym: "", url: "", category: "", subcategory: "",
       format: "", remote_option: "", conference_dates: "",
+      ccf: "China Computer Federation list; computer-science venues only.",
+      core: "ICORE conference ranking; leave blank if National, Regional, or unranked.",
       abstract_due: "",
       late_abstract_due: "Only for a second, later round (e.g. late-breaking).",
       paper_due: "Full-paper deadline, for proceedings venues only.",
@@ -267,6 +275,7 @@
       attendance: "", attendance_year: "", attendance_source: "",
       location: "Nearby airports are looked up from the location automatically.", registration: "One line for each published date: Opens, Early bird deadline, Final deadline, Refund deadline (any date format). Add a \"Notes:\" line only for what the dates cannot say.", cost: "",
       deadline_extensions: "Past extensions of this conference's deadlines, if any. Entries more than 5 years old are not kept.",
+      past_deadlines: "Deadlines of earlier editions, if known (one date per line). They are listed, most recent first, in the Past deadline columns.",
       abstract_guidelines: "Abstract requirements: a paragraph, or one requirement per line starting with \"- \". Leave out deadlines; they have their own fields.",
       paper_guidelines: "Full-paper requirements, for proceedings venues only. Leave out deadlines.",
       notes: "Not displayed online (for internal use only).",
@@ -404,7 +413,65 @@
         },
       };
     }
-    let extensionChecks = [];  // check() of each rendered extension list
+    let extensionChecks = [];  // check() of each rendered extension list (and the past-deadline list)
+
+    // Past deadlines of earlier editions: one line per date (submission type,
+    // date); "+" adds a line. Dates must not be after today (an upcoming
+    // deadline goes in the deadline fields above).
+    function pastDeadlineList(id) {
+      const lines = [];
+      const list = el("div");
+      const today = () => new Date().toLocaleDateString("en-CA");
+      const addLine = () => {
+        const type = el("select", { "aria-label": "Submission type", id: lines.length ? undefined : id },
+          ...EXTENSION_KINDS.map(([v, t]) => el("option", { value: v, text: t })));
+        const date = el("input", { type: "date", "aria-label": "Past deadline", max: today() });
+        const remove = el("button", { type: "button", "aria-label": "Remove this date", title: "Remove", text: "×" });
+        const line = { type, date, node: el("div", { class: "ext-row two" }, type, date, remove) };
+        remove.addEventListener("click", () => {
+          if (lines.length === 1) { date.value = ""; type.value = "abstract"; return; }
+          lines.splice(lines.indexOf(line), 1);
+          line.node.remove();
+          if (!type.id) return;
+          lines[0].type.id = id;  // keep the label pointing at the first line
+        });
+        lines.push(line);
+        list.append(line.node);
+        return line;
+      };
+      addLine();
+      const plus = el("button", { type: "button", class: "ext-add", text: "+ Add a past deadline" });
+      plus.addEventListener("click", () => addLine().date.focus());
+      return {
+        node: el("div", {},
+          el("div", { class: "ext-head two", "aria-hidden": "true" },
+            el("span", { text: "Submission type" }), el("span", { text: "Date" })),
+          list, plus),
+        input: lines[0].type,
+        read: () => lines.filter((l) => l.date.value).map((l) => ({ type: l.type.value, date: l.date.value })),
+        write: (entries) => {
+          while (lines.length > 1) lines.pop().node.remove();
+          lines[0].type.id = id;
+          lines[0].date.value = "";
+          lines[0].type.value = "abstract";
+          (entries || []).forEach((x, i) => {
+            const l = i ? addLine() : lines[0];
+            l.type.value = x.type;
+            l.date.value = x.date;
+          });
+        },
+        check: () => {
+          const out = [];
+          for (const l of lines) {
+            if (l.date.value && l.date.value > today()) {
+              out.push("Past deadline: a date after today is an upcoming deadline; enter it above.");
+              l.date.classList.add("invalid");
+            }
+          }
+          return [...new Set(out)];
+        },
+      };
+    }
 
     // Upcoming / Prior (/ Stable) radio buttons. Until one is clicked they
     // follow the dates: Prior when the entered meeting is already over.
@@ -444,6 +511,13 @@
         read = ext.read;
         write = ext.write;
         extensionChecks.push(ext.check);
+      } else if (f.kind === "past_deadlines") {
+        const past = pastDeadlineList(id);
+        wrap.append(past.node);
+        input = past.input;
+        read = past.read;
+        write = past.write;
+        extensionChecks.push(past.check);
       } else if (f.name === "category" || f.name === "subcategory") {
         const picker = tagPicker(id, knownTags[f.name]);
         wrap.append(picker.node);
@@ -480,8 +554,9 @@
         wrap.append(input);
         read = () => input.value.trim();
       } else if (f.kind === "enum") {
-        input = el("select", { id }, el("option", { value: "", text: "Unknown / not sure" }),
-          ...schema.remote_options.filter((o) => o !== "unknown").map((o) => el("option", { value: o, text: o })));
+        input = el("select", { id }, el("option", { value: "", text: f.choices ? "Not listed / not sure" : "Unknown / not sure" }),
+          ...(f.choices || schema.remote_options).filter((o) => o !== "unknown")
+            .map((o) => el("option", { value: o, text: o })));
         wrap.append(input);
         read = () => input.value;
       } else if (f.name === "format") {
@@ -643,6 +718,7 @@
         url: row.url, category: lines(row.category), subcategory: lines(row.subcategory),
         format: lines(row.format), attendance: row.attendance, attendance_year: row.attendance_year,
         remote_option: row.remote_option === "unknown" ? "" : row.remote_option,
+        ccf: row.ccf_rank, core: row.core_rank,
         conference_dates: [row[`${ed}_start_date`], row[`${ed}_end_date`]].filter(Boolean),
         abstract_due: row[`${ed}_abstract_deadline`], late_abstract_due: row[`${ed}_late_abstract_deadline`],
         paper_due: row[`${ed}_paper_deadline`], notes: row.notes,
@@ -652,6 +728,14 @@
             const [original, extended] = line.split(/\s+[–-]\s+/).map(isoOf);
             return original && extended ? { type, original, extended } : null;
           }).filter(Boolean)),
+        // The stored history, plus the prior edition's deadlines when the
+        // form holds the upcoming edition's (otherwise they fill the dates).
+        past_deadlines: EXTENSION_KINDS.flatMap(([type]) => {
+          const dates = String(row[`${type}_deadline_history`] || "").split("\n")
+            .map((d) => d.trim()).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+          if (upcoming && row[`prior_${type}_deadline`]) dates.push(row[`prior_${type}_deadline`]);
+          return [...new Set(dates)].sort().reverse().map((date) => ({ type, date }));
+        }),
       };
       for (const kind of ["abstract", "late_abstract", "paper"]) {
         values[`${kind}_time`] = row[`${kind}_time`];
