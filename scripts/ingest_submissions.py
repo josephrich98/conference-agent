@@ -32,7 +32,7 @@ import contextlib
 import io
 import json
 import os
-import subprocess
+import subprocess  # only runs `git` with fixed arguments  # nosec B404
 import sys
 import tempfile
 from datetime import date
@@ -45,7 +45,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 
 def _git(*args: str) -> str:
-    return subprocess.run(
+    return subprocess.run(  # git on PATH, argument list, no shell  # nosec B603 B607
         ["git", "-C", str(PROJECT_DIR), *args], check=True, capture_output=True, text=True
     ).stdout
 

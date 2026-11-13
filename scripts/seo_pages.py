@@ -26,7 +26,12 @@ from typing import Iterable, Optional
 from urllib.parse import quote
 
 from conference_agent.airports import parse_airports
-from conference_agent.models import CATEGORIES, REGISTRATION_FIELDS, parse_registration
+from conference_agent.models import (
+    CATEGORIES,
+    REGISTRATION_FIELDS,
+    parse_acceptance_rates,
+    parse_registration,
+)
 
 SITE_URL = "https://conferenceagent.vercel.app"
 SITE_NAME = "Conference Agent"
@@ -115,6 +120,7 @@ def _page(title: str, description: str, path: str, body: str, jsonld: Iterable[d
         f"<title>{_e(title)}</title>"
         f"<meta name=\"description\" content=\"{_e(description)}\">"
         f"<link rel=\"canonical\" href=\"{_e(canonical)}\">"
+        "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/logo.svg\">"
         f"<meta property=\"og:type\" content=\"website\"><meta property=\"og:title\" content=\"{_e(title)}\">"
         f"<meta property=\"og:description\" content=\"{_e(description)}\"><meta property=\"og:url\" content=\"{_e(canonical)}\">"
         "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600"
@@ -209,6 +215,19 @@ def _guidelines_html(text: str) -> str:
     return "".join(out)
 
 
+def _acceptance_text(value) -> Optional[str]:
+    """The acceptance rates, most recent first: "17.6% in 2026 (4,167 of 23,680); ..."."""
+    parts = []
+    try:
+        entries = parse_acceptance_rates(value)
+    except ValueError:
+        entries = []
+    for e in entries:
+        counts = f" ({e['accepted']:,} of {e['submitted']:,})" if e.get("accepted") is not None else ""
+        parts.append(f"{e['rate']:g}% in {e['year']}{counts}")
+    return "; ".join(parts) or None
+
+
 def conference_page(row: dict, generated: str) -> tuple[str, str]:
     """Return ``(path, html)`` for one conference series."""
     path = f"/c/{slugify(row['id'])}/"
@@ -222,6 +241,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Late abstract deadline", _fmt_date(row.get("upcoming_late_abstract_deadline"))),
         ("Paper deadline", _fmt_date(row.get("upcoming_paper_deadline"))),
         ("Deadline time", row.get("deadline_time")),
+        ("Acceptance decisions", _fmt_date(row.get("upcoming_decision_deadline"))),
         ("Conference dates", _date_range(row.get("upcoming_start_date"), row.get("upcoming_end_date"))),
         ("Registration", _registration_text(row.get("upcoming_registration"))),
         ("Location", _upcoming_location(row)),
@@ -233,6 +253,8 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Fields", row.get("subcategory")),
         ("CCF rank", row.get("ccf_rank")),
         ("CORE rank", row.get("core_rank")),
+        ("Archival proceedings", {True: "Yes", False: "No (non-archival)"}.get(row.get("archival"))),
+        ("Acceptance rate", _acceptance_text(row.get("acceptance_rates"))),
         (
             "Annual attendance",
             f"{row['attendance']:,}" + (f" ({row['attendance_year']})" if row.get("attendance_year") else "")
@@ -244,6 +266,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Abstract deadline", _fmt_date(row.get("prior_abstract_deadline"))),
         ("Late abstract deadline", _fmt_date(row.get("prior_late_abstract_deadline"))),
         ("Paper deadline", _fmt_date(row.get("prior_paper_deadline"))),
+        ("Acceptance decisions", _fmt_date(row.get("prior_decision_deadline"))),
         ("Conference dates", _date_range(row.get("prior_start_date"), row.get("prior_end_date"))),
         ("Registration", _registration_text(row.get("prior_registration"))),
         ("Location", row.get("prior_location")),
@@ -266,7 +289,10 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
                 if d and d != row.get(f"prior_{kind}_deadline")
             ) or None,
         )
-        for kind, label_ in (("abstract", "Abstract"), ("late_abstract", "Late abstract"), ("paper", "Paper"))
+        for kind, label_ in (
+            ("abstract", "Abstract"), ("late_abstract", "Late abstract"), ("paper", "Paper"),
+            ("decision", "Decision"),
+        )
     ]
 
     upcoming_tbl = table(rows)
@@ -378,9 +404,14 @@ its JSON instead of searching the web.
 
 - `upcoming_abstract_deadline`, `upcoming_late_abstract_deadline`,
   `upcoming_paper_deadline` (ISO dates; `prior_*` counterparts hold the last edition).
+- `upcoming_decision_deadline`: the acceptance decision (author notification)
+  date; `decision_deadline_history` like the deadline histories below.
 - `abstract_deadline_history`, `late_abstract_deadline_history`,
   `paper_deadline_history`: deadlines of earlier editions, newline-separated ISO
   dates, most recent first.
+- `acceptance_rates`: one `YEAR | ACCEPTED/SUBMITTED | SOURCE` (or
+  `YEAR | RATE% | SOURCE`) line per year, most recent first; `acceptance_rate`
+  is the most recent year's rate in percent.
 - `abstract_time` (24-hour HH:MM) with `abstract_timezone` (ET, AoE, UTC, ...);
   likewise `late_abstract_*` and `paper_*`. `deadline_time` is the display text.
 - `upcoming_start_date`, `upcoming_end_date`, `upcoming_location`,

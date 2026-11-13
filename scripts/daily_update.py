@@ -90,6 +90,12 @@ def main() -> None:
     )
     parser.add_argument("--no-email", action="store_true", help="Do not send a summary email")
     parser.add_argument(
+        "--no-openreview",
+        action="store_true",
+        help="watch cadence only: skip the OpenReview sync (deadlines of the "
+        "series OpenReview hosts, read from its public API).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="watch cadence only: run the page checks and report what would be "
@@ -151,13 +157,21 @@ def main() -> None:
 def _run_watch(args) -> int:
     """The page-gated watch cycle; returns the process exit code."""
     print(f"Watch run [{'dry run' if args.dry_run else args.backend}] on {args.db}")
-    report = run_watch(db_url=args.db, backend=args.backend, dry_run=args.dry_run)
+    client = None
+    if not args.no_openreview:
+        from conference_agent.openreview_source import OpenReviewClient
+
+        client = OpenReviewClient()
+    report = run_watch(
+        db_url=args.db, backend=args.backend, dry_run=args.dry_run, openreview=client
+    )
     if args.dry_run:
         return 0
     if report.refreshed and not args.no_email:
         sent = notify_refresh(report.refreshed, len(report.researched))
         print("Summary email sent." if sent else "Email skipped (SMTP not configured).")
-    # A failed batch is retried next run, but surface it so the job reports failure.
+    # A failed batch is retried next run, but surface it so the job reports
+    # failure. An OpenReview outage is not a failure: the page checks cover it.
     return 1 if report.failed else 0
 
 

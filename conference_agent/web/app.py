@@ -37,6 +37,7 @@ from conference_agent.database import (
     late_abstract_date_expr,
     paper_date_expr,
 )
+from conference_agent.models import HISTORY_KINDS
 from conference_agent.web.nl_query import LLMUnavailable, TranslationError, translate
 from conference_agent.web.search import (
     EXTENSION_COLUMNS,
@@ -75,9 +76,11 @@ _SORTABLE = {
     "upcoming_location",
     "size",
     "attendance",
-    "remote_option",
     "ccf_rank",
     "core_rank",
+    "acceptance_rate",
+    "archival",
+    "remote_option",
     "upcoming_start_date",
     "upcoming_abstract_deadline",
     "upcoming_late_abstract_deadline",
@@ -85,6 +88,8 @@ _SORTABLE = {
     "past_abstract_deadline",
     "past_late_abstract_deadline",
     "past_paper_deadline",
+    "upcoming_decision_deadline",
+    "past_decision_deadline",
     "conference_month",
     "abstract_month",
     "late_abstract_month",
@@ -95,8 +100,8 @@ _SORTABLE = {
 # still ahead, and each Past column on its most recent past deadline. Mirrors
 # ``DEADLINE_SORT`` in conference_agent/web/static/search.js.
 _DEADLINE_SORT = {
-    **{f"upcoming_{k}_deadline": (upcoming_deadline_expr, k) for k in ("abstract", "late_abstract", "paper")},
-    **{f"past_{k}_deadline": (past_deadline_expr, k) for k in ("abstract", "late_abstract", "paper")},
+    **{f"upcoming_{k}_deadline": (upcoming_deadline_expr, k) for k in HISTORY_KINDS},
+    **{f"past_{k}_deadline": (past_deadline_expr, k) for k in HISTORY_KINDS},
 }
 
 # Former sort keys, kept so older links still sort the same column.
@@ -197,6 +202,9 @@ def _run_search(
         sort_col = case(_SIZE_SORT_RANK, value=ConferenceRow.size)
     if sort in _RANK_SORT:
         sort_col = case(_RANK_SORT[sort], value=getattr(ConferenceRow, sort))
+    if sort == "archival":
+        # Yes before no ascending; unknown (NULL) last.
+        sort_col = case((ConferenceRow.archival.is_(True), 1), (ConferenceRow.archival.is_(False), 2))
     if sort in _MONTH_SORT_TIEBREAKER:
         if month_start is None:
             today = date.today()

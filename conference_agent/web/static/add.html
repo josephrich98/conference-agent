@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Add or edit a conference · Conference Agent</title>
+  <link rel="icon" type="image/svg+xml" href="../logo.svg">
   <meta name="description" content="Suggest a conference for the Conference Agent table, or a correction to one already listed. Submissions are reviewed as GitHub pull requests.">
   <link rel="canonical" href="https://conferenceagent.vercel.app/add/">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -190,11 +191,13 @@
       ["category", "subcategory"],
       ["format"],
       ["attendance", "attendance_year", "attendance_source"],
-      ["remote_option"],
       ["ccf", "core"],
+      ["acceptance_rates"],
+      ["remote_option", "archival"],
       ["abstract_due", "abstract_time", "abstract_timezone"],
       ["late_abstract_due", "late_abstract_time", "late_abstract_timezone"],
       ["paper_due", "paper_time", "paper_timezone"],
+      ["decision_due"],
       ["deadline_extensions"],
       ["past_deadlines"],
       ["abstract_guidelines"],
@@ -212,13 +215,14 @@
     const EXCLUDED = new Set([
       "new_conference_name", "deadline_time",
       "prior_conference_dates", "prior_abstract_due", "prior_late_abstract_due", "prior_paper_due",
-      "prior_registration", "prior_cost", "prior_location", "stable_location",
+      "prior_decision_due", "prior_registration", "prior_cost", "prior_location", "stable_location",
     ]);
     // The dates and their prior-edition counterparts; they describe the
     // previous edition when the meeting is over (see isPastEdition).
     const DATE_PRIOR_OF = {
       conference_dates: "prior_conference_dates", abstract_due: "prior_abstract_due",
       late_abstract_due: "prior_late_abstract_due", paper_due: "prior_paper_due",
+      decision_due: "prior_decision_due",
     };
     // Fields with Upcoming / Prior (/ Stable) radio buttons beside them.
     const EDITION_CHOICES = {
@@ -236,6 +240,7 @@
       format: "Format",
       remote_option: "Remote",
       ccf: "CCF rank",
+      archival: "Archival proceedings",
       core: "CORE rank",
       attendance: "Attendance",
       attendance_year: "Year of attendance",
@@ -243,6 +248,8 @@
       abstract_due: "Abstract deadline",
       late_abstract_due: "Late abstract deadline",
       paper_due: "Paper deadline",
+      decision_due: "Acceptance decision date",
+      acceptance_rates: "Acceptance rates",
       conference_dates: "Conference dates",
       deadline_extensions: "Deadline extension history",
       past_deadlines: "Past deadlines",
@@ -256,6 +263,7 @@
       location: "e.g. Chicago, IL, USA",
       registration: "e.g.\nOpens: 2027-01-05\nEarly bird deadline: 2027-03-01\nFinal deadline: 2027-04-15\nRefund deadline: 2027-04-01",
       cost: "e.g. Members $450, non-members $650, students $150",
+      acceptance_rates: "e.g.\n2026 | 4167/23680 | https://example.org/stats\n2025 | 23.4%",
       abstract_timezone: "e.g. AoE, ET, CET", late_abstract_timezone: "e.g. AoE, ET, CET",
       paper_timezone: "e.g. AoE, ET, CET",
       abstract_guidelines: "e.g.\n- 300 words maximum, excluding title and authors\n- Structured: Background, Methods, Results, Conclusions\n- One figure or table allowed",
@@ -267,9 +275,12 @@
       format: "", remote_option: "", conference_dates: "",
       ccf: "China Computer Federation list; computer-science venues only.",
       core: "ICORE conference ranking; leave blank if National, Regional, or unranked.",
+      archival: "Yes if accepted work is published in citable proceedings or a journal (including an abstract supplement); no if non-archival.",
       abstract_due: "",
       late_abstract_due: "Only for a second, later round (e.g. late-breaking).",
       paper_due: "Full-paper deadline, for proceedings venues only.",
+      decision_due: "When authors are notified of acceptance.",
+      acceptance_rates: "One line per year: the year, accepted/submitted counts (or the rate, e.g. 23.4%), and optionally a source link, separated by \" | \".",
       abstract_time: "", abstract_timezone: "", late_abstract_time: "", late_abstract_timezone: "",
       paper_time: "", paper_timezone: "",
       attendance: "", attendance_year: "", attendance_source: "",
@@ -346,6 +357,8 @@
     // EXTENSION_YEARS old are not kept (database.EXTENSION_RETENTION_YEARS).
     const EXTENSION_YEARS = 5;
     const EXTENSION_KINDS = [["abstract", "Abstract"], ["late_abstract", "Late abstract"], ["paper", "Paper"]];
+    // Past dates also cover the acceptance decision (database.HISTORY_KINDS).
+    const PAST_KINDS = [...EXTENSION_KINDS, ["decision", "Decision"]];
     const extensionCutoff = () => {
       const d = new Date();
       d.setFullYear(d.getFullYear() - EXTENSION_YEARS);
@@ -424,7 +437,7 @@
       const today = () => new Date().toLocaleDateString("en-CA");
       const addLine = () => {
         const type = el("select", { "aria-label": "Submission type", id: lines.length ? undefined : id },
-          ...EXTENSION_KINDS.map(([v, t]) => el("option", { value: v, text: t })));
+          ...PAST_KINDS.map(([v, t]) => el("option", { value: v, text: t })));
         const date = el("input", { type: "date", "aria-label": "Past deadline", max: today() });
         const remove = el("button", { type: "button", "aria-label": "Remove this date", title: "Remove", text: "×" });
         const line = { type, date, node: el("div", { class: "ext-row two" }, type, date, remove) };
@@ -554,7 +567,7 @@
         wrap.append(input);
         read = () => input.value.trim();
       } else if (f.kind === "enum") {
-        input = el("select", { id }, el("option", { value: "", text: f.choices ? "Not listed / not sure" : "Unknown / not sure" }),
+        input = el("select", { id }, el("option", { value: "", text: f.choices && f.name !== "archival" ? "Not listed / not sure" : "Unknown / not sure" }),
           ...(f.choices || schema.remote_options).filter((o) => o !== "unknown")
             .map((o) => el("option", { value: o, text: o })));
         wrap.append(input);
@@ -580,7 +593,8 @@
         read = () => input.value.trim();
       } else {
         const isUrl = f.name === "url" || f.name === "attendance_source";
-        const long = f.name === "notes" || f.name === "registration" || /_guidelines$/.test(f.name);
+        const long = f.name === "notes" || f.name === "registration" || f.name === "acceptance_rates"
+          || /_guidelines$/.test(f.name);
         input = long
           ? el("textarea", { id, maxlength: /_guidelines$/.test(f.name) ? 4000 : 2000,
               placeholder: PLACEHOLDERS[f.name] || "", rows: f.name === "notes" ? undefined : 5 })
@@ -709,7 +723,7 @@
     const lines = (v) => String(v || "").split(",").map((t) => t.trim()).filter(Boolean);
     const isoOf = (us) => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(us.trim()); return m ? `${m[3]}-${m[1]}-${m[2]}` : ""; };
     function fromRow(row) {
-      const upcoming = ["start_date", "abstract_deadline", "late_abstract_deadline", "paper_deadline"]
+      const upcoming = ["start_date", "abstract_deadline", "late_abstract_deadline", "paper_deadline", "decision_deadline"]
         .some((k) => row[`upcoming_${k}`]);
       const ed = upcoming ? "upcoming" : "prior";
       const values = {
@@ -719,9 +733,11 @@
         format: lines(row.format), attendance: row.attendance, attendance_year: row.attendance_year,
         remote_option: row.remote_option === "unknown" ? "" : row.remote_option,
         ccf: row.ccf_rank, core: row.core_rank,
+        archival: row.archival === true ? "yes" : row.archival === false ? "no" : "",
         conference_dates: [row[`${ed}_start_date`], row[`${ed}_end_date`]].filter(Boolean),
         abstract_due: row[`${ed}_abstract_deadline`], late_abstract_due: row[`${ed}_late_abstract_deadline`],
-        paper_due: row[`${ed}_paper_deadline`], notes: row.notes,
+        paper_due: row[`${ed}_paper_deadline`], decision_due: row[`${ed}_decision_deadline`],
+        acceptance_rates: row.acceptance_rates, notes: row.notes,
         abstract_guidelines: row.abstract_guidelines, paper_guidelines: row.paper_guidelines,
         deadline_extensions: EXTENSION_KINDS.flatMap(([type]) =>
           String(row[`${type}_deadline_extension`] || "").split("\n").map((line) => {
@@ -730,7 +746,7 @@
           }).filter(Boolean)),
         // The stored history, plus the prior edition's deadlines when the
         // form holds the upcoming edition's (otherwise they fill the dates).
-        past_deadlines: EXTENSION_KINDS.flatMap(([type]) => {
+        past_deadlines: PAST_KINDS.flatMap(([type]) => {
           const dates = String(row[`${type}_deadline_history`] || "").split("\n")
             .map((d) => d.trim()).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
           if (upcoming && row[`prior_${type}_deadline`]) dates.push(row[`prior_${type}_deadline`]);

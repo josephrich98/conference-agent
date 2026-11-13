@@ -50,7 +50,9 @@ _ROWS = [
         size="large", attendance=2500, remote_option="hybrid", prior_cost="$$",
         upcoming_paper_deadline=date(2026, 3, 10), upcoming_start_date=date(2026, 9, 20),
         upcoming_end_date=date(2026, 9, 24), format="paper, oral",
-        url="https://miccai.org", ccf_rank="B", core_rank="A",
+        url="https://miccai.org", ccf_rank="B", core_rank="A", archival=True,
+        acceptance_rates="2025 | 1027/3677\n2024 | 31%", acceptance_rate=27.9,
+        upcoming_decision_deadline=date(2026, 6, 17), decision_deadline_history="2024-06-15",
     ),
     dict(
         id="NEURIPS", acronym="NeurIPS", name="Neural Information Processing Systems",
@@ -58,6 +60,9 @@ _ROWS = [
         attendance=15000, remote_option="virtual", upcoming_cost=None,
         upcoming_paper_deadline=date(2026, 5, 15), upcoming_start_date=date(2026, 12, 7),
         upcoming_end_date=date(2026, 12, 13), format="paper", ccf_rank="A", core_rank="A*",
+        acceptance_rates="2025 | 5290/21575 | https://example.org", acceptance_rate=24.5,
+        upcoming_decision_deadline=date(2099, 9, 25), prior_decision_deadline=date(2025, 9, 18),
+        archival=True,
     ),
     dict(
         id="SPR", acronym="SPR", name="Society for Pediatric Radiology",
@@ -109,7 +114,7 @@ _ROWS = [
         upcoming_abstract_deadline=date(2026, 8, 28), abstract_month=8,
         upcoming_late_abstract_deadline=date(2026, 10, 1), late_abstract_month=10,
         upcoming_start_date=date(2026, 11, 11), upcoming_end_date=date(2026, 11, 14),
-        format="abstract, poster, oral",
+        format="abstract, poster, oral", archival=False,
     ),
     # Late abstract known only for the prior edition (a past deadline), with
     # older abstract deadlines in the history.
@@ -128,6 +133,18 @@ _ROWS = [
 
 _QUERIES = [
     "",
+    "acceptance<25",
+    "acceptance<=27.9%",
+    "acceptance>=20 AND acceptance<30",
+    "acceptance:*",
+    "NOT acceptance:*",
+    "acceptance_rate>25",
+    "decision_due:*",
+    "decision_due>=2099",
+    "notification:2099-09",
+    "past_decision_due:*",
+    "past_decision_due>=2026",
+    "prior_decision<2026",
     "radiology",
     "Radiology",
     "imaging",
@@ -240,6 +257,15 @@ _QUERIES = [
     "core<A*",
     "core:* AND category:medicine",
     "core:A* OR ccf:B",
+    "archival:yes",
+    "archival:no",
+    "archival:TRUE",
+    "archival:false",
+    "archival:*",
+    "NOT archival:*",
+    "NOT archival:yes",
+    "NOT archival:no",
+    "archival:no OR ccf:A",
 ]
 
 
@@ -307,6 +333,11 @@ def test_browser_search_matches_server(tmp_path):
         ("core>=A", ["MICCAI", "NEURIPS"]),
         ("ccf:A", ["NEURIPS"]),
         ("ccf>=B", ["MICCAI", "NEURIPS"]),
+        ("acceptance<25", ["NEURIPS"]),
+        ("acceptance<=27.9%", ["MICCAI", "NEURIPS"]),
+        ("acceptance:*", ["MICCAI", "NEURIPS"]),
+        ("decision_due:*", ["NEURIPS"]),
+        ("past_decision_due:*", ["MICCAI", "NEURIPS"]),
     ],
 )
 def test_size_rank_and_attendance_queries(tmp_path, query, expected):

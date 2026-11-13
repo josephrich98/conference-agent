@@ -33,6 +33,7 @@ from conference_agent.discover import (
     BackendUnavailableError,
 )
 from conference_agent.models import (
+    ARCHIVAL_CHOICES,
     CATEGORIES,
     CCF_EDITION,
     CCF_RANKS,
@@ -42,10 +43,12 @@ from conference_agent.models import (
     ConferenceSize,
     RemoteOption,
     name_id,
+    normalize_archival,
     normalize_categories,
     normalize_ccf_rank,
     normalize_core_rank,
     normalize_subcategories,
+    parse_acceptance_rates,
 )
 from conference_agent.web.search import RESULT_COLUMNS, row_to_dict
 
@@ -124,10 +127,6 @@ _SCALAR_FIELDS = (
         "Source URL the attendance figure was taken from (stored for provenance)",
     ),
     _Field(
-        "remote_option", "remote_option", "enum",
-        "Remote attendance option: " + " / ".join(o.value for o in RemoteOption),
-    ),
-    _Field(
         "ccf", "ccf_rank", "enum",
         "China Computer Federation recommended-list rank, as published in "
         f"{CCF_EDITION}: " + " / ".join(CCF_RANKS) + ". Computer-science venues only; "
@@ -140,6 +139,28 @@ _SCALAR_FIELDS = (
         + " / ".join(CORE_RANKS) + ". Leave unset when the venue is unlisted or "
         "listed as National, Regional, or Unranked",
         CORE_RANKS,
+    ),
+    _Field(
+        "archival", "archival", "enum",
+        "Whether accepted submissions are published in archival proceedings: "
+        "yes (a citable proceedings volume or journal, including a journal "
+        "abstract supplement) or no (non-archival, so the work may also be "
+        "submitted elsewhere). true / false and 1 / 0 are accepted too. Leave "
+        "unset when unknown",
+        ARCHIVAL_CHOICES,
+    ),
+    _Field(
+        "acceptance_rates", "acceptance_rates", "text",
+        "Published acceptance statistics, one entry per year (newline- or "
+        "';'-separated): 'YEAR | ACCEPTED/SUBMITTED | SOURCE', or "
+        "'YEAR | RATE% | SOURCE' when only the rate is published (the source URL "
+        "is optional). e.g. '2026 | 4167/23680 | https://...'. A year given "
+        "replaces the stored entry for that year; other years are kept. In JSON, "
+        "also a list of {year, accepted, submitted, rate, source} objects",
+    ),
+    _Field(
+        "remote_option", "remote_option", "enum",
+        "Remote attendance option: " + " / ".join(o.value for o in RemoteOption),
     ),
     _Field("cost", "upcoming_cost", "text", "Upcoming edition's registration cost summary"),
     _Field("url", "url", "text", "Official conference website (the conference-name link)"),
@@ -161,6 +182,11 @@ _SCALAR_FIELDS = (
         "paper_due", "upcoming_paper_deadline", "date",
         "Upcoming full-paper / manuscript deadline (proceedings venues only -- "
         "leave unset for abstract-only meetings)",
+    ),
+    _Field(
+        "decision_due", "upcoming_decision_deadline", "date",
+        "Upcoming acceptance decision (author notification) date: when the main "
+        "submission round's authors hear back",
     ),
     _Field(
         "registration", "upcoming_registration", "text",
@@ -231,6 +257,10 @@ _SCALAR_FIELDS = (
         "Prior edition's full-paper / manuscript deadline",
     ),
     _Field(
+        "prior_decision_due", "prior_decision_deadline", "date",
+        "Prior edition's acceptance decision (author notification) date",
+    ),
+    _Field(
         "prior_registration", "prior_registration", "text",
         "Prior edition's registration dates, in the same format as registration",
     ),
@@ -284,10 +314,10 @@ _COMPOSITE_FIELDS = (
     _Field(
         "past_deadlines",
         "abstract_deadline_history + late_abstract_deadline_history "
-        "+ paper_deadline_history",
+        "+ paper_deadline_history + decision_deadline_history",
         "past_deadlines",
         "Past deadlines of earlier editions: one entry per date, each a type "
-        "(abstract / late abstract / paper) and the date (not after today). "
+        "(abstract / late abstract / paper / decision) and the date (not after today). "
         "Added to the stored history, which the Past columns list with the "
         "prior edition's deadline",
     ),
@@ -310,6 +340,17 @@ _COLUMN_TO_FIELD.update(
         "upcoming_end_date": "upcoming_end_date",
     }
 )
+
+
+def _yes_no(value: str) -> str:
+    """argparse type for a yes/no flag: ``yes`` / ``no`` from any accepted
+    spelling (yes/no, true/false, 1/0); other text is left for ``choices`` to
+    reject."""
+    try:
+        parsed = normalize_archival(value)
+    except ValueError:
+        return str(value).strip().lower()
+    return {True: "yes", False: "no"}.get(parsed, str(value).strip().lower())
 
 
 def _flag_for(column: str) -> str:
@@ -547,6 +588,27 @@ def _add_maintainer_parsers(sub) -> None:
         "runs this after each refresh.",
     )
     p_discover.add_argument(
+        "--openreview",
+        nargs="?",
+        const="sync",
+        choices=["sync", "dry-run"],
+        help="Instead of running the agent, link series to their OpenReview "
+        "venue and write the deadlines OpenReview publishes (public API, no "
+        "account; needs network access). 'dry-run' reports what would change "
+        "without writing. --conference-name / --size / --subcategory / "
+        "--category limit the series synced. The scheduled watch run does this "
+        "first.",
+    )
+    p_discover.add_argument(
+        "--openreview-link",
+        nargs=2,
+        metavar=("ID", "VENUE"),
+        help="Set a series' OpenReview link by hand: VENUE is a venue id with or "
+        "without the year templated (ICLR.cc/2026/Conference or "
+        "ICLR.cc/{year}/Conference), 'none' to never link it, or 'auto' to let "
+        "the next sync match it again.",
+    )
+    p_discover.add_argument(
         "--registration",
         nargs="?",
         const="due",
@@ -658,7 +720,7 @@ def _add_maintainer_parsers(sub) -> None:
         action="append",
         metavar=("TYPE", "DATE"),
         help="One past deadline of an earlier edition: TYPE (abstract, "
-        "late_abstract, or paper), then the date (YYYY-MM-DD). Repeat the flag "
+        "late_abstract, paper, or decision), then the date (YYYY-MM-DD). Repeat the flag "
         "for more entries.",
     )
     # Every scalar field gets a flag, generated from the registry so the flag
@@ -672,7 +734,9 @@ def _add_maintainer_parsers(sub) -> None:
             kwargs["metavar"] = "YYYY-MM-DD"
         elif spec.kind == "enum":
             kwargs["choices"] = spec.enum_choices
-            if spec.choices:  # the rankings: accept "a*" for "A*"
+            if spec.field == "archival":  # yes / no, also true / false / 1 / 0
+                kwargs["type"] = _yes_no
+            elif spec.choices:  # the rankings: accept "a*" for "A*"
                 kwargs["type"] = str.upper
         elif spec.kind == "bool":
             kwargs["choices"] = ["true", "false"]
@@ -921,6 +985,48 @@ def _discover_airports(args) -> int:
     return 1 if counts["failed"] else 0
 
 
+def _discover_openreview(args) -> int:
+    """`discover --openreview`: write the deadlines OpenReview publishes."""
+    from conference_agent.openreview_source import OpenReviewClient, sync
+
+    ids = None
+    if args.conference_name or args.size or args.subcategory or args.category:
+        errors: list[str] = []
+        targets = _discover_targets(args, errors)
+        if errors:
+            for message in errors:
+                print(f"Error: {message}", file=sys.stderr)
+            return 1
+        ids = [conf.id for conf in targets]
+    client = OpenReviewClient()
+    dry_run = args.openreview == "dry-run"
+    report = sync(db_url=args.db, client=client, ids=ids, link=ids is None, dry_run=dry_run)
+    for row_id, reason in sorted(report.skipped.items()):
+        print(f"  {row_id}: {reason}")
+    print(
+        ("Would update" if dry_run else "Updated")
+        + f" {len(report.updated)} series from OpenReview; "
+        f"{len(report.covered)} have a complete upcoming edition; "
+        f"{len(report.linked)} newly linked; {len(report.failed)} failed "
+        f"({client.requests} requests)."
+    )
+    return 1 if report.failed else 0
+
+
+def _discover_openreview_link(args) -> int:
+    """`discover --openreview-link ID VENUE`: set a series' OpenReview link."""
+    from conference_agent.openreview_source import set_link
+
+    row_id, venue = args.openreview_link
+    try:
+        value = set_link(row_id, venue, db_url=args.db)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print(f"{row_id}: OpenReview link set to {value}.")
+    return 0
+
+
 def _discover_guidelines(args) -> int:
     """`discover --guidelines`: research the submission guidelines columns."""
     from conference_agent.config import GUIDELINES_BATCH_SIZE, GUIDELINES_MAX_PER_RUN
@@ -1023,6 +1129,12 @@ def _cmd_discover(args) -> int:
 
     if args.airports:
         return _discover_airports(args)
+
+    if args.openreview_link:
+        return _discover_openreview_link(args)
+
+    if args.openreview:
+        return _discover_openreview(args)
 
     if args.backend == "api" and not os.environ.get(ANTHROPIC_API_KEY_ENV):
         print(
@@ -1278,6 +1390,12 @@ def _check_values(records: list[dict], matches: list, errors: list[str]) -> None
             except ValueError as exc:
                 errors.append(f"'{name}': {exc}.")
 
+        if record.get("archival") not in (None, ""):
+            try:
+                normalize_archival(record["archival"])
+            except ValueError as exc:
+                errors.append(f"'{name}': {exc}.")
+
         for kind, original, extended in record.get("deadline_extensions") or []:
             if extended < extension_cutoff():
                 errors.append(
@@ -1290,8 +1408,14 @@ def _check_values(records: list[dict], matches: list, errors: list[str]) -> None
                 errors.append(
                     f"'{name}': the past {kind.replace('_', ' ')} deadline {when} is "
                     "after today (enter an upcoming deadline as abstract_due, "
-                    "late_abstract_due, or paper_due)."
+                    "late_abstract_due, paper_due, or decision_due)."
                 )
+
+        if record.get("acceptance_rates") not in (None, "", []):
+            try:
+                parse_acceptance_rates(record["acceptance_rates"])
+            except ValueError as exc:
+                errors.append(f"'{name}': {exc}.")
 
         for field, low, high in (
             ("attendance", 1, None),
@@ -1511,6 +1635,7 @@ def _cmd_delete(args) -> int:
 # the inputs above, so setting them by hand is impossible by design.
 _DERIVED_FIELDS = (
     ("size", "Derived from attendance (models.size_for_attendance)"),
+    ("acceptance_rate", "Derived from acceptance_rates (the most recent year's rate, in percent)"),
     ("abstract_month", "Derived from abstract_due (upcoming, else prior)"),
     ("late_abstract_month", "Derived from late_abstract_due (upcoming, else prior)"),
     ("paper_month", "Derived from paper_due (upcoming, else prior)"),
@@ -1541,8 +1666,9 @@ _NOT_DISPLAYED = {
     "prior_abstract_due": "integrated into Past abstract due",
     "prior_late_abstract_due": "integrated into Past late abstract due",
     "prior_paper_due": "integrated into Past paper due",
+    "prior_decision_due": "integrated into Past decision",
     "past_deadlines": (
-        "integrated into Past abstract / Past late abstract / Past paper due"
+        "integrated into Past abstract / Past late abstract / Past paper due / Past decision"
         " (most recent first)"
     ),
     "prior_registration": "integrated into Registration (shown when no upcoming value)",
@@ -1696,8 +1822,10 @@ def _lookup_values(rows: list[dict], column: str, sort: str) -> list:
             continue
         if column in _LOOKUP_TAG_COLUMNS:
             values.update(t.strip() for t in str(value).split(",") if t.strip())
-        elif column == "airports" or column.endswith("_deadline_history"):
+        elif column in ("airports", "acceptance_rates") or column.endswith("_deadline_history"):
             values.update(t.strip() for t in str(value).split("\n") if t.strip())
+        elif isinstance(value, bool):  # archival, stable_location: yes / no
+            values.add("yes" if value else "no")
         else:
             values.add(value)
     if sort in ("alphabetical", "reversealphabetical"):
@@ -1841,6 +1969,8 @@ def _cmd_info(args) -> int:
     def text(value) -> str:
         if value is None or value == "":
             return ""
+        if isinstance(value, bool):  # archival, stable_location: as the table shows them
+            return "yes" if value else "no"
         return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
     if len(columns) == 1 and args.columns:

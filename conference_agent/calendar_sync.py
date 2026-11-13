@@ -93,6 +93,7 @@ _EDITION_DATES = (
     "abstract_deadline",
     "late_abstract_deadline",
     "paper_deadline",
+    "decision_deadline",
     "start_date",
     "end_date",
 )
@@ -115,8 +116,8 @@ def calendar_edition(conf: Conference) -> str:
 def _edition_events(conf: Conference) -> List[CalEvent]:
     """The events a conference yields for its edition (see :func:`calendar_edition`).
 
-    Up to four: the abstract deadline, the late abstract deadline, the paper
-    deadline, and the conference dates. Only populated fields produce an
+    Up to five: the abstract deadline, the late abstract deadline, the paper
+    deadline, the acceptance decision date, and the conference dates. Only populated fields produce an
     event. ``start``/``end`` are inclusive (a single-day deadline has
     ``start == end``). Registration is free text, so it produces no event.
     """
@@ -159,6 +160,16 @@ def _edition_events(conf: Conference) -> List[CalEvent]:
                 get("paper_deadline"),
                 f"Full paper / manuscript deadline for {label}."
                 f"{_deadline_note(conf, 'paper')}{url}",
+            )
+        )
+    if get("decision_deadline"):
+        events.append(
+            CalEvent(
+                "decision",
+                f"{conf.acronym} — acceptance decisions",
+                get("decision_deadline"),
+                get("decision_deadline"),
+                f"Acceptance decision (author notification) date for {label}.{url}",
             )
         )
     if get("start_date"):
@@ -256,7 +267,9 @@ def _ics_lines_for(conf: Conference, dtstamp: str) -> List[str]:
         lines.append("TRANSP:TRANSPARENT")
         # One reminder per configured lead time (see CALENDAR_REMINDER_LEAD_DAYS),
         # each anchored to the morning so the "N days before" label is exact.
-        for days in sorted(set(CALENDAR_REMINDER_LEAD_DAYS), reverse=True):
+        # A decision date needs no action ahead of it, so it has no reminder.
+        lead_days = () if ev.kind == "decision" else CALENDAR_REMINDER_LEAD_DAYS
+        for days in sorted(set(lead_days), reverse=True):
             lines += [
                 "BEGIN:VALARM",
                 "ACTION:DISPLAY",

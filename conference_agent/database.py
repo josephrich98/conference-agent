@@ -19,6 +19,7 @@ from typing import Iterable, List, Optional
 from sqlalchemy import (
     Boolean,
     Date,
+    Float,
     Integer,
     String,
     Text,
@@ -40,9 +41,13 @@ from conference_agent.deadline_time import (
 )
 from conference_agent.models import (
     EDITION_SUFFIXES,
+    HISTORY_KINDS,
     Conference,
     RemoteOption,
+    latest_acceptance,
+    merge_acceptance_rates,
     name_id,
+    normalize_archival,
     normalize_categories,
     normalize_ccf_rank,
     normalize_core_rank,
@@ -86,6 +91,8 @@ class ConferenceRow(Base):
     # of series, which publish a single abstract deadline.
     prior_late_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     prior_paper_deadline: Mapped[Optional[Date]] = mapped_column(Date)
+    # Acceptance decision (author notification) date of the edition.
+    prior_decision_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     prior_start_date: Mapped[Optional[Date]] = mapped_column(Date)
     prior_end_date: Mapped[Optional[Date]] = mapped_column(Date)
     # Registration is free text (windows like "Early bird: ...; Regular: ..."),
@@ -100,6 +107,7 @@ class ConferenceRow(Base):
     upcoming_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_late_abstract_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_paper_deadline: Mapped[Optional[Date]] = mapped_column(Date)
+    upcoming_decision_deadline: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_start_date: Mapped[Optional[Date]] = mapped_column(Date, index=True)
     upcoming_end_date: Mapped[Optional[Date]] = mapped_column(Date)
     upcoming_registration: Mapped[Optional[str]] = mapped_column(Text)
@@ -131,6 +139,10 @@ class ConferenceRow(Base):
     # from the official lists by ``scripts/fill_rankings.py``; NULL when unlisted.
     ccf_rank: Mapped[Optional[str]] = mapped_column(String, index=True)
     core_rank: Mapped[Optional[str]] = mapped_column(String, index=True)
+    # Whether accepted submissions are published in archival proceedings
+    # (``Conference.archival``): true, false (non-archival), or NULL (unknown).
+    # A survey that reports none keeps the stored value.
+    archival: Mapped[Optional[bool]] = mapped_column(Boolean, index=True)
     # Time of day (24-hour HH:MM) and zone each deadline kind closes at -- the
     # stored source of truth (see ``Conference.abstract_time`` etc.). Per series,
     # not per edition; the deadline columns themselves stay pure dates.
@@ -164,6 +176,14 @@ class ConferenceRow(Base):
     abstract_deadline_history: Mapped[Optional[str]] = mapped_column(Text)
     late_abstract_deadline_history: Mapped[Optional[str]] = mapped_column(Text)
     paper_deadline_history: Mapped[Optional[str]] = mapped_column(Text)
+    decision_deadline_history: Mapped[Optional[str]] = mapped_column(Text)
+    # Published acceptance statistics, one "YEAR | ACCEPTED/SUBMITTED | SOURCE"
+    # (or "YEAR | RATE% | SOURCE") line per year, most recent first (see
+    # ``models.parse_acceptance_rates``). ``acceptance_rate`` is the most recent
+    # year's rate in percent, derived on write (like ``size``) so search and
+    # sorting can use it as a column. NULL when none is recorded.
+    acceptance_rates: Mapped[Optional[str]] = mapped_column(Text)
+    acceptance_rate: Mapped[Optional[float]] = mapped_column(Float, index=True)
     # Attendance is the objective input; ``size`` is the bucket derived from it
     # (see ``models.size_for_attendance``). ``size`` is stored denormalized so the
     # search/filter machinery can query it as a column, but it is only ever set by
@@ -203,6 +223,12 @@ class ConferenceRow(Base):
     # old page says nothing about the new one, so a changed link re-baselines
     # instead of counting as a change.
     watch_url: Mapped[Optional[str]] = mapped_column(Text)
+    # The series' OpenReview venue id with the year replaced by ``{year}``
+    # (e.g. "ICLR.cc/{year}/Conference"), or "none" when the series must not be
+    # linked. Set by ``openreview_source.link_series`` (or by hand with
+    # ``discover --openreview-link``); NULL means not linked yet. Row-level
+    # bookkeeping like the watch columns: not on the model, not exported.
+    openreview_venue: Mapped[Optional[str]] = mapped_column(Text)
 
     # Derived month-of-year fields (1-12), stored as real columns so they exist in
     # the database file itself (browsable/queryable outside the ORM). Like ``size``
@@ -436,7 +462,7 @@ def _add_extensions(row: "ConferenceRow", entries, today: Optional[date] = None)
 
 # --- Past deadline history -------------------------------------------------
 
-HISTORY_COLUMNS = tuple(f"{kind}_deadline_history" for kind in KINDS)
+HISTORY_COLUMNS = tuple(f"{kind}_deadline_history" for kind in HISTORY_KINDS)
 
 
 def parse_deadline_history(value) -> List[date]:
@@ -508,7 +534,7 @@ def _history_snapshot(row: "ConferenceRow") -> dict:
     return {
         f"{edition}_{field}": getattr(row, f"{edition}_{field}")
         for edition in ("prior", "upcoming")
-        for field in (*(f"{k}_deadline" for k in KINDS), "start_date")
+        for field in (*(f"{k}_deadline" for k in HISTORY_KINDS), "start_date")
     }
 
 
@@ -528,7 +554,7 @@ def _archive_deadlines(
     today = today or date.today()
     gap = NEW_EDITION_GAP_DAYS
     changed = False
-    for kind in KINDS:
+    for kind in HISTORY_KINDS:
         column = f"{kind}_deadline_history"
         current = {
             getattr(row, f"{edition}_{kind}_deadline") for edition in ("prior", "upcoming")
@@ -567,8 +593,8 @@ def parse_past_deadlines(value) -> List[tuple]:
     ``value`` is a list of ``{"type", "date"}`` objects (the ``add --json`` /
     website form shape), a list of ``[TYPE, DATE]`` pairs (the repeated flag),
     or text with one ``TYPE DATE`` entry per line or per ``;`` (a CSV cell).
-    TYPE is abstract, late abstract, or paper; the date is ISO ``YYYY-MM-DD``.
-    Raises ``ValueError`` on an unknown type or an unreadable date.
+    TYPE is abstract, late abstract, paper, or decision; the date is ISO
+    ``YYYY-MM-DD``. Raises ``ValueError`` on an unknown type or an unreadable date.
     """
     if value in (None, "", []):
         return []
@@ -582,16 +608,19 @@ def parse_past_deadlines(value) -> List[tuple]:
             parts = [item.get("type") or item.get("kind"), item.get("date")]
         else:
             parts = list(item)
-            # "late abstract 2025-01-05" splits the type in two.
-            if len(parts) == 3 and str(parts[0]).lower() == "late":
+            # "late abstract 2025-01-05" / "decision date 2025-03-01" split
+            # the type in two.
+            if len(parts) == 3:
                 parts = [f"{parts[0]}_{parts[1]}", parts[2]]
         if len(parts) != 2 or not all(parts):
             raise ValueError(f"past deadline {item!r}: give a type and a date.")
-        kind = re.sub(r"[\s-]+", "_", str(parts[0]).strip().lower()).removesuffix("_deadline")
-        if kind not in KINDS:
+        kind = re.sub(r"[\s-]+", "_", str(parts[0]).strip().lower())
+        kind = kind.removesuffix("_deadline").removesuffix("_date")
+        kind = {"notification": "decision"}.get(kind, kind)
+        if kind not in HISTORY_KINDS:
             raise ValueError(
                 f"past deadline type '{parts[0]}' must be one of: "
-                + ", ".join(k.replace("_", " ") for k in KINDS) + "."
+                + ", ".join(k.replace("_", " ") for k in HISTORY_KINDS) + "."
             )
         try:
             when = _coerce_date(parts[1])
@@ -645,11 +674,13 @@ _DATE_FIELDS = (
     "prior_abstract_deadline",
     "prior_late_abstract_deadline",
     "prior_paper_deadline",
+    "prior_decision_deadline",
     "prior_start_date",
     "prior_end_date",
     "upcoming_abstract_deadline",
     "upcoming_late_abstract_deadline",
     "upcoming_paper_deadline",
+    "upcoming_decision_deadline",
     "upcoming_start_date",
     "upcoming_end_date",
 )
@@ -687,6 +718,12 @@ _TEXT_FIELDS = (
 )
 
 
+def _derive_acceptance_rate(row: ConferenceRow) -> None:
+    """Set the derived ``acceptance_rate`` from the row's acceptance lines."""
+    latest = latest_acceptance(row.acceptance_rates)
+    row.acceptance_rate = latest["rate"] if latest else None
+
+
 def _row_to_model(row: ConferenceRow) -> Conference:
     """Build a :class:`Conference` from an ORM row."""
     data = {
@@ -701,9 +738,11 @@ def _row_to_model(row: ConferenceRow) -> Conference:
         "remote_option": RemoteOption(row.remote_option) if row.remote_option else None,
         "ccf_rank": row.ccf_rank,
         "core_rank": row.core_rank,
+        "archival": row.archival,
         "attendance": row.attendance,
         "attendance_year": row.attendance_year,
         "attendance_source": row.attendance_source,
+        "acceptance_rates": row.acceptance_rates,
     }
     for field in (*_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS, *GUIDELINE_FIELDS):
         data[field] = getattr(row, field)
@@ -757,6 +796,9 @@ def _apply_model_to_row(row: ConferenceRow, conf: Conference) -> None:
     row.remote_option = conf.remote_option.value if conf.remote_option else None
     row.ccf_rank = conf.ccf_rank
     row.core_rank = conf.core_rank
+    row.archival = conf.archival
+    row.acceptance_rates = conf.acceptance_rates
+    row.acceptance_rate = conf.acceptance_rate
     # Store the joined formats, collapsing an empty list to NULL so the presence
     # test (``format:*``) and search treat "no formats recorded" as unset.
     row.format = conf.format or None
@@ -1036,7 +1078,7 @@ _RANK_NORMALIZERS = {"ccf_rank": normalize_ccf_rank, "core_rank": normalize_core
 # (size, months, deadline_time) follow their pinned inputs.
 PINNABLE_FIELDS = (
     "acronym", "subcategory", "category", "format", "url", "remote_option",
-    *RANK_FIELDS, "stable_location", "attendance", "attendance_year", "attendance_source", "notes",
+    *RANK_FIELDS, "archival", "stable_location", "attendance", "attendance_year", "attendance_source", "notes",
     *_DATE_FIELDS, *_EDITION_TEXT_FIELDS, *_TIME_FIELDS, *GUIDELINE_FIELDS,
 )
 
@@ -1102,8 +1144,8 @@ def upsert_conferences(
     duplicating them. Returns the number of rows written.
 
     This is the discovery write path: a series' pinned columns keep their
-    values, and a run that reports no category or stable-location flag keeps
-    the stored one. ``manual=True`` (``add --update --overwrite``) replaces the
+    values, and a run that reports no category, archival answer, or
+    stable-location flag keeps the stored one. ``manual=True`` (``add --update --overwrite``) replaces the
     whole row as given instead.
     """
     engine = get_engine(db_url)
@@ -1120,6 +1162,8 @@ def upsert_conferences(
             stable = bool(row.stable_location)
             category = row.category
             ranks = {f: getattr(row, f) for f in RANK_FIELDS}
+            archival = row.archival
+            acceptance = row.acceptance_rates
             guidelines = {f: getattr(row, f) for f in GUIDELINE_FIELDS}
             registration = {f: getattr(row, f) for f in REGISTRATION_COLUMNS}
             pins = {} if manual else _pin_snapshot(row)
@@ -1136,6 +1180,14 @@ def upsert_conferences(
                 for field, value in ranks.items():
                     if getattr(conf, field) is None:
                         setattr(row, field, value)
+                # A run that does not report whether the series is archival
+                # (unknown) keeps the stored answer.
+                if conf.archival is None:
+                    row.archival = archival
+                # Nor the acceptance rates (a published list fills them).
+                if conf.acceptance_rates is None:
+                    row.acceptance_rates = acceptance
+                    _derive_acceptance_rate(row)
                 # The survey does not research guidelines (a dedicated pass
                 # does), so one it does not report keeps the stored text.
                 for field, value in guidelines.items():
@@ -1302,7 +1354,7 @@ def merge_records(
                 changed = True
             if _add_past_deadlines(row, record.get("past_deadlines")):
                 changed = True
-            for kind in KINDS:
+            for kind in HISTORY_KINDS:
                 column = f"{kind}_deadline_history"
                 if record.get(column) not in (None, "", []) and _add_past_deadlines(
                     row, [(kind, d) for d in parse_deadline_history(record[column])]
@@ -1329,6 +1381,15 @@ def merge_records(
             stable = _coerce_bool(record.get("stable_location"))
             if stable is not None and bool(row.stable_location) != stable:
                 row.stable_location = stable
+                changed = True
+            # Archival is yes / no; an explicit no is a value, and a missing,
+            # blank, or unreadable one leaves the stored answer alone.
+            try:
+                archival = normalize_archival(record.get("archival"))
+            except ValueError:
+                archival = None
+            if archival is not None and row.archival != archival:
+                row.archival = archival
                 changed = True
             for field in _MERGEABLE_INT_FIELDS:
                 value = record.get(field)
@@ -1404,6 +1465,21 @@ def merge_records(
                     continue
                 if rank and getattr(row, field) != rank:
                     setattr(row, field, rank)
+                    changed = True
+            # Acceptance rates: entered years replace the stored ones for the
+            # same year; other stored years are kept. An unreadable value is
+            # rejected by ``add`` before it gets here.
+            accept = record.get("acceptance_rates")
+            if accept in (None, "", []):
+                accept = record.get("acceptance")
+            if accept not in (None, "", []):
+                try:
+                    merged = merge_acceptance_rates(row.acceptance_rates, accept)
+                except ValueError:
+                    merged = row.acceptance_rates
+                if merged != row.acceptance_rates:
+                    row.acceptance_rates = merged
+                    _derive_acceptance_rate(row)
                     changed = True
             remote = record.get("remote_option")
             if remote not in (None, ""):
@@ -1493,6 +1569,48 @@ def _roll_editions(row: ConferenceRow, conf: Conference) -> None:
             setattr(row, f"prior_{suffix}", None)
 
 
+def apply_edition_fields(
+    row: ConferenceRow,
+    fields: dict,
+    today: Optional[date] = None,
+    new_edition: bool = False,
+) -> List[str]:
+    """Write structured values from an authoritative source onto ``row``.
+
+    The write path for the OpenReview sync (``openreview_source``): ``fields``
+    maps stored column names to values (edition dates, the per-series time
+    columns, a location). ``new_edition`` first moves the stored upcoming
+    edition into the prior slots (it is skipped, and nothing is written, when
+    an upcoming column is pinned). Pinned columns are left as they are; the
+    derived columns (months, ``deadline_time``) are re-derived, and extensions,
+    the deadline history, and the airports are maintained as in the other
+    write paths. Returns the columns that changed. The caller commits.
+    """
+    today = today or date.today()
+    pinned = set(pinned_fields(row))
+    before = _extension_snapshot(row)
+    history_before = _history_snapshot(row)
+    changed = []
+    if new_edition:
+        if any(f.startswith("upcoming_") for f in pinned):
+            return []
+        _shift_to_prior(row)
+        changed.append("edition")
+    for column, value in fields.items():
+        if column in pinned or getattr(row, column) == value:
+            continue
+        setattr(row, column, value)
+        changed.append(column)
+    if changed:
+        name = row.name
+        _apply_model_to_row(row, _row_to_model(row))
+        row.name = name
+        _record_extensions(row, before, today)
+        _archive_deadlines(row, history_before, today)
+        _sync_airports(row)
+    return changed
+
+
 def _conference_to_record(conf: Conference) -> dict:
     """A :class:`Conference` as a :func:`merge_records` record (blank fields omitted)."""
     record: dict = {"id": conf.id, "acronym": conf.acronym, "name": conf.name}
@@ -1508,6 +1626,9 @@ def _conference_to_record(conf: Conference) -> dict:
         record["formats"] = conf.formats
     if conf.remote_option is not None:
         record["remote_option"] = conf.remote_option.value
+    # Archival is carried when known (yes or no); unknown keeps the stored value.
+    if conf.archival is not None:
+        record["archival"] = conf.archival
     # Only a positive flag is carried: a refresh that does not mention it must
     # not clear one set by hand.
     if conf.stable_location:

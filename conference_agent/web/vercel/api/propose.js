@@ -39,6 +39,8 @@ const URL_FIELDS = new Set(["url", "attendance_source"]);
 // Deadline extension history: the kinds, and how many entries / how far back
 // (matches database.EXTENSION_RETENTION_YEARS; older entries are not kept).
 const EXTENSION_KINDS = ["abstract", "late_abstract", "paper"];
+// Past dates also cover the acceptance decision (database.HISTORY_KINDS).
+const PAST_KINDS = [...EXTENSION_KINDS, "decision"];
 const MAX_EXTENSIONS = 20;
 const EXTENSION_RETENTION_YEARS = 5;
 
@@ -110,7 +112,7 @@ function pastDeadlines(value) {
     if (!entry || typeof entry !== "object") throw new InputError("past deadlines: malformed entry.");
     const type = String(entry.type || "").trim().toLowerCase();
     const date = String(entry.date || "").trim();
-    if (!EXTENSION_KINDS.includes(type)) throw new InputError("past deadlines: unknown submission type.");
+    if (!PAST_KINDS.includes(type)) throw new InputError("past deadlines: unknown submission type.");
     if (!isDate(date)) throw new InputError("past deadlines: give a valid date.");
     if (date > latest) throw new InputError("past deadlines: a date after today is an upcoming deadline.");
     return { type, date };
@@ -174,7 +176,7 @@ function cleanRecord(raw, schema, edit = false) {
       if (!["true", "false"].includes(s)) throw new InputError(`${label}: must be true or false.`);
       out[name] = s === "true";
     } else if (f.kind === "enum") {
-      // The field's own choices (the rankings), else the remote options.
+      // The field's own choices (the rankings, archival yes / no), else the remote options.
       const s = text(label, value).toLowerCase();
       const match = (f.choices || schema.remote_options).find((o) => o.toLowerCase() === s);
       if (match === undefined) throw new InputError(`${label}: unknown option.`);

@@ -58,6 +58,7 @@ WATCHED_FIELDS: Tuple[Tuple[str, str], ...] = (
     ("upcoming_abstract_deadline", "Abstract deadline"),
     ("upcoming_late_abstract_deadline", "Late abstract deadline"),
     ("upcoming_paper_deadline", "Paper deadline"),
+    ("upcoming_decision_deadline", "Decision date"),
     ("deadline_time", "Deadline time"),
     ("upcoming_start_date", "Conference start"),
     ("upcoming_end_date", "Conference end"),

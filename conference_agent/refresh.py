@@ -36,6 +36,12 @@ re-researches -- through the targeted :func:`discover.refresh_conferences`, not
 a whole-field run -- only the series whose pages changed, could not be read and
 have not been researched in ``RECHECK_INTERVAL_DAYS``, or have gone
 ``WATCH_BACKSTOP_DAYS`` without research. See ``config.py`` for the knobs.
+
+Before the page checks, a run given an OpenReview client first syncs the series
+OpenReview hosts (:func:`openreview_source.sync`): their deadlines are written
+from the API, and a series whose upcoming edition is then complete
+(``openreview_source.is_covered``) skips both the page check and the agent run
+(status ``openreview``).
 """
 
 from __future__ import annotations
@@ -44,7 +50,7 @@ import calendar
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Dict, List, Mapping, Optional, Sequence
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -71,6 +77,9 @@ from conference_agent.database import (
 )
 from conference_agent.models import Conference, normalize_subcategories
 from conference_agent.page_watch import PageCheck
+
+if TYPE_CHECKING:
+    from conference_agent.openreview_source import OpenReviewClient, SyncReport
 
 
 def _add_months(anchor: date, months: int) -> date:
@@ -311,7 +320,7 @@ class WatchDecision:
     id: str
     tier: str
     check: Optional[PageCheck]  # None when the row has no link to check
-    status: str  # "changed" | "unchanged" | "baseline" | "unreadable"
+    status: str  # "changed" | "unchanged" | "baseline" | "unreadable" | "openreview"
     run_agent: bool
     reason: str
 
@@ -350,11 +359,15 @@ def plan_watch(
     today: Optional[date] = None,
     check: Callable[[str], PageCheck] = _check_default,
     workers: int = 8,
+    covered: Optional[Mapping[str, str]] = None,
 ) -> List[WatchDecision]:
     """Page-check every series whose tier makes it due today; return decisions.
 
     ``daily`` series are checked every run; the others once per
-    ``RECHECK_INTERVAL_DAYS`` (by ``watch_checked``). Pure with respect to the
+    ``RECHECK_INTERVAL_DAYS`` (by ``watch_checked``). Series in ``covered``
+    (id -> OpenReview venue id; see :func:`openreview_source.sync`) already
+    have their upcoming edition from OpenReview, so they are not page-checked
+    and need no research. Pure with respect to the
     database: nothing is written until :func:`commit_watch`. Each distinct URL is
     fetched once per run (several CSHL meetings share one listing page).
     Decisions are ordered by tier priority, then by id.
@@ -378,12 +391,15 @@ def plan_watch(
             continue
         todo.append((row, tier))
 
-    urls = sorted({row.url for row, _ in todo if row.url})
+    covered = covered or {}
+    urls = sorted({row.url for row, _ in todo if row.url and row.id not in covered})
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results: Dict[str, PageCheck] = dict(zip(urls, pool.map(check, urls)))
 
     decisions = [
-        _decide(row, tier, results.get(row.url) if row.url else None, today)
+        WatchDecision(row.id, tier, None, "openreview", False, f"dates from {covered[row.id]}")
+        if row.id in covered
+        else _decide(row, tier, results.get(row.url) if row.url else None, today)
         for row, tier in todo
     ]
     decisions.sort(key=lambda d: (WATCH_TIERS.index(d.tier), d.id))
@@ -434,6 +450,7 @@ class WatchReport:
     failed: List[str] = field(default_factory=list)
     refreshed: List[Conference] = field(default_factory=list)
     changes: Dict[str, List[str]] = field(default_factory=dict)
+    openreview: Optional["SyncReport"] = None
 
 
 _DIFF_FIELDS = (
@@ -480,11 +497,15 @@ def run_watch(
     refresh: Optional[Callable[..., List[Conference]]] = None,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
+    openreview: Optional["OpenReviewClient"] = None,
 ) -> WatchReport:
     """Run one watch cycle: plan, re-research what changed, record the outcome.
 
     Before planning and after recording, finished upcoming editions are moved
-    into the prior slots (:func:`database.roll_past_editions`).
+    into the prior slots (:func:`database.roll_past_editions`). With an
+    ``openreview`` client, the series OpenReview hosts are synced first
+    (:func:`openreview_source.sync`; in a dry run nothing is written), and the
+    ones it covers skip the page check and research.
 
     Series flagged for research are taken in tier-priority order up to
     ``WATCH_MAX_AGENT_PER_RUN`` and re-researched ``WATCH_BATCH_SIZE`` at a time
@@ -496,8 +517,21 @@ def run_watch(
     today = today or date.today()
     if not dry_run:
         _roll(db_url, today, log)
-    decisions = plan_watch(db_url, today, check)
-    report = WatchReport(decisions=decisions)
+    sync_report = None
+    if openreview is not None:
+        from conference_agent.openreview_source import sync
+
+        log("OpenReview sync:")
+        sync_report = sync(db_url, today, client=openreview, dry_run=dry_run, log=log)
+        log(
+            f"OpenReview: {len(sync_report.updated)} updated, "
+            f"{len(sync_report.covered)} covered, {len(sync_report.linked)} newly linked"
+            + (f", {len(sync_report.failed)} failed" if sync_report.failed else "")
+            + f" ({openreview.requests} requests)."
+        )
+    covered = sync_report.covered if sync_report else None
+    decisions = plan_watch(db_url, today, check, covered=covered)
+    report = WatchReport(decisions=decisions, openreview=sync_report)
 
     for d in decisions:
         c = d.check

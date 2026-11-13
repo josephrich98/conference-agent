@@ -218,6 +218,33 @@ def normalize_core_rank(value) -> Optional[str]:
     return _normalize_rank(value, CORE_RANKS, "core", _CORE_NON_RANKS)
 
 
+# The archival answer as entered and displayed (stored as a nullable boolean).
+ARCHIVAL_CHOICES = ("yes", "no")
+_ARCHIVAL_TRUE = ("yes", "y", "true", "t", "1", "archival")
+_ARCHIVAL_FALSE = ("no", "n", "false", "f", "0", "non-archival", "nonarchival", "non archival")
+
+
+def normalize_archival(value) -> Optional[bool]:
+    """Whether a series publishes archival proceedings: ``True`` / ``False``, or
+    ``None`` when blank or unknown.
+
+    Accepts booleans, ``1`` / ``0``, and yes / no / true / false spellings
+    (also ``archival`` / ``non-archival``); raises ``ValueError`` otherwise.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("", "unknown", "none", "null", "-", "?"):
+        return None
+    if text in _ARCHIVAL_TRUE:
+        return True
+    if text in _ARCHIVAL_FALSE:
+        return False
+    raise ValueError(f"archival must be yes or no, got {value!r}")
+
+
 def normalize_guidelines(value) -> Optional[str]:
     """Clean submission-guideline text: ``\\n`` line endings, no trailing spaces
     on a line, no blank lines at either end, and runs of blank lines collapsed
@@ -227,6 +254,155 @@ def normalize_guidelines(value) -> Optional[str]:
     lines = [line.rstrip() for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     return text or None
+
+
+# --- Acceptance rates ---------------------------------------------------------
+#
+# A series' published acceptance statistics, one line per year, most recent
+# first:
+#
+#     2026 | 4167/23680 | https://csconfstats.xoveexu.com/
+#     2025 | 23.4% | https://aaai.org/...
+#
+# The middle part is accepted/submitted counts (the rate is computed from them)
+# or a percentage when only the rate is published; the source URL is optional.
+# Filled from ccfddl's list by ``scripts/fill_acceptance.py`` or by hand;
+# discovery never researches it.
+_ACCEPTANCE_COUNTS_RE = re.compile(r"^(\d[\d,]*)\s*/\s*(\d[\d,]*)$")
+_ACCEPTANCE_PERCENT_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*%$")
+
+
+def _acceptance_entry(year, accepted=None, submitted=None, rate=None, source=None) -> dict:
+    """One validated acceptance entry. ``rate`` is a percentage (0-100), or a
+    fraction (0-1) when it comes with no ``%``. Raises ``ValueError``."""
+    try:
+        year = int(str(year).strip())
+    except ValueError:
+        raise ValueError(f"acceptance year must be a four-digit year, got {year!r}") from None
+    if not 1900 <= year <= date.today().year + 1:
+        raise ValueError(f"acceptance year {year} is out of range")
+
+    def _count(value):
+        if value in (None, ""):
+            return None
+        try:
+            return int(str(value).replace(",", "").strip())
+        except ValueError:
+            raise ValueError(f"acceptance count must be a whole number, got {value!r}") from None
+
+    accepted, submitted = _count(accepted), _count(submitted)
+    if (accepted is None) != (submitted is None):
+        raise ValueError(f"acceptance {year}: give both accepted and submitted counts, or neither")
+    if accepted is not None:
+        if submitted <= 0 or accepted > submitted:
+            raise ValueError(
+                f"acceptance {year}: {accepted} accepted of {submitted} submitted is not a valid rate"
+            )
+        rate = 100 * accepted / submitted
+    elif rate in (None, ""):
+        raise ValueError(f"acceptance {year}: give accepted/submitted counts or a rate")
+    else:
+        text = str(rate).strip()
+        percent = text.endswith("%")
+        try:
+            rate = float(text.rstrip("%").strip())
+        except ValueError:
+            raise ValueError(f"acceptance {year}: unreadable rate {text!r}") from None
+        if not percent and rate <= 1:
+            rate *= 100
+        if not 0 < rate <= 100:
+            raise ValueError(f"acceptance {year}: rate {text!r} is not between 0 and 100%")
+    source = str(source).strip() if source not in (None, "") else None
+    return {
+        "year": year, "accepted": accepted, "submitted": submitted,
+        "rate": round(rate, 1), "source": source,
+    }
+
+
+def parse_acceptance_rates(value) -> List[dict]:
+    """Acceptance entries as ``{year, accepted, submitted, rate, source}`` dicts,
+    most recent year first, one per year (the first given for a year wins).
+
+    ``value`` is stored text (one ``YEAR | ACCEPTED/SUBMITTED | SOURCE`` or
+    ``YEAR | RATE% | SOURCE`` line each; ``;`` also separates entries, and
+    ``YEAR: ...`` is accepted for ``YEAR | ...``), or a list of such strings or
+    of dicts (ccfddl's shape: ``year``, ``accepted``, ``submitted``, ``rate`` as
+    a fraction, ``source``). Raises ``ValueError`` on an unreadable entry.
+    """
+    if value in (None, "", []):
+        return []
+    if isinstance(value, dict):
+        value = [value]
+    if isinstance(value, str):
+        value = [part for part in re.split(r"[;\n]", value) if part.strip()]
+    entries: List[dict] = []
+    for item in value:
+        if isinstance(item, dict):
+            entry = _acceptance_entry(
+                item.get("year"), item.get("accepted"), item.get("submitted"),
+                item.get("rate"), item.get("source"),
+            )
+        else:
+            text = str(item).strip()
+            m = re.match(r"^(\d{4})\s*[|:]\s*(.+)$", text)
+            if not m:
+                raise ValueError(
+                    f"acceptance entry {text!r}: use 'YEAR | ACCEPTED/SUBMITTED | SOURCE' "
+                    "or 'YEAR | RATE% | SOURCE'"
+                )
+            parts = [p.strip() for p in m.group(2).split("|")]
+            figure, source = parts[0], " | ".join(parts[1:]) or None
+            counts = _ACCEPTANCE_COUNTS_RE.match(figure)
+            if counts:
+                entry = _acceptance_entry(m.group(1), counts.group(1), counts.group(2), source=source)
+            elif _ACCEPTANCE_PERCENT_RE.match(figure):
+                entry = _acceptance_entry(m.group(1), rate=figure, source=source)
+            else:
+                raise ValueError(
+                    f"acceptance entry {text!r}: give ACCEPTED/SUBMITTED counts or a RATE%"
+                )
+        entries.append(entry)
+    seen: set = set()
+    unique = []
+    for entry in entries:
+        if entry["year"] not in seen:
+            seen.add(entry["year"])
+            unique.append(entry)
+    return sorted(unique, key=lambda e: e["year"], reverse=True)
+
+
+def format_acceptance_rates(entries) -> Optional[str]:
+    """The stored text for parsed acceptance entries (``None`` when empty)."""
+    lines = []
+    for e in entries:
+        figure = (
+            f"{e['accepted']}/{e['submitted']}" if e.get("accepted") is not None
+            else f"{e['rate']:g}%"
+        )
+        lines.append(" | ".join(str(p) for p in (e["year"], figure, e.get("source")) if p))
+    return "\n".join(lines) or None
+
+
+def normalize_acceptance_rates(value) -> Optional[str]:
+    """Canonical acceptance-rate text (see :func:`parse_acceptance_rates`)."""
+    return format_acceptance_rates(parse_acceptance_rates(value))
+
+
+def merge_acceptance_rates(stored, new) -> Optional[str]:
+    """``new`` entries over ``stored`` ones: a year in ``new`` replaces the
+    stored entry for that year; other stored years are kept."""
+    return format_acceptance_rates(
+        parse_acceptance_rates([*parse_acceptance_rates(new), *parse_acceptance_rates(stored)])
+    )
+
+
+def latest_acceptance(value) -> Optional[dict]:
+    """The most recent acceptance entry of ``value``, or ``None``."""
+    try:
+        entries = parse_acceptance_rates(value)
+    except ValueError:
+        return None
+    return entries[0] if entries else None
 
 
 # --- Registration -------------------------------------------------------------
@@ -410,11 +586,19 @@ def name_id(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-")
 
 
+# The dated kinds that have Upcoming / Past columns backed by a per-kind
+# history (``<kind>_deadline_history``): the three submission deadlines plus
+# the decision (notification) date. Only the three in ``KINDS`` have a time of
+# day, extensions, a derived month, and count as deadlines (reminders, "Hide
+# past deadlines"); the decision date is when authors hear back.
+HISTORY_KINDS = (*KINDS, "decision")
+
 # Per-edition fields, as the suffix after ``prior_`` / ``upcoming_``.
 EDITION_SUFFIXES = (
     "abstract_deadline",
     "late_abstract_deadline",
     "paper_deadline",
+    "decision_deadline",
     "start_date",
     "end_date",
     "registration",
@@ -512,6 +696,11 @@ class Conference(BaseModel):
     prior_paper_deadline: Optional[date] = Field(
         None, description="Full paper / manuscript deadline of the most recent edition"
     )
+    prior_decision_deadline: Optional[date] = Field(
+        None,
+        description="Acceptance decision (author notification) date of the most recent edition",
+        validation_alias=AliasChoices("prior_decision_deadline", "prior_decision_date"),
+    )
     prior_start_date: Optional[date] = Field(
         None, description="First day of the most recent edition"
     )
@@ -554,6 +743,14 @@ class Conference(BaseModel):
     )
     upcoming_paper_deadline: Optional[date] = Field(
         None, description="Full paper / manuscript deadline of the upcoming edition"
+    )
+    upcoming_decision_deadline: Optional[date] = Field(
+        None,
+        description=(
+            "Acceptance decision (author notification) date of the upcoming edition: "
+            "when the main submission round's authors hear back"
+        ),
+        validation_alias=AliasChoices("upcoming_decision_deadline", "upcoming_decision_date"),
     )
     upcoming_start_date: Optional[date] = Field(
         None, description="First day of the upcoming edition"
@@ -622,6 +819,25 @@ class Conference(BaseModel):
                 return False
         return value
 
+    # Whether accepted submissions are published in archival proceedings (a
+    # citable proceedings volume or journal, including a journal abstract
+    # supplement). False means non-archival: the work may also be submitted
+    # elsewhere. None means unknown; a survey that reports none keeps the
+    # stored value.
+    archival: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether accepted submissions are published in archival proceedings "
+            "(a citable proceedings volume, or a journal / journal supplement): "
+            "true, false (non-archival), or null when unknown"
+        ),
+    )
+
+    @field_validator("archival", mode="before")
+    @classmethod
+    def _normalize_archival(cls, value):
+        return normalize_archival(value)
+
     # Published CS venue rankings (see ``CCF_RANKS`` / ``CORE_RANKS``): set by
     # hand or by ``scripts/fill_rankings.py`` from the official lists, never by
     # discovery (a survey that reports none keeps the stored value).
@@ -671,6 +887,21 @@ class Conference(BaseModel):
     attendance_source: Optional[str] = Field(
         None, description="Source URL the attendance figure was taken from (internal provenance)"
     )
+    # Published acceptance statistics, one line per year (see
+    # ``parse_acceptance_rates``). Like the rankings, filled from a published
+    # list (``scripts/fill_acceptance.py``) or by hand, never by discovery.
+    acceptance_rates: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("acceptance_rates", "acceptance"),
+        description="Acceptance statistics, one 'YEAR | ACCEPTED/SUBMITTED | SOURCE' "
+        "(or 'YEAR | RATE% | SOURCE') line per year",
+    )
+
+    @field_validator("acceptance_rates", mode="before")
+    @classmethod
+    def _normalize_acceptance(cls, value):
+        return normalize_acceptance_rates(value)
+
     notes: Optional[str] = Field(None, description="Free-form notes")
     # Submission requirements, per series (a call's rules rarely change between
     # editions): free text, a paragraph or "- " bullet lines, covering word /
@@ -817,6 +1048,18 @@ class Conference(BaseModel):
         if self.attendance_year is not None:
             return f"{self.attendance:,} ({self.attendance_year})"
         return f"{self.attendance:,}"
+
+    @property
+    def acceptance_rate(self) -> Optional[float]:
+        """The most recent year's acceptance rate, in percent (e.g. ``17.6``)."""
+        latest = latest_acceptance(self.acceptance_rates)
+        return latest["rate"] if latest else None
+
+    @property
+    def acceptance_display(self) -> Optional[str]:
+        """The most recent acceptance rate for display, e.g. ``"17.6% (2026)"``."""
+        latest = latest_acceptance(self.acceptance_rates)
+        return f"{latest['rate']:g}% ({latest['year']})" if latest else None
 
     @property
     def upcoming_year(self) -> Optional[int]:

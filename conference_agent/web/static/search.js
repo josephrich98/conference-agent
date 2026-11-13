@@ -46,6 +46,8 @@ const DATE_FIELDS = {
   past_late_abstract_due: ["past", "late_abstract"],
   paper_due: ["upcoming", "paper"],
   past_paper_due: ["past", "paper"],
+  decision_due: ["upcoming", "decision"],
+  past_decision_due: ["past", "decision"],
   conference_dates: ["upcoming_start_date", "prior_start_date"],
 };
 
@@ -62,6 +64,11 @@ const NUMBER_FIELDS = {
   attendance: "attendance",
 };
 
+// Public percentage field -> underlying column (values: 20 or 20%).
+const PERCENT_FIELDS = {
+  acceptance: "acceptance_rate",
+};
+
 // Size buckets ranked by magnitude, for comparisons such as `size>=large`.
 const SIZE_QUERY_RANK = { small: 1, medium: 2, large: 3, massive: 4 };
 
@@ -72,6 +79,14 @@ const RANK_FIELDS = {
   ccf: ["ccf_rank", { A: 3, B: 2, C: 1 }],
   core: ["core_rank", { "A*": 4, A: 3, B: 2, C: 1 }],
 };
+
+// Public yes/no field -> boolean column. `archival:yes` / `archival:no` match
+// the stored answer exactly (`true` / `false` too); an unknown (null) value
+// matches neither, and `archival:*` is any known answer. Mirrors `_BOOL_FIELDS`.
+const BOOL_FIELDS = {
+  archival: "archival",
+};
+const BOOL_VALUES = { yes: true, true: true, no: false, false: false };
 
 // Columns scanned by a bare (unscoped) keyword.
 const BARE_SEARCH_COLUMNS = [
@@ -118,6 +133,12 @@ const ALIASES = {
   upcoming_paper_deadline: "paper_due",
   prior_paper: "past_paper_due",
   past_paper: "past_paper_due",
+  decision: "decision_due",
+  notification: "decision_due",
+  upcoming_decision_deadline: "decision_due",
+  prior_decision: "past_decision_due",
+  past_decision: "past_decision_due",
+  acceptance_rate: "acceptance",
   upcoming: "conference_dates",
   date: "conference_dates",
   upcoming_start_date: "conference_dates",
@@ -132,7 +153,8 @@ function resolveField(name) {
   key = ALIASES[key] || key;
   if (
     !(key in TEXT_FIELDS) && !(key in DATE_FIELDS) && !(key in INT_FIELDS) &&
-    !(key in NUMBER_FIELDS) && !(key in RANK_FIELDS)
+    !(key in NUMBER_FIELDS) && !(key in PERCENT_FIELDS) && !(key in RANK_FIELDS) &&
+    !(key in BOOL_FIELDS)
   ) {
     throw new QueryError(`Unknown field: ${JSON.stringify(name)}`);
   }
@@ -474,6 +496,18 @@ function compileNumberTerm(term) {
   return compareTerm(term.op, parseCount(term.value), (row) => row[col]);
 }
 
+/** Parse a percentage: a number, optionally followed by `%`. */
+function parsePercent(value) {
+  const m = /^(\d+(?:\.\d+)?)%?$/.exec(value.trim());
+  if (!m) throw new QueryError(`Invalid percentage: ${JSON.stringify(value)} (e.g. 20 or 20%)`);
+  return parseFloat(m[1]);
+}
+
+function compilePercentTerm(term) {
+  const col = PERCENT_FIELDS[term.field];
+  return compareTerm(term.op, parsePercent(term.value), (row) => row[col]);
+}
+
 function compileSizeRankTerm(term) {
   const rank = SIZE_QUERY_RANK[term.value.trim().toLowerCase()];
   if (rank === undefined) {
@@ -496,9 +530,23 @@ function compileRankTerm(term) {
   return compareTerm(term.op, order[rank], (row) => order[row[col]] ?? null);
 }
 
+function compileBoolTerm(term) {
+  const col = BOOL_FIELDS[term.field];
+  const key = term.value.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(BOOL_VALUES, key) || (term.op && term.op !== "=")) {
+    throw new QueryError(`Invalid ${term.field} value: ${JSON.stringify(term.value)} (use yes or no)`);
+  }
+  const value = BOOL_VALUES[key];
+  return (row) => row[col] === value;
+}
+
 function compileTerm(term) {
   // Presence test: field:*
   if (term.presence) {
+    if (term.field in BOOL_FIELDS) {
+      const col = BOOL_FIELDS[term.field];
+      return (row) => row[col] === true || row[col] === false;
+    }
     if (term.field in RANK_FIELDS) {
       const col = RANK_FIELDS[term.field][0];
       return (row) => isPresent(row[col]);
@@ -510,6 +558,10 @@ function compileTerm(term) {
     }
     if (term.field in NUMBER_FIELDS) {
       const col = NUMBER_FIELDS[term.field];
+      return (row) => isPresent(row[col]);
+    }
+    if (term.field in PERCENT_FIELDS) {
+      const col = PERCENT_FIELDS[term.field];
       return (row) => isPresent(row[col]);
     }
     const cols = TEXT_FIELDS[term.field];
@@ -524,7 +576,9 @@ function compileTerm(term) {
   if (term.field in DATE_FIELDS) return compileDateTerm(term);
   if (term.field in INT_FIELDS) return compileIntTerm(term);
   if (term.field in NUMBER_FIELDS) return compileNumberTerm(term);
+  if (term.field in PERCENT_FIELDS) return compilePercentTerm(term);
   if (term.field in RANK_FIELDS) return compileRankTerm(term);
+  if (term.field in BOOL_FIELDS) return compileBoolTerm(term);
   if (term.field === "size" && term.op) return compileSizeRankTerm(term);
 
   // Scoped text field.
@@ -567,7 +621,8 @@ const SORTABLE = new Set([
   "upcoming_late_abstract_deadline", "upcoming_paper_deadline", "conference_month",
   "abstract_month", "late_abstract_month", "paper_month",
   "past_abstract_deadline", "past_late_abstract_deadline", "past_paper_deadline",
-  "ccf_rank", "core_rank",
+  "upcoming_decision_deadline", "past_decision_deadline",
+  "ccf_rank", "core_rank", "acceptance_rate", "archival",
 ]);
 
 // The conference-dates sort (and location) falls back to the prior edition's
@@ -581,7 +636,7 @@ const DATE_SORT_FALLBACK = {
 // each Past column on its most recent past deadline. Mirrors ``_DEADLINE_SORT``
 // in conference_agent/web/app.py.
 const DEADLINE_SORT = {};
-for (const kind of ["abstract", "late_abstract", "paper"]) {
+for (const kind of ["abstract", "late_abstract", "paper", "decision"]) {
   DEADLINE_SORT[`upcoming_${kind}_deadline`] = (row) => upcomingDeadline(row, kind);
   DEADLINE_SORT[`past_${kind}_deadline`] = (row) => pastDeadlines(row, kind)[0] ?? null;
 }
@@ -601,7 +656,7 @@ const MONTH_SORT_TIEBREAKER = {
 
 const NUMERIC_SORT = new Set([
   "attendance", "conference_month", "abstract_month", "late_abstract_month",
-  "paper_month", "size", "ccf_rank", "core_rank",
+  "paper_month", "size", "ccf_rank", "core_rank", "acceptance_rate", "archival",
 ]);
 
 // Size sorts by magnitude, not alphabetically: ascending is massive -> small.
@@ -628,6 +683,8 @@ const RANK_SORT = {
 function coalesce(row, col, fallbackCol) {
   if (col === "size") return SIZE_SORT_RANK[row.size] ?? null;
   if (col in RANK_SORT) return RANK_SORT[col][row[col]] ?? null;
+  // Yes before no ascending; unknown last. Mirrors the archival sort in app.py.
+  if (col === "archival") return row.archival === true ? 1 : row.archival === false ? 2 : null;
   const v = row[col];
   if (isPresent(v)) return v;
   return fallbackCol ? row[fallbackCol] ?? null : null;
@@ -741,6 +798,7 @@ const KEYWORD_DATE_COLUMNS = [
   "upcoming_abstract_deadline", "prior_abstract_deadline",
   "upcoming_late_abstract_deadline", "prior_late_abstract_deadline",
   "upcoming_paper_deadline", "prior_paper_deadline",
+  "upcoming_decision_deadline", "prior_decision_deadline",
 ];
 
 const KEYWORD_DEADLINE_MONTH_COLUMNS = ["abstract_month", "late_abstract_month", "paper_month"];
@@ -872,7 +930,8 @@ function keywordIndex(row) {
 // query that fell through to keyword search is dropped rather than searched for.
 const KNOWN_FIELD_NAMES = new Set([
   ...Object.keys(TEXT_FIELDS), ...Object.keys(DATE_FIELDS),
-  ...Object.keys(INT_FIELDS), ...Object.keys(NUMBER_FIELDS), ...Object.keys(RANK_FIELDS),
+  ...Object.keys(INT_FIELDS), ...Object.keys(NUMBER_FIELDS), ...Object.keys(PERCENT_FIELDS),
+  ...Object.keys(RANK_FIELDS), ...Object.keys(BOOL_FIELDS),
   ...Object.keys(ALIASES),
 ]);
 

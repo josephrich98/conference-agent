@@ -58,6 +58,12 @@ conference-agent add \
   --url https://www.rsna.org/annual-meeting
 ```
 
+`--archival yes|no` records whether accepted submissions are published in
+archival proceedings (a citable proceedings volume or journal, including a
+journal abstract supplement) or the series is non-archival. `true` / `false`
+and `1` / `0` are accepted too; leave it unset when unknown. Discovery
+researches it, and a run that does not report it keeps the stored answer.
+
 The `--abstract-guidelines` and `--paper-guidelines` fields are free text: a
 paragraph, or one requirement per line starting with `- ` (shown as a bulleted
 list on the website):
@@ -166,6 +172,24 @@ conference-agent discover \
   --airports
 ```
 
+To write the deadlines OpenReview publishes for the series it hosts (ICLR,
+NeurIPS, CVPR, AISTATS, ...; public API, no account, no agent). Series are
+linked to their OpenReview venue automatically by acronym, confirmed by the
+venue's website or full title; `dry-run` shows what would change:
+
+```bash
+conference-agent discover \
+  --openreview [dry-run]
+```
+
+To set or correct a link by hand (`none` never links the series, `auto` lets
+the next sync match it again):
+
+```bash
+conference-agent discover \
+  --openreview-link iclr ICLR.cc/{year}/Conference
+```
+
 To research the abstract and paper guidelines of conferences with a submission
 deadline still ahead (those never researched, those with none found 14+ days
 ago, and those researched 120+ days ago; at most 15 per run):
@@ -219,6 +243,28 @@ set one by hand with `conference-agent add --update --conference-name NAME
 `CORE_EDITION` / `CCF_EDITION` in `conference_agent/models.py` (and the CCF
 page slugs in the script if they change).
 
+### Acceptance rates, decision dates, and the ccfddl cross-check
+
+Acceptance rates are not researched by `discover`. `scripts/fill_ccfddl.py`
+copies them, and fills blank acceptance decision dates, from
+[ccfddl](https://ccfddl.com) (MIT-licensed data covering about 380
+computer-science series):
+
+```bash
+python scripts/fill_ccfddl.py --download --dry-run   # fetch ccfddl's data, report
+python scripts/fill_ccfddl.py                        # write rates + blank decision dates
+```
+
+`--download` saves `allconf.json` and `allacc.json` to `data/ccfddl/`. Series
+are matched by acronym and name (as for the rankings), plus the reviewed keys
+in `REVIEWED`. A year ccfddl lists replaces that year's stored rate; a stored
+decision date is never overwritten. The report's "Deadline cross-check"
+section lists deadlines that disagree with ccfddl (compared as instants, since
+ccfddl often converts AoE to UTC) and deadlines ccfddl has that the table
+lacks. They are not written: check each against the official page and enter it
+with `conference-agent add --update`. Rates for other series can be entered by
+hand: `--acceptance-rates "2026 | 412/1650 | https://..."`.
+
 ## Local to website database conversion
 
 - *underscores replaced with spaces, and capitalization applied as appropriate*
@@ -234,7 +280,7 @@ page slugs in the script if they change).
 - abstract_deadline_extension + late_abstract_deadline_extension + paper_deadline_extension --> no column of their own; embedded as a ⏩ button after the matching deadline date, listing the past extensions (original → extended) on hover, tap, or click
 - added calendar (📅: subscribe to the conference's feed, or download a one-time .ics) and email (✉️: update emails, plus a reminder one week before each deadline) columns
 - subscribable calendar feeds: `/c/<id>/calendar.ics` per conference, `/field/<tag>/calendar.ics` per field, and `/calendar.ics` for everything
-- hidden: id, notes, attendance_source, last_checked, watch_*, guidelines_checked, registration_checked (internal bookkeeping)
+- hidden: id, notes, attendance_source, last_checked, watch_*, openreview_venue, guidelines_checked, registration_checked (internal bookkeeping)
 - retired series (no future edition, last one over 24 months old) are left out of the website
 
 ## Scheduled updates
@@ -261,6 +307,19 @@ whole field, only when:
   series has not been researched in 14 days; or
 - 28 days have passed without research (a backstop, since a new edition is often
   announced on a new, year-specific site the stored link never shows).
+
+Before the page checks, the run syncs the series hosted on OpenReview
+(`conference_agent/openreview_source.py`; `--no-openreview` skips it). Their
+deadlines come from OpenReview's public API: the Submission invitation's close
+time (which moves with an extension) and the venue's deadline summary, stored
+in the series' own time zone when the deadline falls at 23:59 there, else AoE
+or UTC. A close time within three hours of the stored deadline (a grace
+period) leaves it as it is, and a start date or location is filled only where
+the edition has none. A series whose upcoming edition is then complete (a
+start date not yet past and every deadline kind it uses) skips both the page
+check and the agent run. OpenReview publishes a venue only about 3–4 months
+before its deadline and has no end date, cost, registration, or late-abstract
+deadline, so everything else still comes from the page check and the agent.
 
 At most 18 series are researched per run; the rest wait for the next day.
 Targeted results are merged without clearing fields the agent did not re-find.

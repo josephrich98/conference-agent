@@ -65,7 +65,7 @@ from conference_agent.web.search import field_help
 
 # Static assets copied verbatim into the bundle (the UI is the product now).
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "conference_agent" / "web" / "static"
-_ASSETS = ("index.html", "search.js", "calendar.js")
+_ASSETS = ("index.html", "search.js", "calendar.js", "logo.svg")
 # Vercel Functions (subscribe / confirm / unsubscribe) and their dependencies.
 _VERCEL_DIR = _STATIC_DIR.parent / "vercel"
 

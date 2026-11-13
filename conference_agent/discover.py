@@ -48,6 +48,7 @@ from conference_agent.models import (
     Conference,
     RemoteOption,
     name_id,
+    normalize_archival,
     normalize_categories,
     normalize_formats,
     normalize_guidelines,
@@ -85,10 +86,11 @@ For each notable conference in the requested field, gather:
   (e.g. MICCAI is medicine, artificial intelligence); use another category only
   when none of these fits
 - the most recent (prior) edition: abstract submission deadline, late abstract
-  deadline (see below), full paper / manuscript deadline, and the conference
-  start and end dates
+  deadline (see below), full paper / manuscript deadline, acceptance decision
+  (author notification) date, and the conference start and end dates
 - the upcoming edition: abstract submission deadline, late abstract deadline,
-  full paper / manuscript deadline, and the conference start and end dates
+  full paper / manuscript deadline, acceptance decision (author notification)
+  date, and the conference start and end dates
 - the host city / venue (location) of each edition, for the prior and the
   upcoming edition separately (prior_location / upcoming_location), and whether
   the conference is held in the same place every year (stable_location, e.g. RSNA
@@ -101,6 +103,14 @@ For each notable conference in the requested field, gather:
   proceedings venues such as NeurIPS or CVPR also take full papers; many accept
   both poster and oral presentations)
 - whether it can be attended remotely (in-person, virtual, or hybrid)
+- whether it is archival: accepted submissions are published in a citable
+  proceedings volume or journal (archival: yes -- e.g. ACM / IEEE / USENIX
+  proceedings, PMLR, the NeurIPS proceedings, or a medical meeting whose
+  abstracts appear in a journal supplement), or the meeting publishes no
+  proceedings, so the work may also be submitted elsewhere (archival: no -- many
+  workshops and some biology meetings). Look for a "proceedings", "published
+  in", or "non-archival" statement in the call; leave it unstated when the call
+  does not say
 - the registration cost of each edition (prior_cost / upcoming_cost): give the
   actual dollar figure(s) when available (e.g. "$1,095 member / $1,395
   non-member, early-bird"), not just "varies"; leave the upcoming cost blank until
@@ -135,6 +145,12 @@ Never put the later date in the main abstract field: the main abstract deadline 
 is always the earliest one the edition publishes, so a reader who meets it can \
 submit through any route. Leave the late abstract deadline unstated when the \
 edition publishes only one abstract deadline -- most do.
+
+The acceptance decision date is when authors of the main submission round are \
+told whether their work was accepted ("notification of acceptance", "author \
+notification", "decisions released"). It is usually listed with the important \
+dates. Report the main round's date; leave it unstated when the call does not \
+give one, and never infer it from other dates.
 
 The attendance figure is almost never on the conference home page, so search the \
 web for it explicitly -- run queries like "<conference name> annual meeting \
@@ -195,6 +211,9 @@ still belongs to the edition it opened; if the meeting itself is upcoming, keep 
 its abstract deadline in the upcoming column. Set the paper deadline only when \
 the notes give a distinct full-paper / manuscript deadline; leave it "" for \
 abstract-only meetings rather than repeating the abstract deadline. The \
+prior_decision_deadline / upcoming_decision_deadline fields are each edition's \
+acceptance decision (author notification) date for the main submission round, \
+or "" when the notes give none. The \
 abstract_time / late_abstract_time / paper_time fields are the time of day each \
 deadline closes, as 24-hour HH:MM (convert "11:59 PM" to "23:59"), and \
 abstract_timezone / late_abstract_timezone / paper_timezone are the matching \
@@ -211,7 +230,11 @@ and cost with the edition it belongs to. The attendance field must be a plain in
 (digits only, no commas or words) or "" if the notes give no figure; \
 attendance_year is the four-digit year that figure describes (or ""); \
 attendance_source is the URL the figure came from (or ""). The remote_option \
-field must be "in-person", "virtual", "hybrid", or "" if unknown. The formats \
+field must be "in-person", "virtual", "hybrid", or "" if unknown. The archival \
+field is "yes" when the notes say accepted submissions are published in a \
+citable proceedings volume or journal (including a journal abstract \
+supplement), "no" when the notes say the meeting is non-archival or publishes \
+no proceedings, and "" when the notes do not say. The formats \
 field lists the submission/presentation formats the conference offers -- any of \
 "abstract", "paper", "poster", "oral" -- comma-separated, or "" if the notes do \
 not say; use "paper" only for a genuine full-paper / manuscript venue, not for an \
@@ -244,6 +267,10 @@ class _ExtractedConference(BaseModel):
         "(poster-only or late-breaking), or '' if it published only one",
     )
     prior_paper_deadline: str
+    prior_decision_deadline: str = Field(
+        default="",
+        description="Acceptance decision (author notification) date of the prior edition, or ''",
+    )
     prior_start_date: str
     prior_end_date: str
     upcoming_abstract_deadline: str
@@ -253,6 +280,10 @@ class _ExtractedConference(BaseModel):
         "(poster-only or late-breaking), or '' if it publishes only one",
     )
     upcoming_paper_deadline: str
+    upcoming_decision_deadline: str = Field(
+        default="",
+        description="Acceptance decision (author notification) date of the upcoming edition, or ''",
+    )
     upcoming_start_date: str
     upcoming_end_date: str
     abstract_time: str = Field(
@@ -290,6 +321,12 @@ class _ExtractedConference(BaseModel):
     )
     url: str
     remote_option: str
+    archival: str = Field(
+        default="",
+        description="'yes' when accepted submissions are published in archival "
+        "proceedings or a journal (supplement), 'no' when the meeting is "
+        "non-archival, or '' if the notes do not say",
+    )
     formats: str = Field(
         description="Submission/presentation formats offered, comma-separated, any of: "
         "abstract, paper, poster, oral (or '' if the notes do not say)"
@@ -346,6 +383,10 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         remote = RemoteOption(item.remote_option.strip().lower()) if item.remote_option.strip() else None
     except ValueError:
         remote = None
+    try:
+        archival = normalize_archival(item.archival)
+    except ValueError:
+        archival = None
 
     return Conference(
         acronym=item.acronym.strip(),
@@ -355,6 +396,7 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         prior_abstract_deadline=_parse_date(item.prior_abstract_deadline),
         prior_late_abstract_deadline=_parse_date(item.prior_late_abstract_deadline),
         prior_paper_deadline=_parse_date(item.prior_paper_deadline),
+        prior_decision_deadline=_parse_date(item.prior_decision_deadline),
         prior_start_date=_parse_date(item.prior_start_date),
         prior_end_date=_parse_date(item.prior_end_date),
         upcoming_abstract_deadline=_parse_date(item.upcoming_abstract_deadline),
@@ -362,6 +404,7 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
             item.upcoming_late_abstract_deadline
         ),
         upcoming_paper_deadline=_parse_date(item.upcoming_paper_deadline),
+        upcoming_decision_deadline=_parse_date(item.upcoming_decision_deadline),
         upcoming_start_date=_parse_date(item.upcoming_start_date),
         upcoming_end_date=_parse_date(item.upcoming_end_date),
         abstract_time=_clean(item.abstract_time),
@@ -375,6 +418,7 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         stable_location=item.stable_location.strip().lower() == "true",
         url=_clean(item.url),
         remote_option=remote,
+        archival=archival,
         formats=normalize_formats(item.formats),
         prior_cost=_clean(item.prior_cost),
         upcoming_cost=_clean(item.upcoming_cost),
@@ -729,6 +773,7 @@ def _describe_target(conf: Conference) -> str:
             ("abstract", "abstract_deadline"),
             ("late abstract", "late_abstract_deadline"),
             ("paper", "paper_deadline"),
+            ("decision", "decision_deadline"),
             ("start", "start_date"),
             ("end", "end_date"),
         ):

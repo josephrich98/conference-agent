@@ -23,7 +23,9 @@ month, abstract month, late abstract month, and paper
 month (each
 taken from the matching date so rows sort by season even when their years are
 offset; registration has no derived month), the official
-link, remote-attendance option, a location and cost per edition (plus a
+link, remote-attendance option, whether the series is **archival** (accepted
+work published in citable proceedings or a journal: yes / no / unknown), a
+location and cost per edition (plus a
 `stable_location` flag for series held in the same place every year), a sourced
 annual-attendance figure, and a
 size bucket derived deterministically from that figure (massive / large / medium /
@@ -51,7 +53,7 @@ for the design.
   - `models.py` — `Conference` pydantic schema (one record per conference *series*,
     holding prior + upcoming editions, a list of `subcategories` tags, a controlled
     list of submission/presentation `formats` (any of abstract / paper / poster /
-    oral), an `attendance`
+    oral), a nullable `archival` boolean (`normalize_archival`), an `attendance`
     figure, a list of `categories` tags (the broad bucket; `category` joins them), `conference_month`
     / `abstract_month` / `late_abstract_month` / `paper_month` (registration is
     line-format text — `registration` property, no derived month;
@@ -101,6 +103,17 @@ for the design.
     rows whose location changed, and `parse_airports` / `format_airports` handle
     the stored `CODE | Name | N mi[ | minor]` lines (see the design decision
     below)
+  - `openreview_source.py` — deadlines from OpenReview's public API for the
+    series it hosts (standard library only, throttled): links rows to a venue
+    template (`openreview_venue`, e.g. `ICLR.cc/{year}/Conference`; `none` =
+    never link) by acronym confirmed by website domain or full title (ARR
+    commitment venues and venues hidden from guests are not linked), reads the
+    Submission invitation's close time and the venue's `date` summary, and
+    writes through `database.apply_edition_fields` (pins respected; start date
+    and location fill blanks only; a close time within
+    `SAME_DEADLINE_MINUTES` of the stored deadline is kept as stored).
+    `sync` reports the series whose upcoming edition is then complete
+    (`is_covered`); `run_watch` skips their page check and agent run
   - `page_watch.py` — agent-free change detection: fetches a conference's link
     plus a few same-site dates pages and fingerprints the set of dates mentioned
   - `notify.py` — email summary after a discovery / daily refresh
@@ -123,7 +136,10 @@ for the design.
     e.g. `pip install -e .`); a regular `pip install` gets only `lookup` and
     `info`, and naming a maintainer command there exits 2 with a pointer to
     the repository. `python -m conference_agent` runs the same CLI. `info ID [COL ...]` prints one series'
-    row (or just the named `lookup` columns; one column prints the bare value),
+    row (or just the named `lookup` columns; one column prints the bare value;
+    `--json` prints the full record as `web.search.row_to_dict`, the
+    `c/<id>/data.json` shape that `add --json` accepts back, or an object of
+    the named columns),
     finding it by id (current or former) or, failing that, by case-insensitive
     acronym; an acronym shared by several series lists their ids and exits 1. A bare `discover` surveys every field
     (`database.discovery_subcategories`: the table's subcategories), one agent run
@@ -143,7 +159,9 @@ for the design.
     the discover filters narrow it). `discover --guidelines` researches the
     Abstract / Paper guidelines columns instead of surveying (see the
     guidelines design decision), and `discover --registration` the upcoming
-    registration dates (see the registration design decision)
+    registration dates (see the registration design decision).
+    `discover --openreview [dry-run]` runs the OpenReview sync alone, and
+    `--openreview-link ID VENUE` sets a series' link by hand
 - `conference_agent/web/` — FastAPI app + static single-page table (`search.py` boolean-query
   language, `nl_query.py` optional natural-language → boolean-query translation
   via a local Ollama model, `app.py` REST API, `static/index.html`, `handler.py`
@@ -157,7 +175,9 @@ for the design.
   `notify_subscribers.py` the subscriber-email step of the cron job,
   `ingest_submissions.py` adds merged "Add or edit a conference" submissions,
   `alert_failure.py` emails the log tail when the cron job fails,
-  `fill_rankings.py` fills the CCF / CORE columns from the official lists)
+  `fill_rankings.py` fills the CCF / CORE columns from the official lists,
+  `fill_ccfddl.py` fills acceptance rates and decision dates from ccfddl and
+  cross-checks deadlines against it)
 - `scripts/seo_pages.py` — prerenders crawlable per-conference (`/c/<id>/`, with
   `Event` JSON-LD) and per-field (`/field/<tag>/`) pages, `sitemap.xml`,
   `robots.txt`, and the home page's browse links; called by `build_static.py`
@@ -291,9 +311,14 @@ dependencies there rather than installing ad hoc.
   published. Databases predating the columns are migrated on first open
   (`database.backfill_deadline_times`). The deadline columns stay pure dates so
   sorting, the derived months, the search's date comparisons, and the all-day
-  calendar events are untouched. The table's "Deadline time" column
-  (substring-searchable as `deadline_time:`) shows 12- or 24-hour times per
-  the toolbar's Time format menu (display only, remembered per browser;
+  calendar events are untouched. Each Upcoming deadline date shows its kind's
+  time and zone after it ("2026-12-14 11:59 PM AoE"), with the same moment in
+  the viewer's zone in gray below when that zone differs ("2026-12-15 3:59 AM
+  PST"; `calendar.js` `localDeadline`); Past dates carry no time, since the
+  time is per series, not per edition. The "Deadline time" column
+  (substring-searchable as `deadline_time:`) is hidden by default (Columns ▾
+  shows it). Times follow
+  the toolbar's Time format menu (12- or 24-hour; display only, remembered per browser;
   default 12-hour), and the calendar feed puts the applicable time in each deadline event's note
   (`calendar_sync.deadline_time_for`, mirrored in `calendar.js`).
   **Coloring is instant:** each colored date carries the instant its deadline
@@ -370,7 +395,9 @@ dependencies there rather than installing ad hoc.
   its most recent date. In the browser "passed" is the `deadlineInstant`
   moment (an Upcoming span carries `data-up`, and `recolorDates` re-renders
   when one closes); Python (and `search.js` without `calendar.js`, as in the
-  parity tests) uses the day after the date. Search fields: `abstract_due` /
+  parity tests) uses the day after the date. The acceptance decision date has
+  the same Upcoming / Past pair (see the decision-date design decision).
+  Search fields: `abstract_due` /
   `late_abstract_due` / `paper_due` match the Upcoming value and
   `past_abstract_due` / `past_late_abstract_due` / `past_paper_due` the most
   recent past date (`prior_abstract` etc. are aliases of the past fields).
@@ -503,6 +530,66 @@ dependencies there rather than installing ad hoc.
   matches a list entry only when its acronym **and** name agree (plus a few
   reviewed equivalences in `CONFIRMED`, e.g. CCF's `SIGKDD` for KDD) and writes
   through `merge_records`, which never clears a rank.
+- **Acceptance rates are copied from a published list (or entered), never
+  researched.** `acceptance_rates` (Text, on the model) holds one
+  `YEAR | ACCEPTED/SUBMITTED | SOURCE` line per year, most recent first, or
+  `YEAR | RATE% | SOURCE` when only a rate is published (source optional;
+  `models.parse_acceptance_rates` / `normalize_acceptance_rates`, which also
+  accept ccfddl's `{year, accepted, submitted, rate, source}` objects).
+  `acceptance_rate` (Float) is the most recent year's rate in percent, derived
+  on write like `size`. It is an `add` field (a year given replaces that year's
+  stored entry, others are kept: `models.merge_acceptance_rates`), a form
+  textarea, a percentage search field (`acceptance<25`, `acceptance:*`), and a
+  sortable table column ("17.6% (2026)", every year on hover); `/c/<id>/` pages
+  list every year. Discovery never researches it and `upsert_conferences`
+  keeps the stored text. `scripts/fill_ccfddl.py` fills it from ccfddl's
+  `allacc.json` (about 100 computer-science series; medical meetings rarely
+  publish a rate).
+- **The acceptance decision date is a fourth dated kind with Upcoming / Past
+  columns.** `prior_decision_deadline` / `upcoming_decision_deadline` (in
+  `EDITION_SUFFIXES`; `*_decision_date` is accepted as input) and
+  `decision_deadline_history` reuse the deadline-history machinery through
+  `models.HISTORY_KINDS` (`KINDS` + `decision`), so archiving, `past_deadlines`
+  / `upcoming_deadline`, `add`'s `past_deadlines` (type `decision`), and the
+  Upcoming / Past columns work as for the deadlines. It is not in `KINDS`: it
+  has no time of day, extensions, derived month, or subscriber reminder, does
+  not count for "Hide past deadlines" or `roll_past_editions`, and its
+  calendar event (kind `decision`) has no alarm. Search fields `decision_due` /
+  `past_decision_due` (alias `notification`); `add` fields `decision_due` /
+  `prior_decision_due`; a subscriber-watched field. Discovery researches it
+  (the main round's author notification date), and `scripts/fill_ccfddl.py`
+  fills blank ones from ccfddl's `allconf.json`, matched to the edition by its
+  start year (pins respected via `apply_edition_fields`).
+- **ccfddl is a cross-check, not a source of deadlines.** `fill_ccfddl.py`
+  matches series like `fill_rankings.py` (acronym and name, plus reviewed
+  `REVIEWED` keys) and reports, never writes, deadlines that disagree with
+  ccfddl's main round or that ccfddl has and the table lacks. ccfddl often
+  restates an AoE deadline in UTC, so instants are compared (`same_deadline`),
+  not dates. Its "blank here" dates can be estimates, and its decision date is
+  the final one for revision-cycle venues (FSE), so each reported line is
+  checked against the official page before it is entered by hand.
+- **Archival is a per-series yes / no / unknown, researched by discovery.**
+  `archival` (a nullable Boolean column, `Conference.archival`; NULL = unknown)
+  records whether accepted submissions are published in archival proceedings:
+  yes for a citable proceedings volume or journal (ACM / IEEE / USENIX
+  proceedings, PMLR, NeurIPS proceedings, or a medical meeting whose abstracts
+  appear in a journal supplement), no for a non-archival series (many
+  workshops, some biology meetings), whose work may also be submitted
+  elsewhere. `models.normalize_archival` accepts yes / no, true / false, 1 / 0
+  (and archival / non-archival), blank or "unknown" → None, anything else a
+  `ValueError`. The survey and re-check prompts research it (the extraction
+  schema's `archival` string), and a run that reports none keeps the stored
+  value (`upsert_conferences`; `_conference_to_record` carries only a known
+  answer); `merge_records` takes an explicit no as a value and ignores a blank
+  one. It is an `add` field (`--archival yes|no`, an enum with choices
+  `models.ARCHIVAL_CHOICES`, which drives the form's dropdown and
+  `api/propose`), pinnable, a search field (`archival:yes` / `archival:no`,
+  `true` / `false` too; an unknown row matches neither, `archival:*` is any
+  known answer, and comparisons are rejected; `_BOOL_FIELDS` in `search.py`,
+  `BOOL_FIELDS` in `search.js`), and a sortable categorical Archival column
+  (yes before no, unknown last) with the ■ value filter. Serialized rows carry
+  it as `true` / `false` / `null`; the table, `lookup` / `info` text, and the
+  `/c/<id>/` pages show yes / no. It is not a subscriber-watched field.
 - **Deterministic, sourced size (not a subjective reputation label).** Size is a
   computed property, never a stored hand-set value: `models.size_for_attendance`
   buckets the `attendance` integer (≥10,000 → massive, ≥1,000 → large, ≥250 →
@@ -579,15 +666,16 @@ dependencies there rather than installing ad hoc.
   values over the same search), so the boolean grammar, its Python parity, and
   the API are unchanged; `tests/test_keyword_search.py` covers it via Node and
   pins the Python port to it. Categorical
-  column headers (category, subcategory, format, size, remote, the four month
-  columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or
+  column headers (category, subcategory, format, size, remote, archival, the
+  four month columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or
   one tag in it) in those columns filters the column to that value at once
   (clicking it again removes the filter). The chosen values are
   browser-only state held apart from the search box and ANDed with it, so they
   survive a new search and the boolean grammar (which has no exact-match
   operator for text) stays unchanged. Each deadline kind has an Upcoming and a
   Past column (see the deadline-history design decision), so deadline sorts
-  hide nothing; an ascending Conference dates sort hides rows whose meeting
+  hide nothing; the default sort is Conference dates ascending (the
+  `state` initializer in `index.html`). An ascending Conference dates sort hides rows whose meeting
   (upcoming, else prior; its last day) ended before today, and the status line
   counts them (a descending sort lists them). Relevance order is unaffected,
   and rows with no date stay (sorted last). A "Browse by field" bar above the search box (one
@@ -598,12 +686,15 @@ dependencies there rather than installing ad hoc.
   `&q=...`; back/forward step through selections), so a field's view is a
   shareable link. The `/field/<tag>/` pages link to these URLs. A display
   toolbar below the search bar (`#view-toolbar`; its `#vt-display` slot) has
-  "Hide past deadlines" (drops rows with no abstract / late abstract / paper
+  a "Hide past deadlines" toggle button (labeled "Show past deadlines" while on; drops rows with no abstract / late abstract / paper
   deadline still ahead, by `ConferenceSearch.upcomingDeadline`, ANDed with the
   search and filters), Date format (every displayed date goes through
   `fmtDate` in `index.html`; default ISO), Time format (12/24-hour deadline
   times), Size (edits the size column's ■ filter state, so the two stay in
-  sync), and a Minimal columns / Show all columns toggle that sets the
+  sync; like the CCF / CORE menus it starts with nothing checked, meaning no
+  filter, and checking values shows only those, with a Select all /
+  Deselect all row: `VALUE_MENUS` in `index.html`), and a Minimal columns / Show all columns toggle (right
+  after the View menu) that sets the
   Columns ▾ menu's hidden set. Each choice is remembered per browser. The
   `#vt-view` slot's View menu switches between Table (default), Tile (a card
   grid), and List (one compact row per conference); the choice is remembered
@@ -725,7 +816,10 @@ dependencies there rather than installing ad hoc.
   deadline or meeting within 30 days, under 6 months since the last edition
   ended with no next one, or 6–24 months since the last edition: every 14 days)
   and calls the agent only for series whose pages' dates changed (or that are
-  unreadable / past a 28-day backstop). Before planning and after research it
+  unreadable / past a 28-day backstop). Before the page checks it syncs the
+  series hosted on OpenReview (`openreview_source.sync`; `--no-openreview`
+  skips it); a series whose upcoming edition that completes skips the page
+  check and the agent. Before planning and after research it
   runs `database.roll_past_editions`, which moves an upcoming edition whose
   meeting is over (and with no deadline still ahead) into the prior slots and
   merges an edition stored in both slots (the `Conference` model collapses the

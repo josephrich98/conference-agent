@@ -247,7 +247,11 @@ function deadlineNote(row, kind) {
 // e.g. "2:59 PM PDT" or "5:00 AM PDT the next day" ("14:59 PDT" when `military`);
 // null when there is no time or zone, or the viewer is already in that offset.
 // `timeZone` overrides the viewer's zone (for tests).
-function localDeadlineTime(time, tz, dateIso, timeZone, military) {
+// A deadline's moment in the viewer's zone: {date: "YYYY-MM-DD", clock:
+// "3:59 AM PST", dayDiff} (dayDiff = local date minus the deadline's date), or
+// null when it has no usable time / zone, or the viewer's zone has the same
+// offset at that instant (nothing to convert).
+function localDeadline(time, tz, dateIso, timeZone, military) {
   const t = /^(\d{1,2}):(\d{2})$/.exec(time || "");
   const offsetAt = zoneOffsetFn(tz);
   if (!t || !offsetAt || !dateIso) return null;
@@ -263,19 +267,28 @@ function localDeadlineTime(time, tz, dateIso, timeZone, military) {
     timeZone: viewerZone, hour: military ? "2-digit" : "numeric", minute: "2-digit",
     hourCycle: military ? "h23" : "h12", timeZoneName: "short",
   });
-  const localDate = new Intl.DateTimeFormat("en-CA", {
+  const date = new Intl.DateTimeFormat("en-CA", {
     timeZone: viewerZone, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(new Date(instant));
-  const dayDiff = Math.round((Date.parse(localDate) - Date.UTC(y, mo - 1, d)) / 86400000);
-  if (dayDiff === 1) return `${clock} the next day`;
-  if (dayDiff === -1) return `${clock} the previous day`;
-  return clock;
+  const dayDiff = Math.round((Date.parse(date) - Date.UTC(y, mo - 1, d)) / 86400000);
+  return { date, clock, dayDiff };
+}
+
+// The same moment as text: "3:59 AM PST", with " the next day" / " the
+// previous day" when the local date differs.
+function localDeadlineTime(time, tz, dateIso, timeZone, military) {
+  const local = localDeadline(time, tz, dateIso, timeZone, military);
+  if (!local) return null;
+  if (local.dayDiff === 1) return `${local.clock} the next day`;
+  if (local.dayDiff === -1) return `${local.clock} the previous day`;
+  return local.clock;
 }
 
 const EDITION_DATES = [
   "abstract_deadline",
   "late_abstract_deadline",
   "paper_deadline",
+  "decision_deadline",
   "start_date",
   "end_date",
 ];
@@ -323,6 +336,15 @@ function editionEvents(row) {
       description: `Full paper / manuscript deadline for ${label}.${deadlineNote(row, "paper")}${url}`,
     });
   }
+  if (get("decision_deadline")) {
+    events.push({
+      kind: "decision",
+      summary: `${acronym} — acceptance decisions`,
+      start: get("decision_deadline"),
+      end: get("decision_deadline"),
+      description: `Acceptance decision (author notification) date for ${label}.${url}`,
+    });
+  }
   if (get("start_date")) {
     const start = get("start_date");
     events.push({
@@ -364,7 +386,9 @@ function conferenceToIcs(row, calendarName = "Conference Agent") {
     );
     if (row.url) lines.push(`URL:${row.url}`);
     lines.push("TRANSP:TRANSPARENT");
-    const days = [...new Set(REMINDER_LEAD_DAYS)].sort((a, b) => b - a);
+    // A decision date needs no action ahead of it, so it has no reminder.
+    const lead = ev.kind === "decision" ? [] : REMINDER_LEAD_DAYS;
+    const days = [...new Set(lead)].sort((a, b) => b - a);
     for (const d of days) {
       lines.push(
         "BEGIN:VALARM",
@@ -410,12 +434,12 @@ function feedUrls(id, origin) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    conferenceToIcs, eventId, localDeadlineTime, deadlineInstant, deadlineEntries,
+    conferenceToIcs, eventId, localDeadline, localDeadlineTime, deadlineInstant, deadlineEntries,
     deadlineTimeText, deadlineTimeFor, DEADLINE_ZONES, feedUrls,
   };
 } else {
   window.ConferenceCalendar = {
-    conferenceToIcs, downloadIcs, localDeadlineTime, deadlineInstant, deadlineEntries,
+    conferenceToIcs, downloadIcs, localDeadline, localDeadlineTime, deadlineInstant, deadlineEntries,
     formatDeadlineSpec, feedUrls,
   };
 }

@@ -1,3 +1,5 @@
+<p align="center"><img src="conference_agent/web/static/logo.svg" alt="Conference Agent logo" width="200"></p>
+
 # conference_agent
 
 Website: https://conferenceagent.vercel.app
@@ -12,6 +14,7 @@ Features:
 - Sort conferences by those with the nearest submission deadlines, color-coded by timeframe; each deadline type has an Upcoming column and a Past column listing earlier deadlines, most recent first
 - See deadline times in your current timezone
 - Read each conference's abstract and paper submission guidelines (word or page limits, required structure, templates)
+- See whether a conference publishes archival proceedings, or is non-archival so the work can also be submitted elsewhere (search `archival:yes` or `archival:no`)
 - View conferences that have a history of extending deadlines
 - Suggest a new conference or an edit to an existing one with the [form](https://conferenceagent.vercel.app/add/)
 - Read any conference or single field as static JSON, with no API key (see [Data access](#data-access-for-scripts-and-ai-agents))
@@ -78,6 +81,15 @@ Show only specific columns (a single column prints just its value):
 conference-agent info RSNA name upcoming_start_date upcoming_location
 ```
 
+Add `--json` to print JSON instead. Without columns this is the full record,
+the same shape as the site's `c/<id>/data.json` (and accepted by a
+development install's `add --json`); with columns, an object of just those:
+
+```bash
+conference-agent info RSNA --json > rsna.json
+conference-agent info RSNA acronym upcoming_start_date --json
+```
+
 If an acronym is shared by several conferences, `info` lists their ids and
 exits with an error; rerun it with the id of the one you want. List ids with
 `conference-agent lookup --columns id`.
@@ -103,7 +115,11 @@ by searching `acronym`/`name` in the catalog.
 Deadlines are stored per edition (`upcoming_*_deadline`, `prior_*_deadline`);
 deadlines of earlier editions are in `abstract_deadline_history`,
 `late_abstract_deadline_history`, and `paper_deadline_history`
-(newline-separated ISO dates, most recent first).
+(newline-separated ISO dates, most recent first). The acceptance decision
+(author notification) date follows the same pattern (`upcoming_decision_deadline`,
+`prior_decision_deadline`, `decision_deadline_history`). `acceptance_rates` holds
+one `YEAR | ACCEPTED/SUBMITTED | SOURCE` line per year, most recent first, and
+`acceptance_rate` the most recent rate in percent.
 
 ```bash
 # AUA abstract deadline date and time of day

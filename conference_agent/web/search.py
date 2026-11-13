@@ -65,7 +65,8 @@ The query fields mirror the table's column headers exactly: ``conference``,
 ``category`` (one of the ten top-level buckets), ``subcategory`` (the specific
 field), ``format`` (any of abstract / paper / poster / oral),
 ``location``, ``airports`` (free text — the codes and names of the airports
-near the location, e.g. ``airports:ORD``), ``size``, ``attendance``, ``remote``, ``cost``, ``registration`` (free text — a
+near the location, e.g. ``airports:ORD``), ``size``, ``attendance``, ``remote``,
+``archival`` (yes / no: ``archival:yes``; an unknown answer matches neither), ``cost``, ``registration`` (free text — a
 substring match), ``deadline_time`` (free text — the time of day and zone
 submissions close, e.g. ``deadline_time:AoE``), ``abstract_guidelines`` and
 ``paper_guidelines`` (free text — the submission requirements, e.g.
@@ -118,47 +119,61 @@ RESULT_COLUMNS = [
     "id",
     "acronym",
     "name",
+    "url",
     "category",
     "subcategory",
     "format",
     "size",
     "attendance",
     "attendance_year",
-    "remote_option",
     "ccf_rank",
     "core_rank",
-    "url",
+    # Whether accepted work is published in archival proceedings: true, false,
+    # or null (unknown).
+    "archival",
+    # Published acceptance statistics (one line per year, most recent first;
+    # see ``models.parse_acceptance_rates``) and the most recent year's rate in
+    # percent, derived from them.
+    "acceptance_rate",
+    "acceptance_rates",
+    "remote_option",
+    # Each deadline kind as the table shows it: month, upcoming, then the past
+    # deadlines (the prior edition's, and earlier editions' history:
+    # newline-separated ISO dates, most recent first; see
+    # ``database.past_deadlines``).
     "abstract_month",
     "upcoming_abstract_deadline",
+    "prior_abstract_deadline",
+    "abstract_deadline_history",
     "late_abstract_month",
     "upcoming_late_abstract_deadline",
+    "prior_late_abstract_deadline",
+    "late_abstract_deadline_history",
     "paper_month",
     "upcoming_paper_deadline",
+    "prior_paper_deadline",
+    "paper_deadline_history",
+    # The acceptance decision (author notification) date: Upcoming / Past like
+    # the deadlines, but no month, time, or extensions.
+    "upcoming_decision_deadline",
+    "prior_decision_deadline",
+    "decision_deadline_history",
     "deadline_time",
     "abstract_guidelines",
     "paper_guidelines",
+    "upcoming_registration",
+    "prior_registration",
     "conference_month",
     "upcoming_start_date",
     "upcoming_end_date",
+    "prior_start_date",
+    "prior_end_date",
     "upcoming_location",
     "prior_location",
     "stable_location",
     "airports",
-    "upcoming_registration",
-    "prior_registration",
     "upcoming_cost",
     "prior_cost",
-    "prior_abstract_deadline",
-    "prior_late_abstract_deadline",
-    "prior_paper_deadline",
-    "prior_start_date",
-    "prior_end_date",
-    # Past deadlines of earlier editions (newline-separated ISO dates, most
-    # recent first); the Past columns add the prior edition's and a passed
-    # upcoming deadline (``database.past_deadlines``).
-    "abstract_deadline_history",
-    "late_abstract_deadline_history",
-    "paper_deadline_history",
     "notes",
 ]
 
@@ -187,6 +202,23 @@ EXTENSION_COLUMNS = [
 PLACE_COLUMNS = ["location_venue"]
 
 
+# The serialized key order: ``RESULT_COLUMNS`` (the table's column order) with
+# each non-column field placed beside the column it belongs to, so a
+# ``c/<id>/data.json`` file reads in the same order as the table.
+_PLACED_AFTER = {
+    "deadline_time": TIME_COLUMNS,
+    **{f"{kind}_deadline_history": [f"{kind}_deadline_extension"]
+       for kind in ("abstract", "late_abstract", "paper")},
+    "stable_location": PLACE_COLUMNS,
+}
+_SERIALIZED_COLUMNS = [
+    c for col in RESULT_COLUMNS for c in (col, *_PLACED_AFTER.get(col, ()))
+]
+if set(_SERIALIZED_COLUMNS) != {
+    *RESULT_COLUMNS, *TIME_COLUMNS, *EXTENSION_COLUMNS, *PLACE_COLUMNS
+}:
+    raise RuntimeError("_PLACED_AFTER must place every serialized column exactly once")
+
 def row_to_dict(row) -> dict:
     """Serialize a ``ConferenceRow`` to a JSON-friendly dict (dates as ISO strings).
 
@@ -196,7 +228,7 @@ def row_to_dict(row) -> dict:
     here rather than in ``app`` so the core CLI can use it without FastAPI.
     """
     out: dict = {}
-    for col in (*RESULT_COLUMNS, *TIME_COLUMNS, *EXTENSION_COLUMNS, *PLACE_COLUMNS):
+    for col in _SERIALIZED_COLUMNS:
         value = getattr(row, col)
         if hasattr(value, "isoformat"):
             value = value.isoformat()
@@ -262,6 +294,8 @@ _DATE_FIELDS = {
     "past_late_abstract_due": ("past", "late_abstract"),
     "paper_due": ("upcoming", "paper"),
     "past_paper_due": ("past", "paper"),
+    "decision_due": ("upcoming", "decision"),
+    "past_decision_due": ("past", "decision"),
     "conference_dates": ("upcoming_start_date", "prior_start_date"),
 }
 
@@ -282,6 +316,12 @@ _NUMBER_FIELDS = {
     "attendance": "attendance",
 }
 
+# Public percentage field -> underlying column (a rate in percent). Same
+# operators; values are percentages (``20`` or ``20%``).
+_PERCENT_FIELDS = {
+    "acceptance": "acceptance_rate",
+}
+
 # Size buckets ranked by magnitude, for comparisons such as ``size>=large``.
 _SIZE_RANK = {"small": 1, "medium": 2, "large": 3, "massive": 4}
 
@@ -292,6 +332,14 @@ _RANK_FIELDS = {
     "ccf": ("ccf_rank", {r: len(CCF_RANKS) - i for i, r in enumerate(CCF_RANKS)}),
     "core": ("core_rank", {r: len(CORE_RANKS) - i for i, r in enumerate(CORE_RANKS)}),
 }
+
+# Public yes/no field -> boolean column. ``archival:yes`` / ``archival:no``
+# match the stored answer exactly (``true`` / ``false`` too); an unknown (NULL)
+# value matches neither, and ``archival:*`` is any known answer.
+_BOOL_FIELDS = {
+    "archival": "archival",
+}
+_BOOL_VALUES = {"yes": True, "true": True, "no": False, "false": False}
 
 # Data type descriptor shown next to each field in the help panel. Categorical
 # fields list their controlled vocabulary (derived from the enums so the help
@@ -305,9 +353,11 @@ _FIELD_TYPES = {
     "airports": "string",
     "size": "cat: " + ", ".join(t.value for t in ConferenceSize),
     "attendance": "int: count, e.g. 5000 or 5k",
+    "acceptance": "percent, e.g. 20 or 20%",
     "remote": "cat: " + ", ".join(o.value for o in RemoteOption),
     "ccf": "cat: " + ", ".join(CCF_RANKS),
     "core": "cat: " + ", ".join(CORE_RANKS),
+    "archival": "cat: yes, no",
     "cost": "string",
     "registration": "string",
     "deadline_time": "string",
@@ -319,6 +369,8 @@ _FIELD_TYPES = {
     "past_late_abstract_due": "date",
     "paper_due": "date",
     "past_paper_due": "date",
+    "decision_due": "date",
+    "past_decision_due": "date",
     "conference_dates": "date",
     "conference_month": "int: 1-12 or month name",
     "abstract_month": "int: 1-12 or month name",
@@ -373,6 +425,12 @@ _ALIASES = {
     "upcoming_paper_deadline": "paper_due",
     "prior_paper": "past_paper_due",
     "past_paper": "past_paper_due",
+    "decision": "decision_due",
+    "notification": "decision_due",
+    "upcoming_decision_deadline": "decision_due",
+    "prior_decision": "past_decision_due",
+    "past_decision": "past_decision_due",
+    "acceptance_rate": "acceptance",
     "upcoming": "conference_dates",
     "date": "conference_dates",
     "upcoming_start_date": "conference_dates",
@@ -391,7 +449,9 @@ def _resolve_field(name: str) -> str:
         and key not in _DATE_FIELDS
         and key not in _INT_FIELDS
         and key not in _NUMBER_FIELDS
+        and key not in _PERCENT_FIELDS
         and key not in _RANK_FIELDS
+        and key not in _BOOL_FIELDS
     ):
         raise QueryError(f"Unknown field: {name!r}")
     return key
@@ -407,11 +467,14 @@ _FIELD_DESCRIPTIONS = {
     "size": "bucket from annual attendance: massive 10,000+, large 1,000-9,999, medium 250-999, small under 250; "
     "compare by rank, e.g. size>=large",
     "attendance": "most recent annual attendance, e.g. attendance>=5000",
+    "acceptance": "most recent published acceptance rate in percent, e.g. acceptance<25",
     "remote": "whether the meeting is in-person, virtual, or hybrid",
     "ccf": "China Computer Federation recommended-list rank (A, B, C); exact match, "
     "or compare by rank, e.g. ccf>=B",
     "core": "ICORE conference rank (A*, A, B, C); exact match (core:A is not A*), "
     "or compare by rank, e.g. core>=A",
+    "archival": "whether accepted work is published in archival proceedings or a journal "
+    "(yes) or is non-archival (no), e.g. archival:no",
     "cost": "registration fee or fee range of the upcoming (or most recent) meeting",
     "registration": "registration windows, e.g. early bird and regular periods",
     "deadline_time": "time of day and time zone that submissions close",
@@ -423,6 +486,8 @@ _FIELD_DESCRIPTIONS = {
     "past_late_abstract_due": "most recent past late abstract deadline",
     "paper_due": "upcoming full-paper submission deadline, while still ahead",
     "past_paper_due": "most recent past full-paper deadline",
+    "decision_due": "upcoming acceptance decision (author notification) date, while still ahead",
+    "past_decision_due": "most recent past acceptance decision date",
     "conference_dates": "start and end dates of the meeting",
     "conference_month": "month of the conference (1-12), for sorting by season",
     "abstract_month": "month of the abstract deadline (1-12)",
@@ -433,7 +498,11 @@ _FIELD_DESCRIPTIONS = {
 
 def field_help() -> dict:
     """Return the queryable fields, data types, and descriptions (for the UI help panel)."""
-    order = list(_TEXT_FIELDS) + list(_RANK_FIELDS) + list(_NUMBER_FIELDS) + list(_DATE_FIELDS) + list(_INT_FIELDS)
+    order = (
+        list(_TEXT_FIELDS) + list(_RANK_FIELDS) + list(_BOOL_FIELDS) + list(_NUMBER_FIELDS)
+        + list(_PERCENT_FIELDS)
+        + list(_DATE_FIELDS) + list(_INT_FIELDS)
+    )
     return {
         "fields": [
             {"field": f, "type": _FIELD_TYPES[f], "description": _FIELD_DESCRIPTIONS[f]}
@@ -760,6 +829,17 @@ def _parse_count(value: str) -> int:
     return int(round(number))
 
 
+_PERCENT_RE = re.compile(r"^(\d+(?:\.\d+)?)%?$")
+
+
+def _parse_percent(value: str) -> float:
+    """Parse a percentage: a number, optionally followed by ``%``."""
+    m = _PERCENT_RE.match(value.strip())
+    if not m:
+        raise QueryError(f"Invalid percentage: {value!r} (e.g. 20 or 20%)")
+    return float(m.group(1))
+
+
 def _compare(expr, op: Optional[str], value):
     """``expr <op> value`` (default ``=``), false when ``expr`` is NULL."""
     op = op or "="
@@ -797,9 +877,20 @@ def _compile_rank_term(term: Term):
     return _compare(case(order, value=expr), term.op, order[rank])
 
 
+def _compile_bool_term(term: Term):
+    value = _BOOL_VALUES.get(term.value.strip().lower())
+    if value is None or (term.op and term.op != "="):
+        raise QueryError(f"Invalid {term.field} value: {term.value!r} (use yes or no)")
+    expr = getattr(ConferenceRow, _BOOL_FIELDS[term.field])
+    # ``isnot(None)`` first, so NOT keeps an unknown (NULL) row, as the browser does.
+    return and_(expr.isnot(None), expr == value)
+
+
 def _compile_term(term: Term):
     # Presence test: field:* — the column shows a value.
     if term.presence:
+        if term.field in _BOOL_FIELDS:
+            return getattr(ConferenceRow, _BOOL_FIELDS[term.field]).isnot(None)
         if term.field in _RANK_FIELDS:
             return getattr(ConferenceRow, _RANK_FIELDS[term.field][0]).isnot(None)
         if term.field in _DATE_FIELDS:
@@ -808,6 +899,8 @@ def _compile_term(term: Term):
             return getattr(ConferenceRow, _INT_FIELDS[term.field]).isnot(None)
         if term.field in _NUMBER_FIELDS:
             return getattr(ConferenceRow, _NUMBER_FIELDS[term.field]).isnot(None)
+        if term.field in _PERCENT_FIELDS:
+            return getattr(ConferenceRow, _PERCENT_FIELDS[term.field]).isnot(None)
         cols = _TEXT_FIELDS[term.field]
         return or_(*[getattr(ConferenceRow, c).isnot(None) for c in cols])
 
@@ -829,9 +922,18 @@ def _compile_term(term: Term):
         expr = getattr(ConferenceRow, _NUMBER_FIELDS[term.field])
         return _compare(expr, term.op, _parse_count(term.value))
 
+    # Scoped percentage field (acceptance rate).
+    if term.field in _PERCENT_FIELDS:
+        expr = getattr(ConferenceRow, _PERCENT_FIELDS[term.field])
+        return _compare(expr, term.op, _parse_percent(term.value))
+
     # Venue rankings: an exact rank, or a comparison by rank order.
     if term.field in _RANK_FIELDS:
         return _compile_rank_term(term)
+
+    # Yes/no fields: an exact answer.
+    if term.field in _BOOL_FIELDS:
+        return _compile_bool_term(term)
 
     # Size with a comparison operator compares by rank (size>=large).
     if term.field == "size" and term.op:
@@ -922,6 +1024,8 @@ _KEYWORD_DATE_COLUMNS = (
     "prior_late_abstract_deadline",
     "upcoming_paper_deadline",
     "prior_paper_deadline",
+    "upcoming_decision_deadline",
+    "prior_decision_deadline",
 )
 
 _KEYWORD_DEADLINE_MONTH_COLUMNS = ("abstract_month", "late_abstract_month", "paper_month")
@@ -964,7 +1068,8 @@ _KEYWORD_SYNONYMS = {
 }
 
 _KNOWN_FIELD_NAMES = {
-    *_TEXT_FIELDS, *_DATE_FIELDS, *_INT_FIELDS, *_NUMBER_FIELDS, *_RANK_FIELDS, *_ALIASES,
+    *_TEXT_FIELDS, *_DATE_FIELDS, *_INT_FIELDS, *_NUMBER_FIELDS, *_PERCENT_FIELDS,
+    *_RANK_FIELDS, *_BOOL_FIELDS, *_ALIASES,
 }  # fmt: skip
 
 _YEAR_RE = re.compile(r"(19|20)\d\d")
