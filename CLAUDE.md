@@ -315,9 +315,9 @@ dependencies there rather than installing ad hoc.
   time and zone after it ("2026-12-14 11:59 PM AoE"), with the same moment in
   the viewer's zone in gray below when that zone differs ("2026-12-15 3:59 AM
   PST"; `calendar.js` `localDeadline`); Past dates carry no time, since the
-  time is per series, not per edition. The "Deadline time" column
-  (substring-searchable as `deadline_time:`) is hidden by default (Columns ▾
-  shows it). Times follow
+  time is per series, not per edition. There is no Deadline time table
+  column (the dates carry the times), but `deadline_time:` stays a
+  substring search field. Times follow
   the toolbar's Time format menu (12- or 24-hour; display only, remembered per browser;
   default 12-hour), and the calendar feed puts the applicable time in each deadline event's note
   (`calendar_sync.deadline_time_for`, mirrored in `calendar.js`).
@@ -334,7 +334,7 @@ dependencies there rather than installing ad hoc.
   Text columns, cleaned by `models.normalize_guidelines`) hold a call's
   requirements (word / character or page limits, structure, figures, templates,
   anonymization) as a paragraph or `- ` bullet lines; the table's two columns
-  (right of Deadline time), the `/c/<id>/` pages, and `seo_pages._guidelines_html`
+  (right of the decision columns), the `/c/<id>/` pages, and `seo_pages._guidelines_html`
   render bullet lines as a list. They are `add` fields, form textareas (4,000
   characters in `api/propose`), search fields (`abstract_guidelines:`), and
   pinnable. The survey and re-check prompts do not research them (that would
@@ -390,7 +390,13 @@ dependencies there rather than installing ad hoc.
   date leaves nothing stale, and an old database needs only the additive
   columns. `database.past_deadlines` / `upcoming_deadline` (mirrored by
   `ConferenceSearch.pastDeadlines` / `upcomingDeadline` in `search.js`) derive
-  the two columns: Upcoming is the upcoming deadline while still ahead; Past is
+  the two columns. The abstract / late abstract / paper "due" column (labeled
+  e.g. "Abstract due", key `upcoming_<kind>_deadline`) shows the upcoming
+  deadline while still ahead, else the most recent past one (`dueDeadlineCell`;
+  `shownDeadline` in `search.js`), and sorts upcoming deadlines before past ones
+  (`_due_deadline_expr` in `app.py`); its header ⚙ box offers "Sort by month and
+  day (ignore year)" (browser only, shared by the three, remembered per browser;
+  `YEARLESS_SORT`, rolled from today like the month sorts). Past is
   history + prior + an upcoming one that has passed, one per line, and sorts by
   its most recent date. In the browser "passed" is the `deadlineInstant`
   moment (an Upcoming span carries `data-up`, and `recolorDates` re-renders
@@ -522,7 +528,7 @@ dependencies there rather than installing ad hoc.
   the form and `api/propose`), pinnable, search fields (`ccf:A`, `core:A*`: an
   exact match, so `core:A` excludes A*; `core>=A` compares by rank), sortable
   categorical columns (best first) with the ■ value filter, and the toolbar's
-  CCF / CORE menus (`#vt-rank`, the same `filters.ccf_rank` / `core_rank`
+  CORE / CCF menus (`#vt-rank`, the same `filters.ccf_rank` / `core_rank`
   state); Tile / List cards show them as badges. Discovery never researches
   them, and `upsert_conferences` keeps the stored values when a survey reports
   none. `scripts/fill_rankings.py` (`--download` fetches the ICORE CSV export
@@ -691,10 +697,12 @@ dependencies there rather than installing ad hoc.
   search and filters), Date format (every displayed date goes through
   `fmtDate` in `index.html`; default ISO), Time format (12/24-hour deadline
   times), Size (edits the size column's ■ filter state, so the two stay in
-  sync; like the CCF / CORE menus it starts with nothing checked, meaning no
+  sync; like the CORE / CCF menus it starts with nothing checked, meaning no
   filter, and checking values shows only those, with a Select all /
   Deselect all row: `VALUE_MENUS` in `index.html`), and a Minimal columns / Show all columns toggle (right
-  after the View menu) that sets the
+  after the View menu; `MINIMAL_COLS`: Conference, Subcategory, Size, CORE,
+  Abstract / Paper due, the two guidelines columns, Conference dates, Location,
+  Calendar, Email) that sets the
   Columns ▾ menu's hidden set. Each choice is remembered per browser. The
   `#vt-view` slot's View menu switches between Table (default), Tile (a card
   grid), and List (one compact row per conference); the choice is remembered

@@ -632,13 +632,39 @@ const DATE_SORT_FALLBACK = {
   upcoming_start_date: "prior_start_date",
 };
 
-// The deadline sorts: each Upcoming column on its deadline while still ahead,
-// each Past column on its most recent past deadline. Mirrors ``_DEADLINE_SORT``
-// in conference_agent/web/app.py.
+// The deadline sorts: each Past column on its most recent past deadline. The
+// abstract / late abstract / paper "due" columns show the deadline while still
+// ahead, else the most recent past one, and sort upcoming deadlines before the
+// rows that show only a past one (ascending: soonest first, then the past
+// dates). The decision column sorts on its upcoming date only. Mirrors
+// ``_DEADLINE_SORT`` in conference_agent/web/app.py.
+const DUE_KINDS = ["abstract", "late_abstract", "paper"];
+// The date a due column shows: the upcoming deadline, else the most recent past one.
+function shownDeadline(row, kind, now = Date.now()) {
+  return upcomingDeadline(row, kind, now) ?? pastDeadlines(row, kind, now)[0] ?? null;
+}
 const DEADLINE_SORT = {};
 for (const kind of ["abstract", "late_abstract", "paper", "decision"]) {
-  DEADLINE_SORT[`upcoming_${kind}_deadline`] = (row) => upcomingDeadline(row, kind);
+  DEADLINE_SORT[`upcoming_${kind}_deadline`] = DUE_KINDS.includes(kind)
+    ? (row) => {
+      const up = upcomingDeadline(row, kind);
+      if (up) return `0${up}`;
+      const past = pastDeadlines(row, kind)[0];
+      return past ? `1${past}` : null;
+    }
+    : (row) => upcomingDeadline(row, kind);
   DEADLINE_SORT[`past_${kind}_deadline`] = (row) => pastDeadlines(row, kind)[0] ?? null;
+}
+// The due columns' month-and-day sort (browser only): the shown date's month and
+// day, rolled from `monthStart` / `dayStart` like the month columns, ignoring
+// its year, so a deadline from an earlier edition sorts where it falls in the season.
+const YEARLESS_SORT = {};
+for (const kind of DUE_KINDS) {
+  YEARLESS_SORT[`upcoming_${kind}_deadline`] = (row, monthStart, dayStart) => {
+    const d = shownDeadline(row, kind);
+    if (!d) return null;
+    return rollingMonth(Number(String(d).slice(5, 7)), Number(String(d).slice(8, 10)), monthStart, dayStart);
+  };
 }
 
 // The derived-month sorts break ties on the day of the month of the underlying
@@ -707,8 +733,10 @@ function cmpNullsLast(a, b, descending, numeric) {
  * Sort rows like the server did: displayed value, NULLs last, then tie-breakers.
  * Month sorts begin at `monthStart` (1-12) and `dayStart` (1-31); with neither
  * given they begin today (local time), with only `monthStart` on its 1st.
+ * `yearless` sorts the abstract / late abstract / paper due columns by month
+ * and day (from the same start), ignoring the year.
  */
-function sortRows(rows, sort, order, monthStart, dayStart) {
+function sortRows(rows, sort, order, monthStart, dayStart, { yearless = false } = {}) {
   if (monthStart === undefined) {
     const now = new Date();
     monthStart = now.getMonth() + 1;
@@ -719,13 +747,16 @@ function sortRows(rows, sort, order, monthStart, dayStart) {
   if (!SORTABLE.has(sort)) sort = "upcoming_start_date";
   const descending = order === "desc";
   const fallback = DATE_SORT_FALLBACK[sort];
-  const numeric = NUMERIC_SORT.has(sort);
+  const yearlessKey = yearless ? YEARLESS_SORT[sort] : null;
+  const numeric = NUMERIC_SORT.has(sort) || Boolean(yearlessKey);
   const tiebreak = MONTH_SORT_TIEBREAKER[sort];
   const day = (row) => {
     const d = coalesce(row, tiebreak[0], tiebreak[1]);
     return isPresent(d) ? Number(String(d).slice(8, 10)) : null;
   };
-  const key = tiebreak
+  const key = yearlessKey
+    ? (row) => yearlessKey(row, monthStart, dayStart)
+    : tiebreak
     ? (row) => rollingMonth(row[sort], day(row), monthStart, dayStart)
     : DEADLINE_SORT[sort] || ((row) => coalesce(row, sort, fallback));
 
@@ -1036,11 +1067,11 @@ function keywordSearch(query, rows) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError,
-    upcomingDeadline, pastDeadlines,
+    upcomingDeadline, pastDeadlines, shownDeadline,
   };
 } else {
   window.ConferenceSearch = {
     buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError,
-    upcomingDeadline, pastDeadlines,
+    upcomingDeadline, pastDeadlines, shownDeadline,
   };
 }

@@ -24,7 +24,7 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import case, extract, func, select
+from sqlalchemy import String, case, cast, extract, func, literal, select
 from sqlalchemy.orm import Session
 
 from conference_agent.config import DEFAULT_DATABASE_URL
@@ -37,7 +37,7 @@ from conference_agent.database import (
     late_abstract_date_expr,
     paper_date_expr,
 )
-from conference_agent.models import HISTORY_KINDS
+from conference_agent.models import HISTORY_KINDS, KINDS
 from conference_agent.web.nl_query import LLMUnavailable, TranslationError, translate
 from conference_agent.web.search import (
     EXTENSION_COLUMNS,
@@ -96,11 +96,28 @@ _SORTABLE = {
     "paper_month",
 }
 
-# The deadline sorts: each Upcoming column sorts on its deadline while it is
-# still ahead, and each Past column on its most recent past deadline. Mirrors
-# ``DEADLINE_SORT`` in conference_agent/web/static/search.js.
+def _due_deadline_expr(kind: str):
+    """The abstract / late abstract / paper "due" column's sort key.
+
+    The column shows the upcoming deadline while it is still ahead, else the most
+    recent past one; upcoming deadlines sort before the past ones ("0" / "1"
+    prefix on the ISO text).
+    """
+    up = upcoming_deadline_expr(kind)
+    past = past_deadline_expr(kind)
+    return case(
+        (up.is_not(None), literal("0") + cast(up, String)),
+        (past.is_not(None), literal("1") + past),
+        else_=None,
+    )
+
+
+# The deadline sorts: each due column as above (the decision column on its date
+# while still ahead), and each Past column on its most recent past deadline.
+# Mirrors ``DEADLINE_SORT`` in conference_agent/web/static/search.js.
 _DEADLINE_SORT = {
     **{f"upcoming_{k}_deadline": (upcoming_deadline_expr, k) for k in HISTORY_KINDS},
+    **{f"upcoming_{k}_deadline": (_due_deadline_expr, k) for k in KINDS},
     **{f"past_{k}_deadline": (past_deadline_expr, k) for k in HISTORY_KINDS},
 }
 

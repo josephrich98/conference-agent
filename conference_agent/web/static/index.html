@@ -715,17 +715,17 @@
     </span>
     <span class="vt-slot" id="vt-rank">
       <div class="vt-menu">
-        <button type="button" id="vt-ccf-btn" aria-haspopup="true" aria-expanded="false" title="Filter by CCF rank (China Computer Federation recommended list, computer-science venues)">CCF ▾</button>
-        <div class="vt-panel" id="vt-ccf-panel" hidden role="menu" aria-label="Filter by CCF rank">
-          <label class="vt-all"><input type="checkbox" id="vt-ccf-all" /><span id="vt-ccf-all-label">Select all</span></label>
-          <div id="vt-ccf-list"></div>
-        </div>
-      </div>
-      <div class="vt-menu">
         <button type="button" id="vt-core-btn" aria-haspopup="true" aria-expanded="false" title="Filter by CORE rank (ICORE conference ranking)">CORE ▾</button>
         <div class="vt-panel" id="vt-core-panel" hidden role="menu" aria-label="Filter by CORE rank">
           <label class="vt-all"><input type="checkbox" id="vt-core-all" /><span id="vt-core-all-label">Select all</span></label>
           <div id="vt-core-list"></div>
+        </div>
+      </div>
+      <div class="vt-menu">
+        <button type="button" id="vt-ccf-btn" aria-haspopup="true" aria-expanded="false" title="Filter by CCF rank (China Computer Federation recommended list, computer-science venues)">CCF ▾</button>
+        <div class="vt-panel" id="vt-ccf-panel" hidden role="menu" aria-label="Filter by CCF rank">
+          <label class="vt-all"><input type="checkbox" id="vt-ccf-all" /><span id="vt-ccf-all-label">Select all</span></label>
+          <div id="vt-ccf-list"></div>
         </div>
       </div>
     </span>
@@ -757,6 +757,10 @@
 
   <div id="airport-pop" class="opt-pop" hidden role="dialog" aria-label="Airports display">
     <label><input type="checkbox" id="ap-small" /><span>Include all airports</span></label>
+  </div>
+
+  <div id="due-pop" class="opt-pop" hidden role="dialog" aria-label="Deadline sort">
+    <label title="Order by month and day, ignoring the year, so a past deadline sorts where it falls in the season"><input type="checkbox" id="due-yearless" /><span>Sort by month and day (ignore year)</span></label>
   </div>
 
   <div id="filter-pop" hidden role="dialog" aria-label="Filter by value">
@@ -830,10 +834,10 @@
       { key: "size", field: "size", label: "Size", sort: "size",
         facet: { values: (r) => (r.size ? [r.size] : []), rank: (v) => SIZE_RANK[v] || 9 } },
       { key: "attendance", field: "attendance", label: "Attendance", sort: "attendance" },
-      { key: "ccf_rank", field: "ccf", label: "CCF", sort: "ccf_rank", facet: rankFacet("ccf_rank"),
-        note: "China Computer Federation recommended-list rank (A, B, C), for computer-science venues on the list" },
       { key: "core_rank", field: "core", label: "CORE", sort: "core_rank", facet: rankFacet("core_rank"),
         note: "ICORE conference rank (A*, A, B, C); blank when unlisted or ranked National, Regional, or Unranked" },
+      { key: "ccf_rank", field: "ccf", label: "CCF", sort: "ccf_rank", facet: rankFacet("ccf_rank"),
+        note: "China Computer Federation recommended-list rank (A, B, C), for computer-science venues on the list" },
       { key: "acceptance_rate", field: "acceptance", label: "Acceptance", sort: "acceptance_rate",
         note: "Most recent published acceptance rate (year in parentheses); earlier years on hover" },
       { key: "remote_option", field: "remote", label: "Remote", sort: "remote_option",
@@ -843,22 +847,24 @@
                  rank: (v) => (v === "yes" ? 0 : 1) },
         note: "Whether accepted work is published in archival proceedings or a journal (yes) or is non-archival, so it may also be submitted elsewhere (no)" },
       { key: "abstract_month", field: "abstract_month", label: "Abstract month", sort: "abstract_month", facet: monthFacet("abstract_month") },
-      { key: "upcoming_abstract_deadline", field: "abstract_due", label: "Upcoming abstract due", sort: "upcoming_abstract_deadline" },
+      { key: "upcoming_abstract_deadline", field: "abstract_due", label: "Abstract due", sort: "upcoming_abstract_deadline",
+        note: "The abstract deadline; the most recent past one until the next is announced" },
       { key: "past_abstract_deadline", field: "past_abstract_due", label: "Past abstract due", sort: "past_abstract_deadline",
         note: "Past abstract deadlines, most recent first (sorts by the most recent)" },
       { key: "late_abstract_month", field: "late_abstract_month", label: "Late abstract month", sort: "late_abstract_month", facet: monthFacet("late_abstract_month") },
-      { key: "upcoming_late_abstract_deadline", field: "late_abstract_due", label: "Upcoming late abstract due", sort: "upcoming_late_abstract_deadline" },
+      { key: "upcoming_late_abstract_deadline", field: "late_abstract_due", label: "Late abstract due", sort: "upcoming_late_abstract_deadline",
+        note: "The late abstract deadline; the most recent past one until the next is announced" },
       { key: "past_late_abstract_deadline", field: "past_late_abstract_due", label: "Past late abstract due", sort: "past_late_abstract_deadline",
         note: "Past late abstract deadlines, most recent first (sorts by the most recent)" },
       { key: "paper_month", field: "paper_month", label: "Paper month", sort: "paper_month", facet: monthFacet("paper_month") },
-      { key: "upcoming_paper_deadline", field: "paper_due", label: "Upcoming paper due", sort: "upcoming_paper_deadline" },
+      { key: "upcoming_paper_deadline", field: "paper_due", label: "Paper due", sort: "upcoming_paper_deadline",
+        note: "The paper deadline; the most recent past one until the next is announced" },
       { key: "past_paper_deadline", field: "past_paper_due", label: "Past paper due", sort: "past_paper_deadline",
         note: "Past paper deadlines, most recent first (sorts by the most recent)" },
       { key: "upcoming_decision_deadline", field: "decision_due", label: "Upcoming decision", sort: "upcoming_decision_deadline",
         note: "Acceptance decision (author notification) date, while still ahead" },
       { key: "past_decision_deadline", field: "past_decision_due", label: "Past decision", sort: "past_decision_deadline",
         note: "Past acceptance decision dates, most recent first (sorts by the most recent)" },
-      { key: "deadline_time", field: "deadline_time", label: "Deadline time", sort: null, defaultHidden: true },
       { key: "abstract_guidelines", field: "abstract_guidelines", label: "Abstract guidelines", sort: null },
       { key: "paper_guidelines", field: "paper_guidelines", label: "Paper guidelines", sort: null },
       { key: "registration", field: "registration", label: "Registration", sort: null },
@@ -1003,6 +1009,17 @@
     const monthStart = () => (monthFromJanuary ? 1 : NOW.getMonth() + 1);
     const dayStart = () => (monthFromJanuary ? 1 : NOW.getDate());
 
+    // The abstract / late abstract / paper due columns can sort by month and day
+    // alone ("Sort by month and day" in their header's ⚙ box, shared by the three
+    // and remembered per browser; off by default). Like the month sorts, that
+    // order begins today unless "Sort starting in January" is checked.
+    const YEARLESS_KEY = "conference-agent.deadline-sort-yearless";
+    const DUE_SORTS = ["upcoming_abstract_deadline", "upcoming_late_abstract_deadline", "upcoming_paper_deadline"];
+    let dueYearless = false;
+    try { dueYearless = localStorage.getItem(YEARLESS_KEY) === "1"; } catch (e) { /* storage blocked */ }
+    const sortResults = (rows) => ConferenceSearch.sortRows(rows, state.sort, state.order, monthStart(), dayStart(),
+      { yearless: dueYearless });
+
     // The deadline columns come in pairs (Upcoming / Past), so a deadline sort
     // needs no hiding: a passed deadline has already moved to its Past column.
     // An ascending Conference dates sort still hides the meetings whose last day
@@ -1087,6 +1104,22 @@
       const local = localDeadlineLine(spec, value);
       if (!mark && !plus && !local) return span;
       return `<span class="nobreak">${span}${plus}${mark}</span>${local}${note}`;
+    }
+
+    // An abstract / late abstract / paper "due" cell: the upcoming deadline while
+    // still ahead (as upcomingDeadlineCell), else the most recent past one, so a
+    // series whose next call is not announced still shows a reference date (its
+    // color says it has passed).
+    function dueDeadlineCell(r, kind) {
+      if (ConferenceSearch.upcomingDeadline(r, kind)) return upcomingDeadlineCell(r, kind);
+      const d = ConferenceSearch.pastDeadlines(r, kind)[0];
+      if (!d) return '<span class="muted">—</span>';
+      const lines = extensionLines(r[`${kind}_deadline_extension`]);
+      const plus = extendedMark(d, lines);
+      const [mark, note] = extensionMark(lines);
+      const span = dateSpan(fmtDate(d), d, specFor(r, kind), ' title="Passed; the next deadline is not announced yet"');
+      if (!mark && !plus) return span;
+      return `<span class="nobreak">${span}${plus}${mark}</span>${note}`;
     }
 
     // The deadline's own time and zone, appended to an Upcoming date
@@ -1330,39 +1363,12 @@
       return `<div class="registration"${title}>${rows.join("")}</div>`;
     }
 
-    // 24-hour ("military") display of the Deadline time column, chosen in the
+    // 24-hour ("military") display of the deadline times, chosen in the
     // toolbar's Time format menu (remembered per browser). Display only: the stored times are
     // always 24-hour, and search and the calendar notes are unaffected.
     const MILITARY_KEY = "conference-agent.military-time";
     let militaryTime = false;
     try { militaryTime = localStorage.getItem(MILITARY_KEY) === "1"; } catch (e) { /* storage blocked */ }
-
-    // The deadline times, one entry per line ("8:00 PM ET", or labeled
-    // "abstract: ..." / "paper: ..." lines when the deadlines differ; identical
-    // times show once), each followed by the viewer's local equivalent in
-    // parentheses ("(5:00 PM PDT)"). A labeled entry is converted on that
-    // deadline's date; an unlabeled one on the first known deadline (DST depends
-    // on the date).
-    function deadlineTimeCell(r) {
-      const entries = ConferenceCalendar.deadlineEntries(r);
-      if (!entries.length) return '<span class="muted">—</span>';
-      const dates = {
-        abstract: r.upcoming_abstract_deadline || r.prior_abstract_deadline,
-        late_abstract: r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline,
-        paper: r.upcoming_paper_deadline || r.prior_paper_deadline,
-      };
-      const fallback = dates.abstract || dates.late_abstract || dates.paper
-        || NOW.toISOString().slice(0, 10);
-      return entries.map((e) => {
-        const label = e.kind ? `${e.kind.replace("_", " ")}: ` : "";
-        const text = ConferenceCalendar.formatDeadlineSpec(e.time, e.tz, militaryTime);
-        const local = ConferenceCalendar.localDeadlineTime(
-          e.time, e.tz, (e.kind && dates[e.kind]) || fallback, undefined, militaryTime);
-        return `<div class="dl-time">${escapeHtml(label + text)}`
-          + (local ? `<div class="muted dl-local">(${escapeHtml(local)})</div>` : "")
-          + "</div>";
-      }).join("");
-    }
 
     // Some stored URLs are bare domains (e.g. "rsna.org/annual-meeting"); without
     // a scheme the browser treats the href as a relative path and the link 404s.
@@ -1388,6 +1394,11 @@
           th.title = monthFromJanuary
             ? "Sorts January to December (change in the ■ menu)"
             : `Sorts from ${m} (today) onward, wrapping around the year (change in the ■ menu)`;
+        }
+        if (DUE_SORTS.includes(col.sort)) {
+          th.title = dueYearless
+            ? "Sorts by month and day, ignoring the year (change in the ⚙ box)"
+            : "Sorts by date: upcoming deadlines first, then past ones (sort by month and day in the ⚙ box)";
         }
         if (col.facet) {
           const on = col.key in filters;
@@ -1536,23 +1547,22 @@
           <td data-col="format">${formatHtml}</td>
           <td data-col="size">${sizeHtml}</td>
           <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
-          <td data-col="ccf_rank" class="nobreak">${r.ccf_rank ? escapeHtml(r.ccf_rank) : '<span class="muted">—</span>'}</td>
           <td data-col="core_rank" class="nobreak">${r.core_rank ? escapeHtml(r.core_rank) : '<span class="muted">—</span>'}</td>
+          <td data-col="ccf_rank" class="nobreak">${r.ccf_rank ? escapeHtml(r.ccf_rank) : '<span class="muted">—</span>'}</td>
           <td data-col="acceptance_rate">${acceptanceCell(r)}</td>
           <td data-col="remote_option">${r.remote_option ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td data-col="archival">${r.archival === true ? "yes" : r.archival === false ? "no" : '<span class="muted">—</span>'}</td>
           <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
-          <td data-col="upcoming_abstract_deadline">${upcomingDeadlineCell(r, "abstract")}</td>
+          <td data-col="upcoming_abstract_deadline">${dueDeadlineCell(r, "abstract")}</td>
           <td data-col="past_abstract_deadline">${pastDeadlineCell(r, "abstract")}</td>
           <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month, r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline, specFor(r, "late_abstract"))}</td>
-          <td data-col="upcoming_late_abstract_deadline">${upcomingDeadlineCell(r, "late_abstract")}</td>
+          <td data-col="upcoming_late_abstract_deadline">${dueDeadlineCell(r, "late_abstract")}</td>
           <td data-col="past_late_abstract_deadline">${pastDeadlineCell(r, "late_abstract")}</td>
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline, specFor(r, "paper"))}</td>
-          <td data-col="upcoming_paper_deadline">${upcomingDeadlineCell(r, "paper")}</td>
+          <td data-col="upcoming_paper_deadline">${dueDeadlineCell(r, "paper")}</td>
           <td data-col="past_paper_deadline">${pastDeadlineCell(r, "paper")}</td>
           <td data-col="upcoming_decision_deadline">${upcomingDeadlineCell(r, "decision")}</td>
           <td data-col="past_decision_deadline">${pastDeadlineCell(r, "decision")}</td>
-          <td data-col="deadline_time">${deadlineTimeCell(r)}</td>
           <td data-col="abstract_guidelines">${guidelinesCell(r.abstract_guidelines)}</td>
           <td data-col="paper_guidelines">${guidelinesCell(r.paper_guidelines)}</td>
           <td data-col="registration">${registrationCell(r.upcoming_registration, r.prior_registration)}</td>
@@ -1617,7 +1627,7 @@
     // that column to the rank (like a tag), through the .cat-tag[data-facet]
     // handler.
     function rankBadges(r) {
-      return [["ccf_rank", "CCF"], ["core_rank", "CORE"]]
+      return [["core_rank", "CORE"], ["ccf_rank", "CCF"]]
         .filter(([key]) => r[key])
         .map(([key, label]) =>
           `<span class="cat-tag rank-badge" data-facet="${key}" data-v="${attr(r[key])}" role="button" tabindex="0" ` +
@@ -1693,7 +1703,7 @@
       try {
         const predicate = ConferenceSearch.buildPredicate(q);
         const filtered = predicate ? pool.filter(predicate) : pool;
-        rows = ConferenceSearch.sortRows(filtered, state.sort, state.order, monthStart(), dayStart());
+        rows = sortResults(filtered);
         status = `${plural(rows.length)}.`;
         const past = pastFilter();
         if (past) {
@@ -1714,7 +1724,7 @@
         const hits = ConferenceSearch.keywordSearch(q, pool).map((h) => h.row);
         if (hits.length) {
           byRelevance = state.relevance;
-          rows = byRelevance ? hits : ConferenceSearch.sortRows(hits, state.sort, state.order, monthStart(), dayStart());
+          rows = byRelevance ? hits : sortResults(hits);
           const past = byRelevance ? null : pastFilter();
           if (past) rows = rows.filter((r) => !past(r));
           const why = queryError ? `Not a valid boolean query (${queryError})` : "No exact matches";
@@ -1863,10 +1873,13 @@
       $("filter-pop").hidden = true;
     }
 
-    // Column display boxes (the header ⚙): Airports' "Include all airports".
+    // Column option boxes (the header ⚙): Airports' "Include all airports" and
+    // the due columns' "Sort by month and day".
     // (The 12/24-hour choice is the toolbar's Time format menu.)
     const OPTION_POPS = {
       airports: { pop: "airport-pop", title: "Airport display", sync: () => { $("ap-small").checked = smallAirports; } },
+      ...Object.fromEntries(DUE_SORTS.map((k) => [k,
+        { pop: "due-pop", title: "Sort options", sync: () => { $("due-yearless").checked = dueYearless; } }])),
     };
     let tp = null; // the open box: { key, btn } (the header button it hangs from)
     function openTimePop(btn, key) {
@@ -1973,7 +1986,7 @@
       search({ keepFilter: true });
     }
 
-    // Size, CCF, CORE: toolbar menus over the size / ccf_rank / core_rank
+    // Size, CORE, CCF: toolbar menus over the size / core_rank / ccf_rank
     // column value filters (filters.<key>, the same state the header ■ edits).
     // Unlike the header ■, they work like an Excel filter that starts empty:
     // nothing checked means no filter, and checking values shows only those.
@@ -1981,8 +1994,8 @@
     // value (which shows every row); when all are checked it deselects them.
     const VALUE_MENUS = {
       size: { key: "size", label: "Size", values: ["massive", "large", "medium", "small", BLANK], blank: "unknown" },
-      ccf: { key: "ccf_rank", label: "CCF", values: [...RANK_ORDER.ccf_rank, BLANK], blank: "not ranked" },
       core: { key: "core_rank", label: "CORE", values: [...RANK_ORDER.core_rank, BLANK], blank: "not ranked" },
+      ccf: { key: "ccf_rank", label: "CCF", values: [...RANK_ORDER.ccf_rank, BLANK], blank: "not ranked" },
     };
     const menuLabel = (menu, v) => (v === BLANK ? menu.blank : v);
     function setMenuFilter(key, kept) {
@@ -2026,11 +2039,11 @@
     }
 
     // Minimal columns: the Conference column plus a short list; the button then
-    // offers "Show all columns" (every column but the default-hidden ones: ID,
-    // and Deadline time, whose times the Upcoming dates already carry). Both just set the
+    // offers "Show all columns" (every column but the default-hidden ID). Both just set the
     // Columns ▾ menu's hidden set.
-    const MINIMAL_COLS = ["conference", "category", "subcategory", "size", "upcoming_abstract_deadline",
-      "upcoming_paper_deadline", "upcoming_dates", "location", "registration", "cal", "email"];
+    const MINIMAL_COLS = ["conference", "subcategory", "size", "core_rank", "upcoming_abstract_deadline",
+      "upcoming_paper_deadline", "abstract_guidelines", "paper_guidelines", "upcoming_dates", "location",
+      "cal", "email"];
     const isMinimal = () => COLUMNS.every((c) => hiddenCols.has(c.key) !== MINIMAL_COLS.includes(c.key));
     function toggleMinimal() {
       const keep = isMinimal() ? COLUMNS.filter((c) => !c.defaultHidden).map((c) => c.key) : MINIMAL_COLS;
@@ -2125,7 +2138,7 @@
     function syncMinimalButton() {
       const minimal = isMinimal();
       $("vt-minimal").textContent = minimal ? "Show all columns" : "Minimal columns";
-      $("vt-minimal").title = minimal ? "Show every column except ID and Deadline time" : "Show only the main columns";
+      $("vt-minimal").title = minimal ? "Show every column except ID" : "Show only the main columns";
     }
 
     // Reflect the current state in the toolbar (run after every search).
@@ -2569,7 +2582,7 @@
             `<tr><td><span class="date-recent">red</span></td><td class="muted">past within the last 3 months</td></tr>` +
             `<tr><td><span class="date-old">orange</span></td><td class="muted">past more than 3 months ago</td></tr>` +
           `</table>` +
-          `<p class="muted" style="margin:6px 0 0">A deadline turns <span class="date-recent">red</span> the moment its time passes (its Deadline time, or the end of the day in AoE when none is given).</p>` +
+          `<p class="muted" style="margin:6px 0 0">A deadline turns <span class="date-recent">red</span> the moment its time passes (its deadline time, or the end of the day in AoE when none is given).</p>` +
           `<p class="muted" style="margin:10px 0 0">Location and Cost show the upcoming edition's value, or the previous edition's in <span class="from-prior">orange</span> until the next is published (a conference held in the same place every year is not marked).</p>` +
           `<p class="muted" style="margin:10px 0 0">A location that is a specific venue (not just a city) links to Google Maps. Airports lists the commercial airports within 100 road miles of the location (from the venue, or from the city center when only a city is given; road distance from OpenStreetMap), nearest first, or the nearest one when none is that close, and links each to directions. By default it shows the main airports: those of the busiest kind nearby (10 million or more passengers a year, else 500,000 or more), leaving out any much farther than the nearest of them unless it is a far busier hub, so every list has at least one. The rest are shown when "Include all airports" is checked in the column's ⚙ box.</p>` +
           `<p class="muted" style="margin:10px 0 0">A ⏩ after a deadline means the conference has extended that deadline in the past. Click, tap, or hover to show the extension history. A superscript <b>+</b> means the date shown is an extended deadline.</p>`;
@@ -2712,6 +2725,12 @@
       monthFromJanuary = e.target.checked;
       try { localStorage.setItem(MONTH_JAN_KEY, monthFromJanuary ? "1" : "0"); } catch (err) { /* storage blocked */ }
       search({ keepFilter: true });
+    });
+    $("due-yearless").addEventListener("change", (e) => {
+      dueYearless = e.target.checked;
+      try { localStorage.setItem(YEARLESS_KEY, dueYearless ? "1" : "0"); } catch (err) { /* storage blocked */ }
+      search({ keepFilter: true });
+      reanchorOptionPop();
     });
     $("ap-small").addEventListener("change", (e) => {
       smallAirports = e.target.checked;
