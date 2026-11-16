@@ -700,10 +700,13 @@ dependencies there rather than installing ad hoc.
   sync; like the CORE / CCF menus it starts with nothing checked, meaning no
   filter, and checking values shows only those, with a Select all /
   Deselect all row: `VALUE_MENUS` in `index.html`), and a Minimal columns / Show all columns toggle (right
-  after the View menu; `MINIMAL_COLS`: Conference, Subcategory, Size, CORE,
-  Abstract / Paper due, the two guidelines columns, Conference dates, Location,
-  Calendar, Email) that sets the
-  Columns ▾ menu's hidden set. Each choice is remembered per browser. The
+  after the View menu; `MINIMAL_COLS`: Conference, Subcategory, Size,
+  Abstract / Paper due, Conference dates, Location, Calendar, Email) that sets the
+  Columns ▾ menu's hidden set. While a `MARKED_COLS` column is hidden, a marker
+  stands in for it: CORE / CCF badges after the size (a click filters by the
+  rank) and a 📄 after the Abstract / Paper due date when the series has
+  guidelines (the text on hover; a tap shows them inline); `applyColumnVisibility`
+  hides each marker while its own column is shown. Each choice is remembered per browser. The
   `#vt-view` slot's View menu switches between Table (default), Tile (a card
   grid), and List (one compact row per conference); the choice is remembered
   per browser and mirrored in the URL (`&view=tile`; a link's view does not

@@ -601,12 +601,21 @@
     .cards.tile .card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
     .card .conf-name { font-size: 15px; overflow-wrap: anywhere; }
     .rank-badges { white-space: nowrap; }
-    .card .rank-badge {
+    /* Markers standing in for a hidden column (applyColumnVisibility hides
+       each one while its own column is shown). */
+    .gl-mark { cursor: help; margin-left: 3px; font-size: 0.85em; user-select: none; }
+    .gl-note { display: block; font-size: 0.85em; margin-top: 2px; min-width: 260px; }
+    .gl-note[hidden] { display: none; }
+    .gl-note ul, .gl-note p { margin: 2px 0; }
+    .gl-note ul { padding-left: 16px; }
+    .size-ranks { white-space: nowrap; margin-left: 4px; }
+    .size-ranks .rank-badge { margin-left: 2px; }
+    .card .rank-badge, td .rank-badge {
       font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; padding: 0 5px;
       vertical-align: 2px; cursor: pointer; background: transparent;
       border: 1px solid var(--rule-strong); border-left-width: 1px;
     }
-    .card .rank-badge:hover { outline: 1px solid var(--accent); }
+    .card .rank-badge:hover, td .rank-badge:hover { outline: 1px solid var(--accent); }
     .card-full { color: var(--muted); font-size: 12px; margin-top: 1px; overflow-wrap: anywhere; }
     .card-tags { margin-top: 5px; }
     .card-tags .cat-tag { cursor: pointer; white-space: normal; }
@@ -824,6 +833,9 @@
       rank: (v) => { const i = RANK_ORDER[key].indexOf(v); return i < 0 ? 9 : i; },
     });
 
+    // Columns that a marker in another cell stands in for while they are hidden
+    // (CORE / CCF badges after the size, 📄 after the due dates).
+    const MARKED_COLS = ["core_rank", "ccf_rank", "abstract_guidelines", "paper_guidelines"];
     const COLUMNS = [
       { key: "id", label: "ID", sort: null, defaultHidden: true,
         note: "The conference's record id (a slug of its name), as in its /c/<id>/ page and data URLs" },
@@ -916,6 +928,8 @@
       }
       const rules = [...hiddenCols]
         .map((k) => `[data-col="${k}"] { display: none; }`)
+        .concat(MARKED_COLS.filter((k) => !hiddenCols.has(k))
+          .map((k) => `.col-mark[data-for="${k}"] { display: none; }`))
         .join("\n");
       $("col-style").textContent = rules;
       syncMinimalButton();
@@ -1093,33 +1107,56 @@
     // until the instant it closes (ConferenceSearch.upcomingDeadline), then
     // nothing, since it has moved to the Past cell. Carries the ⏩ marker of
     // past extensions (and + when the date is itself an extended one).
-    function upcomingDeadlineCell(r, kind) {
+    function upcomingDeadlineCell(r, kind, [gm, gn] = ["", ""]) {
       const value = ConferenceSearch.upcomingDeadline(r, kind);
-      if (!value) return '<span class="muted">—</span>';
+      if (!value) return gm ? `<span class="muted">—</span>${gm}${gn}` : '<span class="muted">—</span>';
       const lines = extensionLines(r[`${kind}_deadline_extension`]);
       const plus = extendedMark(value, lines);
       const [mark, note] = extensionMark(lines);
       const spec = specFor(r, kind);
       const span = dateSpan(fmtDate(value) + deadlineClock(spec), value, spec, " data-up");
       const local = localDeadlineLine(spec, value);
-      if (!mark && !plus && !local) return span;
-      return `<span class="nobreak">${span}${plus}${mark}</span>${local}${note}`;
+      if (!mark && !plus && !local && !gm) return span;
+      return `<span class="nobreak">${span}${plus}${mark}${gm}</span>${local}${note}${gn}`;
     }
 
     // An abstract / late abstract / paper "due" cell: the upcoming deadline while
     // still ahead (as upcomingDeadlineCell), else the most recent past one, so a
     // series whose next call is not announced still shows a reference date (its
     // color says it has passed).
-    function dueDeadlineCell(r, kind) {
-      if (ConferenceSearch.upcomingDeadline(r, kind)) return upcomingDeadlineCell(r, kind);
+    function dueDeadlineCell(r, kind, gl = ["", ""]) {
+      if (ConferenceSearch.upcomingDeadline(r, kind)) return upcomingDeadlineCell(r, kind, gl);
+      const [gm, gn] = gl;
       const d = ConferenceSearch.pastDeadlines(r, kind)[0];
-      if (!d) return '<span class="muted">—</span>';
+      if (!d) return gm ? `<span class="muted">—</span>${gm}${gn}` : '<span class="muted">—</span>';
       const lines = extensionLines(r[`${kind}_deadline_extension`]);
       const plus = extendedMark(d, lines);
       const [mark, note] = extensionMark(lines);
       const span = dateSpan(fmtDate(d), d, specFor(r, kind), ' title="Passed; the next deadline is not announced yet"');
-      if (!mark && !plus) return span;
-      return `<span class="nobreak">${span}${plus}${mark}</span>${note}`;
+      if (!mark && !plus && !gm) return span;
+      return `<span class="nobreak">${span}${plus}${mark}${gm}</span>${note}${gn}`;
+    }
+
+    // A 📄 after an Abstract / Paper due date when the series has submission
+    // guidelines: the text shows on hover, and a tap or click shows the formatted
+    // guidelines inline. Shown only while that guidelines column is hidden (the
+    // col-mark rule in applyColumnVisibility). Returns [marker, note].
+    function guidelinesMark(text, col, label) {
+      if (!text) return ["", ""];
+      const plain = String(text).trim();
+      return [
+        `<span class="gl-mark col-mark" data-for="${col}" role="button" tabindex="0" ` +
+          `title="${escapeHtml(`${label} (tap to show):\n${plain}`)}" aria-label="${escapeHtml(label)}">📄</span>`,
+        `<div class="gl-note col-mark" data-for="${col}" hidden>${guidelinesCell(text)}</div>`,
+      ];
+    }
+
+    // The CORE / CCF ranks as badges after the size, each shown only while its
+    // own column is hidden; a click filters by that rank.
+    function sizeRankMarks(r) {
+      const marks = [["core_rank", "CORE"], ["ccf_rank", "CCF"]].filter(([key]) => r[key])
+        .map(([key]) => `<span class="col-mark" data-for="${key}">${rankBadges({ [key]: r[key] })}</span>`);
+      return marks.length ? `<span class="size-ranks">${marks.join("")}</span>` : "";
     }
 
     // The deadline's own time and zone, appended to an Upcoming date
@@ -1545,7 +1582,7 @@
           <td data-col="category">${catHtml}</td>
           <td data-col="subcategory">${subcatHtml}</td>
           <td data-col="format">${formatHtml}</td>
-          <td data-col="size">${sizeHtml}</td>
+          <td data-col="size">${sizeHtml}${sizeRankMarks(r)}</td>
           <td data-col="attendance" class="nobreak">${attendanceHtml}</td>
           <td data-col="core_rank" class="nobreak">${r.core_rank ? escapeHtml(r.core_rank) : '<span class="muted">—</span>'}</td>
           <td data-col="ccf_rank" class="nobreak">${r.ccf_rank ? escapeHtml(r.ccf_rank) : '<span class="muted">—</span>'}</td>
@@ -1553,13 +1590,13 @@
           <td data-col="remote_option">${r.remote_option ? r.remote_option : '<span class="muted">—</span>'}</td>
           <td data-col="archival">${r.archival === true ? "yes" : r.archival === false ? "no" : '<span class="muted">—</span>'}</td>
           <td data-col="abstract_month" class="nobreak">${monthCell(r.abstract_month, r.upcoming_abstract_deadline || r.prior_abstract_deadline, specFor(r, "abstract"))}</td>
-          <td data-col="upcoming_abstract_deadline">${dueDeadlineCell(r, "abstract")}</td>
+          <td data-col="upcoming_abstract_deadline">${dueDeadlineCell(r, "abstract", guidelinesMark(r.abstract_guidelines, "abstract_guidelines", "Abstract guidelines"))}</td>
           <td data-col="past_abstract_deadline">${pastDeadlineCell(r, "abstract")}</td>
           <td data-col="late_abstract_month" class="nobreak">${monthCell(r.late_abstract_month, r.upcoming_late_abstract_deadline || r.prior_late_abstract_deadline, specFor(r, "late_abstract"))}</td>
           <td data-col="upcoming_late_abstract_deadline">${dueDeadlineCell(r, "late_abstract")}</td>
           <td data-col="past_late_abstract_deadline">${pastDeadlineCell(r, "late_abstract")}</td>
           <td data-col="paper_month" class="nobreak">${monthCell(r.paper_month, r.upcoming_paper_deadline || r.prior_paper_deadline, specFor(r, "paper"))}</td>
-          <td data-col="upcoming_paper_deadline">${dueDeadlineCell(r, "paper")}</td>
+          <td data-col="upcoming_paper_deadline">${dueDeadlineCell(r, "paper", guidelinesMark(r.paper_guidelines, "paper_guidelines", "Paper guidelines"))}</td>
           <td data-col="past_paper_deadline">${pastDeadlineCell(r, "paper")}</td>
           <td data-col="upcoming_decision_deadline">${upcomingDeadlineCell(r, "decision")}</td>
           <td data-col="past_decision_deadline">${pastDeadlineCell(r, "decision")}</td>
@@ -2041,9 +2078,8 @@
     // Minimal columns: the Conference column plus a short list; the button then
     // offers "Show all columns" (every column but the default-hidden ID). Both just set the
     // Columns ▾ menu's hidden set.
-    const MINIMAL_COLS = ["conference", "subcategory", "size", "core_rank", "upcoming_abstract_deadline",
-      "upcoming_paper_deadline", "abstract_guidelines", "paper_guidelines", "upcoming_dates", "location",
-      "cal", "email"];
+    const MINIMAL_COLS = ["conference", "subcategory", "size", "upcoming_abstract_deadline",
+      "upcoming_paper_deadline", "upcoming_dates", "location", "cal", "email"];
     const isMinimal = () => COLUMNS.every((c) => hiddenCols.has(c.key) !== MINIMAL_COLS.includes(c.key));
     function toggleMinimal() {
       const keep = isMinimal() ? COLUMNS.filter((c) => !c.defaultHidden).map((c) => c.key) : MINIMAL_COLS;
@@ -2595,6 +2631,13 @@
     // re-render on each search), shared by the table and the Tile / List
     // cards. Returns whether the click was one of them.
     function rowAction(e) {
+      const gl = e.target.closest(".gl-mark");
+      if (gl) {
+        e.stopPropagation();
+        const note = gl.closest("td").querySelector(`.gl-note[data-for="${gl.dataset.for}"]`);
+        if (note) note.hidden = !note.hidden;
+        return true;
+      }
       const mark = e.target.closest(".ext-mark");
       if (mark) {
         e.stopPropagation();
@@ -2616,7 +2659,14 @@
       return true;
     }
     $("results-body").addEventListener("click", (e) => {
-      if (!rowAction(e)) openCellFilter(e);
+      if (rowAction(e)) return;
+      const badge = e.target.closest(".rank-badge[data-facet]");
+      if (badge) {
+        e.stopPropagation();
+        toggleFacet(badge.dataset.facet, [badge.dataset.v]);
+        return;
+      }
+      openCellFilter(e);
     });
     $("cards").addEventListener("click", (e) => {
       if (rowAction(e)) return;
@@ -2628,7 +2678,7 @@
     for (const box of [$("results-body"), $("cards")]) {
       box.addEventListener("keydown", (e) => {
         if ((e.key === "Enter" || e.key === " ")
-            && (e.target.classList.contains("ext-mark") || e.target.matches(".cat-tag[data-facet]"))) {
+            && (e.target.matches(".ext-mark, .gl-mark") || e.target.matches(".cat-tag[data-facet]"))) {
           e.preventDefault();
           e.target.click();
         }
