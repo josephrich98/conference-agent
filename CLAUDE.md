@@ -744,8 +744,9 @@ dependencies there rather than installing ad hoc.
   later subscriptions for that address from the same browser apply without
   another email. Confirmation emails are capped at 25 per address per day. The
   sending half runs locally: after each cron refresh (and redeploy),
-  `scripts/notify_subscribers.py` reads the list from the bearer-protected
-  `/api/subscriptions`, and for each series whose watched fields
+  `scripts/notify_subscribers.py` reads the list from `/api/subscriptions`,
+  protected by a separate bearer token (`SUBSCRIPTIONS_TOKEN`, at least 32
+  characters), so the signing key alone does not expose the list, and for each series whose watched fields
   (`subscriptions.WATCHED_FIELDS`) changed, emails its subscribers the changes
   with the series' `.ics` attached (same UIDs as the site, so re-importing
   updates events in place) and RFC 8058 one-click unsubscribe links. A series'
@@ -756,8 +757,20 @@ dependencies there rather than installing ad hoc.
   days away or closer (`subscriptions.send_reminders`; per-address state in
   `data/reminder_state.json`).
   The tokens must match between `conference_agent/web/vercel/api/_lib.js` and
-  `subscriptions.sign` (a test pins a JS-computed value). The functions run only
-  on subscribe / confirm / unsubscribe, never for browsing or search.
+  `subscriptions.sign` (a test pins a JS-computed value). To rotate
+  `SUBSCRIBE_SECRET`, move the old value to `SUBSCRIBE_SECRET_PREVIOUS`
+  (comma-separated; `verify` accepts any of them), so links already emailed
+  keep working (see `SECURITY.md`). The rate-limit paths are keyed HMACs
+  (`opaqueKey`: `throttle/<key of the email>`, `propose/<key of the client
+  IP>`), never a readable address or a plain hash, and `api/prune` (bearer
+  `SUBSCRIPTIONS_TOKEN`, called by `notify_subscribers.py` every run) deletes
+  any older than a day. The `ca_verified` cookie
+  lasts 90 days. Signed links and the catalog fetch use `SITE_URL` (default the
+  production URL), never the request's Host headers. The functions run only
+  on subscribe / confirm / unsubscribe, never for browsing or search. What is
+  collected and kept is stated on the `/privacy/` page
+  (`seo_pages.write_privacy_page`), linked from the table footer, the
+  subscribe box, and the add form; change it with any change to what is stored.
 - **Static, compute-free hosting path.** The deployed site is read-only
   (discovery/ingestion run offline), so it can be served as static files with no
   per-request compute — there is no Lambda to invoke and no database to keep
@@ -784,7 +797,15 @@ dependencies there rather than installing ad hoc.
 
 ## CI/CD
 
-- `ci.yml`: `ruff check` + `pytest -m "not network and not llm"` on push/PR.
+- `ci.yml`: `ruff check` + `bandit` + `pytest -m "not network and not llm"` on
+  push/PR (job `test (3.12)`, the required status check on `main`, which also
+  blocks force pushes and deletion; admins may still push directly). A
+  separate `security` job (gitleaks over the history, `pip-audit`, `npm audit`
+  of the Vercel Functions) runs on push/PR and weekly, and is deliberately not
+  required, so a new advisory does not block unrelated merges.
+  `.github/dependabot.yml` opens weekly update PRs (pip, npm, Actions); Dependabot
+  security updates, secret scanning with push protection, and private
+  vulnerability reporting are enabled in the repository settings.
   Committed tests are offline; mark any test that hits the network with
   `@pytest.mark.network` and any test that calls the Anthropic API with
   `@pytest.mark.llm` so CI stays hermetic.
@@ -844,15 +865,26 @@ dependencies there rather than installing ad hoc.
   file itself changes every run from bookkeeping columns, so it is not the
   comparison. cron's minimal PATH lacks `~/.local/bin` (`claude`) and nvm
   (`vercel`); the script adds both, and sources email secrets (`SMTP_USER`,
-  `SMTP_PASSWORD`, `SUBSCRIBE_SECRET`) from
+  `SMTP_PASSWORD`, `SUBSCRIBE_SECRET`, `SUBSCRIPTIONS_TOKEN`) from
   `~/.config/conference-agent/secrets.env` (outside the repo). After the
   redeploy it runs `scripts/notify_subscribers.py` (see the update-emails design
   decision). Logs: `data/logs/`.
 - **Update-email setup (Vercel).** The functions need a private Blob store
   connected to the **conferenceagent** project and the env vars
-  `SUBSCRIBE_SECRET` (same value as the local secrets file), `SMTP_USER`, and
-  `SMTP_PASSWORD` (optionally `SMTP_HOST` / `SMTP_PORT`) in its Production
-  environment.
+  `SUBSCRIBE_SECRET` and `SUBSCRIPTIONS_TOKEN` (same values as the local
+  secrets file), `SMTP_USER`, and `SMTP_PASSWORD` (optionally `SMTP_HOST` /
+  `SMTP_PORT`, `SITE_URL`, and `SUBSCRIBE_SECRET_PREVIOUS` during a key
+  rotation) in its Production environment. Their dependencies are pinned
+  exactly in `conference_agent/web/vercel/package.json` with a committed
+  `package-lock.json` (copied into `dist/`; an `overrides` entry patches a
+  transitive `zod`), so a deploy installs only reviewed versions.
+- **Security headers.** `build_static.SECURITY_HEADERS` (written into
+  `dist/vercel.json` for every path) sets a Content-Security-Policy (same-origin
+  code plus GoatCounter and Google Fonts; inline scripts and styles allowed;
+  no framing), X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy,
+  and HSTS. Adding a third-party script, font, or endpoint means adding its
+  origin to `CONTENT_SECURITY_POLICY`. Credentials, vulnerability reporting, and
+  the incident runbook are in `SECURITY.md`.
 - **Add-a-conference setup (Vercel).** `api/propose` needs `GITHUB_TOKEN` (a
   fine-grained token on the repository with Contents and Pull requests
   read/write) in the Production environment; `GITHUB_REPO` / `GITHUB_BASE`

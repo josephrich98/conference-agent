@@ -51,9 +51,11 @@ SMTP_USER = os.environ.get("SMTP_USER")  # e.g. a Gmail address
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")  # e.g. a Gmail app password
 
 # Per-conference update emails for site visitors (see subscriptions.py). The
-# secret signs unsubscribe links and authorizes reading the subscription list;
-# it must equal SUBSCRIBE_SECRET in the Vercel project's environment.
+# secret signs unsubscribe links and must equal SUBSCRIBE_SECRET in the Vercel
+# project's environment. Reading the subscription list takes a separate bearer
+# token, equal to the project's SUBSCRIPTIONS_TOKEN (at least 32 characters).
 SUBSCRIBE_SECRET = os.environ.get("SUBSCRIBE_SECRET")
+SUBSCRIPTIONS_TOKEN = os.environ.get("SUBSCRIPTIONS_TOKEN")
 SITE_URL = os.environ.get("CONFERENCE_SITE_URL", "https://conferenceagent.vercel.app")
 
 # --- Calendar feed (.ics) --------------------------------------------------

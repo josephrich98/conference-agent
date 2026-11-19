@@ -33,7 +33,7 @@ export default async function handler(req, res) {
   if (!isValidId(id)) return res.status(400).json({ error: "Unknown conference." });
 
   try {
-    const site = origin(req);
+    const site = origin();
     const conf = await conferenceById(site, id);
     if (!conf) return res.status(404).json({ error: "Unknown conference." });
     const label = conf.acronym || conf.name || id;

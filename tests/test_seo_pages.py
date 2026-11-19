@@ -75,3 +75,10 @@ def test_build_writes_calendar_feeds(tmp_path):
     assert "Feed Test Conference" in (out / "calendar.ics").read_text(encoding="utf-8")
     headers = json.loads((out / "vercel.json").read_text())["headers"]
     assert headers[0]["headers"][0]["value"].startswith("text/calendar")
+    security = {h["key"]: h["value"] for h in headers[-1]["headers"]}
+    assert headers[-1]["source"] == "/(.*)"
+    assert "frame-ancestors 'none'" in security["Content-Security-Policy"]
+    assert security["X-Content-Type-Options"] == "nosniff"
+    assert (out / "package-lock.json").exists()
+    privacy = (out / "privacy" / "index.html").read_text(encoding="utf-8")
+    assert "ca_verified" in privacy and "Privacy" in privacy

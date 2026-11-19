@@ -46,7 +46,7 @@ import shutil
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from seo_pages import _field_groups, slugify, write_pages
+from seo_pages import _field_groups, slugify, write_pages, write_privacy_page
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -68,6 +68,32 @@ _STATIC_DIR = Path(__file__).resolve().parent.parent / "conference_agent" / "web
 _ASSETS = ("index.html", "search.js", "calendar.js", "logo.svg")
 # Vercel Functions (subscribe / confirm / unsubscribe) and their dependencies.
 _VERCEL_DIR = _STATIC_DIR.parent / "vercel"
+
+# Sent with every response (pages, data, and the API's confirm / unsubscribe
+# pages). The pages use inline scripts and styles, hence 'unsafe-inline'; the
+# rest limits what a page may load or connect to: same-origin code (including
+# Vercel Web Analytics at /_vercel/insights), GoatCounter, and Google Fonts. No
+# other site may frame the pages.
+CONTENT_SECURITY_POLICY = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://gc.zgo.at",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: https://conferenceagent.goatcounter.com",
+    "connect-src 'self' https://conferenceagent.goatcounter.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+SECURITY_HEADERS = [
+    {"key": "Content-Security-Policy", "value": CONTENT_SECURITY_POLICY},
+    {"key": "X-Frame-Options", "value": "DENY"},
+    {"key": "X-Content-Type-Options", "value": "nosniff"},
+    {"key": "Referrer-Policy", "value": "strict-origin-when-cross-origin"},
+    {"key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), interest-cohort=()"},
+    {"key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains"},
+]
 
 
 def _export_rows(
@@ -119,6 +145,7 @@ def _write_redirects(db_url: str, rows: list[dict], out_dir: Path) -> int:
             "source": "/(c/.*/data\\.json|data/.*\\.json)",
             "headers": [{"key": "Access-Control-Allow-Origin", "value": "*"}],
         },
+        {"source": "/(.*)", "headers": SECURITY_HEADERS},
     ]
     (out_dir / "vercel.json").write_text(
         json.dumps({"redirects": redirects, "headers": headers}, indent=1) + "\n",
@@ -188,6 +215,7 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
 
     # Crawlable pages + sitemap; inject the browse links into the home page.
     seo = write_pages(rows, out_dir, generated)
+    write_privacy_page(out_dir)
     index = out_dir / "index.html"
     index.write_text(
         index.read_text(encoding="utf-8").replace("<!--SEO_LINKS-->", seo["browse"]),
@@ -202,6 +230,9 @@ def build(db_url: str, out_dir: Path, include_retired: bool = False) -> int:
     _write_feeds(db_url, rows, out_dir)
     _write_redirects(db_url, rows, out_dir)
     shutil.copyfile(_VERCEL_DIR / "package.json", out_dir / "package.json")
+    # The lockfile pins every function dependency, so a deploy installs exactly
+    # the reviewed versions instead of whatever the semver ranges resolve to.
+    shutil.copyfile(_VERCEL_DIR / "package-lock.json", out_dir / "package-lock.json")
     shutil.copytree(_VERCEL_DIR / "api", out_dir / "api", dirs_exist_ok=True)
 
     return len(rows)

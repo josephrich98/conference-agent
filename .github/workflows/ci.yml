@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly, so advisories published between pushes still surface.
+    - cron: "0 9 * * 1"
 
 jobs:
   test:
@@ -31,7 +34,46 @@ jobs:
       - name: Lint with ruff
         run: ruff check conference_agent scripts tests
 
+      - name: Static analysis with bandit
+        # Same gate as the pre-commit hook: medium+ severity and confidence.
+        run: bandit -q -r conference_agent scripts -ll -ii
+
       - name: Run tests
         # Offline tests only; network- and LLM-dependent tests are marked and
         # excluded so CI stays hermetic and fast.
         run: pytest -q -m "not network and not llm"
+
+  # The security scans run on every push and pull request, but are not a
+  # required status check: a newly published advisory should be visible without
+  # blocking unrelated merges. Dependabot opens the fix pull requests.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan with gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pip-audit
+          pip-audit --skip-editable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Audit Vercel Functions dependencies
+        working-directory: conference_agent/web/vercel
+        run: npm audit --omit=dev

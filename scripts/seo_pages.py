@@ -422,6 +422,81 @@ date and link the conference's `url` for confirmation.
 """
 
 
+_REPO_URL = "https://github.com/josephrich98/conference-agent"
+
+_PRIVACY_BODY = f"""
+<h1>Privacy</h1>
+<p>{SITE_NAME} is a free, open-source table of conference deadlines. Browsing,
+searching, and downloading calendars happen in your browser and send nothing
+about you to this site beyond ordinary web requests. This page lists everything
+the site does collect.</p>
+
+<h2>Update emails</h2>
+<p>When you subscribe to a conference (✉️), your email address and that
+conference's id are stored in a private Vercel Blob store, only after you click
+the confirmation link. They are used only to email you when that conference's
+deadlines or dates change and a week before each deadline. They are kept until
+you unsubscribe; every email has a link to unsubscribe from that conference or
+from all of them, which deletes the stored entries.</p>
+<p>An address that is never confirmed is not stored. To limit confirmation
+emails to 25 per address per day, the site keeps a keyed hash of the address
+(not the address itself) with the times of the last day's requests, deleted
+after a day.</p>
+<p>Confirming sets one cookie, <code>ca_verified</code> (HttpOnly, sent only to
+<code>/api</code>, expires after 90 days), so later subscriptions from the same
+browser do not need another confirmation email. Your browser also remembers the
+address you entered, in its own local storage, to prefill the form; it is not
+sent anywhere until you subscribe.</p>
+
+<h2>Add or edit a conference</h2>
+<p>A submission is published as a pull request on the public
+<a href="{_REPO_URL}">GitHub repository</a>, including the name you enter (which is
+optional). To limit submissions to 10 per day per visitor, the site keeps a keyed
+hash of your IP address with the times of the last day's submissions, deleted
+after a day.</p>
+
+<h2>Display settings</h2>
+<p>Column, date-format, view, and similar choices are saved in your browser's
+local storage and never leave your device.</p>
+
+<h2>Analytics</h2>
+<p>Page views are counted with Vercel Web Analytics and GoatCounter. Neither sets
+cookies or builds a profile of you; both report aggregate counts (pages, referrers,
+countries, browser types).</p>
+
+<h2>Service providers</h2>
+<ul>
+<li>Vercel: hosting, the email-subscription and submission functions, and the
+subscription store.</li>
+<li>Google: sends the update emails (Gmail SMTP) and serves the web fonts, so
+your browser requests the fonts from Google.</li>
+<li>GitHub: receives form submissions as pull requests.</li>
+<li>GoatCounter: page-view counts.</li>
+</ul>
+
+<h2>Contact</h2>
+<p>For a privacy question or a deletion request, open an issue on the
+<a href="{_REPO_URL}/issues">GitHub repository</a>. Report a security problem
+privately through <a href="{_REPO_URL}/security/advisories/new">GitHub's
+vulnerability reporting</a>.</p>
+"""
+
+
+def write_privacy_page(out_dir: Path) -> None:
+    """Write the privacy notice at ``/privacy/``."""
+    page = out_dir / "privacy"
+    page.mkdir(parents=True, exist_ok=True)
+    (page / "index.html").write_text(
+        _page(
+            f"Privacy · {SITE_NAME}",
+            f"What {SITE_NAME} collects, why, how long it is kept, and how to remove it.",
+            "/privacy/",
+            _PRIVACY_BODY,
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_pages(rows: list[dict], out_dir: Path, generated: str) -> dict:
     """Write all SEO pages, sitemap, and robots.txt; return link HTML for the home page."""
     for sub in ("c", "field"):

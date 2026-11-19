@@ -1,0 +1,18 @@
+# Weekly dependency update pull requests. Security updates are also enabled in
+# the repository settings, so a vulnerable dependency gets a pull request as
+# soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    # The Vercel Functions (subscribe / confirm / unsubscribe / propose).
+    directory: /conference_agent/web/vercel
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

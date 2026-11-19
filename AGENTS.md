@@ -106,6 +106,6 @@ public URL. Do not deploy, push, or send email unless the user asks.
 ## Conventions
 
 - Never commit secrets (`ANTHROPIC_API_KEY`, SMTP credentials,
-  `SUBSCRIBE_SECRET`) or generated databases (`*.db`, `*.sqlite`, `*.sql`).
+  `SUBSCRIBE_SECRET`, `SUBSCRIPTIONS_TOKEN`) or generated databases (`*.db`, `*.sqlite`, `*.sql`).
 - American English, professional tone, no overstated claims.
 - Match the surrounding code's style, naming, and comment density.

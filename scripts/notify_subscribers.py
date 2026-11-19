@@ -8,7 +8,7 @@ redeploy, so the site already shows the new data when the email arrives). See
 - a reminder when one of its upcoming submission deadlines is
   ``SUBSCRIBER_REMINDER_DAYS`` days away or closer (once per deadline).
 
-Needs ``SUBSCRIBE_SECRET`` and ``SMTP_USER`` / ``SMTP_PASSWORD``; without them it
+Needs ``SUBSCRIBE_SECRET``, ``SUBSCRIPTIONS_TOKEN``, and ``SMTP_USER`` / ``SMTP_PASSWORD``; without them it
 exits without touching the snapshot, so changes are still reported once they are
 configured.
 
@@ -31,12 +31,14 @@ from conference_agent.config import (
     SMTP_USER,
     SUBSCRIBE_SECRET,
     SUBSCRIBER_REMINDER_DAYS,
+    SUBSCRIPTIONS_TOKEN,
 )
 from conference_agent.database import query_conferences, resolve_ids
 from conference_agent.notify import send_message, smtp_configured
 from conference_agent.subscriptions import (
     fetch_subscriptions,
     notify_subscribers,
+    prune_rate_limits,
     send_reminders,
     subscribers_by_id,
 )
@@ -54,16 +56,25 @@ def main() -> int:
     parser.add_argument("--site", default=SITE_URL, help="Live site URL (for the API and links)")
     args = parser.parse_args()
 
-    if not (SUBSCRIBE_SECRET and smtp_configured()):
-        print("Subscriber emails skipped (SUBSCRIBE_SECRET or SMTP credentials not set).")
+    if not (SUBSCRIBE_SECRET and SUBSCRIPTIONS_TOKEN and smtp_configured()):
+        print("Subscriber emails skipped (SUBSCRIBE_SECRET, SUBSCRIPTIONS_TOKEN, or SMTP credentials not set).")
         return 0
+
+    # Rate-limit records are only needed for a day; delete older ones so they
+    # are not retained (best effort: a failure is retried tomorrow).
+    try:
+        pruned = prune_rate_limits(args.site, SUBSCRIPTIONS_TOKEN)
+        if pruned:
+            print(f"Pruned {pruned} expired rate-limit record(s).")
+    except Exception as exc:  # noqa: BLE001 - never block the emails on cleanup
+        print(f"Rate-limit prune failed: {exc}")
 
     # The subscription list is fetched at most once, and only if an email is due.
     cache: dict = {}
 
     def fetch():
         if "subs" not in cache:
-            cache["subs"] = fetch_subscriptions(args.site, SUBSCRIBE_SECRET)
+            cache["subs"] = fetch_subscriptions(args.site, SUBSCRIPTIONS_TOKEN)
         return cache["subs"]
 
     def resolve(ids):

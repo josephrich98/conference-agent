@@ -17,7 +17,7 @@
 // override the defaults below.
 
 import crypto from "node:crypto";
-import { allowAction, nameId, origin } from "./_lib.js";
+import { allowAction, nameId, opaqueKey, origin } from "./_lib.js";
 
 const REPO = process.env.GITHUB_REPO || "josephrich98/conference-agent";
 const BASE = process.env.GITHUB_BASE || "main";
@@ -285,7 +285,7 @@ export default async function handler(req, res) {
   if (body.website) return res.status(200).json({ status: "ok", message: "Thanks!" });
 
   try {
-    const site = origin(req);
+    const site = origin();
     const { schema, catalog } = await siteData(site);
     const editing = body.edit ? catalog.get(String(body.edit)) : null;
     if (body.edit && !editing) throw new InputError("That conference is no longer listed.");
@@ -313,7 +313,7 @@ export default async function handler(req, res) {
     }
     const submitter = body.submitter ? text("Your name", body.submitter).slice(0, 200) : "";
 
-    const who = crypto.createHash("sha256").update(clientAddress(req)).digest("hex").slice(0, 32);
+    const who = opaqueKey("client", clientAddress(req));
     if (!(await allowAction(`propose/${who}`, MAX_PER_ADDRESS_PER_DAY))
         || !(await allowAction("propose/all", MAX_PER_DAY))) {
       return res.status(429).json({ error: "Too many submissions today. Please try again tomorrow." });

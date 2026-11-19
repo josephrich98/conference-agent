@@ -8,7 +8,7 @@ local refresh job (``scripts/notify_subscribers.py``) after each refresh:
 1. Compare each series' subscriber-facing fields (:data:`WATCHED_FIELDS`)
    against the snapshot saved on the previous run (``data/notify_state.json``).
 2. Fetch the subscription list from the site's ``/api/subscriptions`` endpoint
-   (bearer ``SUBSCRIBE_SECRET``).
+   (bearer ``SUBSCRIPTIONS_TOKEN``, a separate secret from the signing key).
 3. Email every subscriber of a changed series a summary of what changed, with
    the series' updated ``.ics`` attached (same UIDs as the site's calendar
    button, so importing it updates the existing events in place), and signed
@@ -124,13 +124,13 @@ def save_state(path: Path, state: Dict[str, dict]) -> None:
     tmp.replace(path)
 
 
-def fetch_subscriptions(site_url: str, secret: str, timeout: float = 30) -> Dict[str, List[str]]:
+def fetch_subscriptions(site_url: str, token: str, timeout: float = 30) -> Dict[str, List[str]]:
     """Subscriber addresses by conference id, from the site's API."""
     if not site_url.startswith(("https://", "http://")):
         raise ValueError(f"site_url must be an http(s) URL, got {site_url!r}")
     req = urllib.request.Request(
         f"{site_url.rstrip('/')}/api/subscriptions",
-        headers={"Authorization": f"Bearer {secret}", "User-Agent": "conference-agent"},
+        headers={"Authorization": f"Bearer {token}", "User-Agent": "conference-agent"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (scheme checked above)  # nosec B310
         payload = json.load(resp)
@@ -138,6 +138,20 @@ def fetch_subscriptions(site_url: str, secret: str, timeout: float = 30) -> Dict
     for sub in payload.get("subscriptions", []):
         by_id.setdefault(sub["id"], []).append(sub["email"])
     return by_id
+
+
+def prune_rate_limits(site_url: str, token: str, timeout: float = 60) -> int:
+    """Ask the site to delete rate-limit records older than a day; the count deleted."""
+    if not site_url.startswith(("https://", "http://")):
+        raise ValueError(f"site_url must be an http(s) URL, got {site_url!r}")
+    req = urllib.request.Request(
+        f"{site_url.rstrip('/')}/api/prune",
+        data=b"",
+        method="POST",
+        headers={"Authorization": f"Bearer {token}", "User-Agent": "conference-agent"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (scheme checked above)  # nosec B310
+        return int(json.load(resp).get("deleted", 0))
 
 
 def drop_finished_edition(changes: List[Change], conf: Conference) -> List[Change]:

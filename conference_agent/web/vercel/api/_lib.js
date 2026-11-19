@@ -11,7 +11,11 @@
 // Every token here is HMAC-SHA256 (hex) keyed by SUBSCRIBE_SECRET over the
 // newline-joined parts, and `conference_agent/subscriptions.py` computes the
 // same tokens for the unsubscribe links in the update emails the local refresh
-// job sends. Keep the two in sync.
+// job sends. Keep the two in sync. To rotate the key without breaking links
+// already sent, move the old value to SUBSCRIBE_SECRET_PREVIOUS (comma-separated
+// for several): links signed with it still verify, new ones use the new key.
+// Reading the subscriber list (`api/subscriptions`) needs a separate bearer
+// token, SUBSCRIPTIONS_TOKEN, so the signing key alone does not expose it.
 
 import crypto from "node:crypto";
 import { del, get, list, put } from "@vercel/blob";
@@ -29,6 +33,12 @@ export const CONFIRM_TTL_SECONDS = 3 * 24 * 3600;
 // an inbox.
 const MAX_CONFIRMATIONS_PER_DAY = 25;
 const VERIFIED_COOKIE = "ca_verified";
+const VERIFIED_COOKIE_MAX_AGE = 90 * 24 * 3600;
+
+// The production site. Signed links and the catalog fetch use this rather than
+// the request's Host / X-Forwarded-Host headers; set SITE_URL for another
+// deployment (e.g. `vercel dev`).
+export const SITE_URL = (process.env.SITE_URL || "https://conferenceagent.vercel.app").replace(/\/+$/, "");
 
 export function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
@@ -48,14 +58,32 @@ function secret() {
   return s;
 }
 
-export function sign(...parts) {
-  return crypto.createHmac("sha256", secret()).update(parts.join("\n")).digest("hex");
+function hmac(key, parts) {
+  return crypto.createHmac("sha256", key).update(parts.join("\n")).digest("hex");
 }
 
+export function sign(...parts) {
+  return hmac(secret(), parts);
+}
+
+// True when sig is a valid signature under the current key or a previous one.
 export function verify(sig, ...parts) {
-  const want = Buffer.from(sign(...parts), "hex");
   const got = Buffer.from(String(sig || ""), "hex");
-  return got.length === want.length && crypto.timingSafeEqual(got, want);
+  const keys = [
+    secret(),
+    ...String(process.env.SUBSCRIBE_SECRET_PREVIOUS || "").split(",").map((k) => k.trim()).filter(Boolean),
+  ];
+  return keys.some((key) => {
+    const want = Buffer.from(hmac(key, parts), "hex");
+    return got.length === want.length && crypto.timingSafeEqual(got, want);
+  });
+}
+
+// An opaque, keyed name for a value that should not be stored readably (an
+// email address or client IP in a rate-limit path). Unlike a plain hash it
+// cannot be reversed by trying every IPv4 address.
+export function opaqueKey(kind, value) {
+  return sign("key", kind, value).slice(0, 32);
 }
 
 const b64 = (s) => Buffer.from(s, "utf8").toString("base64url");
@@ -110,9 +138,34 @@ export async function allSubscriptions() {
   return subs;
 }
 
+// Delete rate-limit records (`throttle/`, `propose/`) not written in the last
+// 24 hours: allowAction only counts the last day, so older ones hold nothing
+// useful. Called nightly through api/prune, so the records are not retained.
+// Returns the number deleted.
+export async function pruneRateLimits(now = Date.now()) {
+  const stale = [];
+  for (const prefix of ["throttle/", "propose/"]) {
+    for (const b of await listAll(prefix)) {
+      if (now - new Date(b.uploadedAt).getTime() > 24 * 3600 * 1000) stale.push(b.url);
+    }
+  }
+  for (let i = 0; i < stale.length; i += 500) await del(stale.slice(i, i + 500));
+  return stale.length;
+}
+
+// Bearer check for the maintainer endpoints (api/subscriptions, api/prune):
+// SUBSCRIPTIONS_TOKEN, deliberately not SUBSCRIBE_SECRET (the link signing
+// key), so each can be rotated, and leaks, on its own.
+export function authorizedMaintainer(req) {
+  const token = process.env.SUBSCRIPTIONS_TOKEN || "";
+  const want = Buffer.from(`Bearer ${token}`);
+  const got = Buffer.from(String(req.headers.authorization || ""));
+  return token.length >= 32 && got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
 // Record one confirmation send for the address; false when over the daily cap.
 export async function allowConfirmation(email) {
-  return allowAction(`throttle/${b64(email)}`, MAX_CONFIRMATIONS_PER_DAY);
+  return allowAction(`throttle/${opaqueKey("email", email)}`, MAX_CONFIRMATIONS_PER_DAY);
 }
 
 // Record one use of a rate-limited action under `path`; false when it has
@@ -169,7 +222,7 @@ export function nameId(name) {
 // take effect immediately instead of sending another confirmation email.
 export function verifiedCookie(email) {
   const value = `${b64(email)}.${sign("verified", email)}`;
-  return `${VERIFIED_COOKIE}=${value}; Path=/api; Max-Age=${365 * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`;
+  return `${VERIFIED_COOKIE}=${value}; Path=/api; Max-Age=${VERIFIED_COOKIE_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`;
 }
 
 export function verifiedEmail(req) {
@@ -186,9 +239,8 @@ export function verifiedEmail(req) {
 
 // --- HTTP helpers -----------------------------------------------------------
 
-export function origin(req) {
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  return `${proto}://${req.headers["x-forwarded-host"] || req.headers.host}`;
+export function origin() {
+  return SITE_URL;
 }
 
 // Form bodies arrive as an object (Vercel parses urlencoded) or a raw string.

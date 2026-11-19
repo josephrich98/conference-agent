@@ -40,7 +40,8 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null
 # Write progress to the log as it happens rather than in one block at exit.
 export PYTHONUNBUFFERED=1
-# Email credentials (SMTP_USER, SMTP_PASSWORD, SUBSCRIBE_SECRET) live outside
+# Email credentials (SMTP_USER, SMTP_PASSWORD, SUBSCRIBE_SECRET,
+# SUBSCRIPTIONS_TOKEN) live outside
 # the repo, since cron's environment has none of them. Without them the refresh
 # still runs; only the emails are skipped.
 SECRETS_FILE="${CONFERENCE_SECRETS_FILE:-$HOME/.config/conference-agent/secrets.env}"
