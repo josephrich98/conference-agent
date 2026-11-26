@@ -5,7 +5,7 @@
   "description": "Vercel Functions for conference update emails (copied into dist/ by scripts/build_static.py).",
   "dependencies": {
     "@vercel/blob": "2.9.0",
-    "nodemailer": "10.6.0"
+    "nodemailer": "10.6.1"
   },
   "overrides": {
     "zod": "4.6.7"
