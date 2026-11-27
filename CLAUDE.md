@@ -705,12 +705,12 @@ dependencies there rather than installing ad hoc.
   `state` initializer in `index.html`). An ascending Conference dates sort hides rows whose meeting
   (upcoming, else prior; its last day) ended before today, and the status line
   counts them (a descending sort lists them). Relevance order is unaffected,
-  and rows with no date stay (sorted last). A "Browse by field" bar above the search box (one
+  and rows with no date stay (sorted last). A "Browse by field" bar below the search box and display toolbar (one
   card per category with rows, then the chosen category's subcategories as
   chips: every subcategory tagging a series in that category; its heading is a
   toggle that collapses it, open by default on a wide screen and closed on a
   phone, remembered per browser, naming the selection with a ✕ to clear it;
-  on a phone the cards and chips are each one sideways-scrolling row) sets those
+  on a phone the cards are a two-column grid) sets those
   same category / subcategory filters, and the page mirrors them and the
   search text in the URL (`/?category=<slug>`, `/?subcategory=machine-learning`,
   `&q=...`; back/forward step through selections), so a field's view is a

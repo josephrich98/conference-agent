@@ -154,20 +154,10 @@
       .fields-toggle { width: 100%; }
       .fields-head h2 { flex: 1; }
       .ft-caret { margin-left: auto; }
-      /* On a phone the cards and the chips are each one row that scrolls
-         sideways; the next card shows partly and the right edge fades, so
-         it reads as more to swipe. */
-      .cat-grid, .sub-chips {
-        display: flex; flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
-        scrollbar-width: none; scroll-snap-type: x proximity;
-        -webkit-mask-image: linear-gradient(to right, #000 85%, transparent);
-        mask-image: linear-gradient(to right, #000 85%, transparent);
-        padding-right: 32px;
-      }
-      .cat-grid::-webkit-scrollbar, .sub-chips::-webkit-scrollbar { display: none; }
-      .cat-card { flex: 0 0 40%; scroll-snap-align: start; padding: 9px 12px 10px; font-size: 15px; }
-      .sub-chip { flex: 0 0 auto; white-space: nowrap; scroll-snap-align: start; }
-      .sub-chips:empty { display: none; }
+      /* On a phone the cards wrap into a two-column grid (the panel is
+         collapsed by default there, so it costs no space until opened). */
+      .cat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+      .cat-card { padding: 9px 12px 10px; font-size: 15px; }
     }
     .add-more a { color: var(--accent); }
     .controls {
@@ -577,17 +567,6 @@
     </div>
   </header>
 
-  <nav class="fields-bar" aria-label="Browse by field">
-    <div class="fields-head">
-      <h2><button type="button" class="fields-toggle" id="fields-toggle" aria-expanded="true" aria-controls="fields-panel"><span class="ft-label">Browse by field</span><span class="ft-sel" id="fields-sel"></span><span class="ft-caret" aria-hidden="true">&#9662;</span></button></h2>
-      <button type="button" class="fields-clear" id="fields-clear" aria-label="Show all fields" title="Show all fields" hidden>&#x2715;</button>
-    </div>
-    <div id="fields-panel">
-      <div class="cat-grid" id="cat-grid"></div>
-      <div class="sub-chips" id="sub-chips"></div>
-    </div>
-  </nav>
-
   <style>
     .view-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 10px; }
     .view-toolbar .vt-slot { display: contents; }
@@ -780,6 +759,17 @@
       </div>
     </span>
   </div>
+
+  <nav class="fields-bar" aria-label="Browse by field">
+    <div class="fields-head">
+      <h2><button type="button" class="fields-toggle" id="fields-toggle" aria-expanded="true" aria-controls="fields-panel"><span class="ft-label">Browse by field</span><span class="ft-sel" id="fields-sel"></span><span class="ft-caret" aria-hidden="true">&#9662;</span></button></h2>
+      <button type="button" class="fields-clear" id="fields-clear" aria-label="Show all fields" title="Show all fields" hidden>&#x2715;</button>
+    </div>
+    <div id="fields-panel">
+      <div class="cat-grid" id="cat-grid"></div>
+      <div class="sub-chips" id="sub-chips"></div>
+    </div>
+  </nav>
 
   <div class="syntax">
     <span class="muted">How search terms, fields, and date colors work:</span>
@@ -2347,20 +2337,6 @@
           .filter(Boolean).join(" \u203a ");
       $("fields-sel").textContent = sel;
       $("fields-clear").hidden = allOn;
-      revealFieldSelection();
-    }
-
-    // In a sideways-scrolling row (phone), bring the selection into view. A
-    // closed panel has no width, so this runs again when it opens.
-    function revealFieldSelection() {
-      for (const box of [$("cat-grid"), $("sub-chips")]) {
-        const on = box.querySelector(".on");
-        if (!on || box.scrollWidth <= box.clientWidth) continue;
-        const left = on.offsetLeft - box.offsetLeft;
-        if (left < box.scrollLeft || left + on.offsetWidth > box.scrollLeft + box.clientWidth) {
-          box.scrollLeft = Math.max(0, left - 16);
-        }
-      }
     }
 
     // Open / closed: remembered per browser; by default open on a wide
@@ -2369,7 +2345,6 @@
     function setFieldsOpen(open, remember) {
       $("fields-panel").hidden = !open;
       $("fields-toggle").setAttribute("aria-expanded", String(open));
-      if (open) revealFieldSelection();
       if (remember) {
         try { localStorage.setItem(FIELDS_OPEN_KEY, open ? "1" : "0"); } catch (e) { /* storage blocked */ }
       }
