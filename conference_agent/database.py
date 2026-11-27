@@ -44,6 +44,7 @@ from conference_agent.models import (
     HISTORY_KINDS,
     Conference,
     RemoteOption,
+    is_structured_cost,
     latest_acceptance,
     merge_acceptance_rates,
     name_id,
@@ -51,10 +52,12 @@ from conference_agent.models import (
     normalize_categories,
     normalize_ccf_rank,
     normalize_core_rank,
+    normalize_cost,
     normalize_formats,
     normalize_guidelines,
     normalize_registration,
     normalize_subcategories,
+    same_cost,
     size_for_attendance,
 )
 
@@ -690,6 +693,19 @@ _TIME_FIELDS = tuple(f"{k}_{part}" for k in KINDS for part in ("time", "timezone
 # The free-text submission requirements (per series).
 GUIDELINE_FIELDS = ("abstract_guidelines", "paper_guidelines")
 REGISTRATION_COLUMNS = ("prior_registration", "upcoming_registration")
+COST_COLUMNS = ("prior_cost", "upcoming_cost")
+
+
+def cost_to_store(stored: Optional[str], new: Optional[str]) -> Optional[str]:
+    """The cost text to write over ``stored``: the stored text when ``new``
+    states the same fees in other words (:func:`models.same_cost`), unless
+    ``new`` is in the tier format and the stored text is not (an upgrade);
+    otherwise ``new``."""
+    if stored and new and same_cost(stored, new) and (
+        is_structured_cost(stored) or not is_structured_cost(new)
+    ):
+        return stored
+    return new
 # ``subcategory`` is the stored granular column; ``category`` is derived from it
 # (written separately, like ``size``), so it is not in this round-trip tuple.
 # ``prior_registration`` / ``upcoming_registration`` are free text (not dates), so
@@ -1166,6 +1182,10 @@ def upsert_conferences(
             acceptance = row.acceptance_rates
             guidelines = {f: getattr(row, f) for f in GUIDELINE_FIELDS}
             registration = {f: getattr(row, f) for f in REGISTRATION_COLUMNS}
+            costs = {
+                edition: (getattr(row, f"{edition}_cost"), getattr(row, f"{edition}_start_date"))
+                for edition in ("prior", "upcoming")
+            }
             pins = {} if manual else _pin_snapshot(row)
             before = _extension_snapshot(row)
             history_before = _history_snapshot(row)
@@ -1198,6 +1218,15 @@ def upsert_conferences(
                 for field, value in registration.items():
                     if getattr(conf, field) is None:
                         setattr(row, field, value)
+                # Cost: sources reword the same fees from run to run, so a value
+                # with the same amounts keeps the stored text, and a run that
+                # reports none for the same edition keeps the stored one.
+                for edition, (stored, start) in costs.items():
+                    column = f"{edition}_cost"
+                    if getattr(row, column) is None and getattr(row, f"{edition}_start_date") == start:
+                        setattr(row, column, stored)
+                    else:
+                        setattr(row, column, cost_to_store(stored, getattr(row, column)))
                 # A stable-location flag is usually set by hand; a run that does
                 # not report one keeps it (clear it with ``add --update``).
                 row.stable_location = conf.stable_location or stable
@@ -1373,6 +1402,12 @@ def merge_records(
                     value = normalize_guidelines(value)
                 if field in REGISTRATION_COLUMNS:
                     value = normalize_registration(value)
+                if field in COST_COLUMNS:
+                    value = normalize_cost(value)
+                    if value is not None:
+                        value = cost_to_store(getattr(row, field), value)
+                        if value == getattr(row, field):
+                            continue
                 if value not in (None, ""):
                     setattr(row, field, str(value).strip())
                     changed = True

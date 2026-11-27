@@ -162,7 +162,11 @@ _SCALAR_FIELDS = (
         "remote_option", "remote_option", "enum",
         "Remote attendance option: " + " / ".join(o.value for o in RemoteOption),
     ),
-    _Field("cost", "upcoming_cost", "text", "Upcoming edition's registration cost summary"),
+    _Field(
+        "cost", "upcoming_cost", "text",
+        "Upcoming edition's registration cost: 'Tier: price' lines (Early bird, Regular, "
+        "Late, Trainee, Virtual, Notes), ';'- or newline-separated",
+    ),
     _Field("url", "url", "text", "Official conference website (the conference-name link)"),
     _Field("notes", "notes", "text", "Free-form notes"),
     _Field(
@@ -270,7 +274,7 @@ _SCALAR_FIELDS = (
     ),
     _Field(
         "prior_cost", "prior_cost", "text",
-        "Prior edition's registration cost summary",
+        "Prior edition's registration cost ('Tier: price' lines, as for cost)",
     ),
 )
 

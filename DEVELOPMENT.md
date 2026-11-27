@@ -52,7 +52,7 @@ conference-agent add \
   --location "Chicago, IL" \
   --attendance 39000 --attendance-year 2025 \
   --remote-option hybrid \
-  --cost "\$1,095 (member, early-bird)" \
+  --cost "Early bird: \$1,095 member / \$1,395 non-member; Trainee: \$300" \
   --abstract-due 2026-05-06 \
   --conference-dates 2026-11-29 2026-12-03 \
   --url https://www.rsna.org/annual-meeting

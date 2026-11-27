@@ -36,7 +36,7 @@ import subprocess  # only used to invoke the resolved local `claude` CLI  # nose
 from datetime import date
 from typing import Iterable, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from conference_agent.config import (
     ANTHROPIC_API_KEY_ENV,
@@ -50,10 +50,12 @@ from conference_agent.models import (
     name_id,
     normalize_archival,
     normalize_categories,
+    normalize_cost,
     normalize_formats,
     normalize_guidelines,
     normalize_registration,
     normalize_subcategories,
+    parse_cost,
 )
 
 # Available discovery backends. ``claude-code`` is the default (cheaper when a
@@ -111,10 +113,12 @@ For each notable conference in the requested field, gather:
   workshops and some biology meetings). Look for a "proceedings", "published
   in", or "non-archival" statement in the call; leave it unstated when the call
   does not say
-- the registration cost of each edition (prior_cost / upcoming_cost): give the
-  actual dollar figure(s) when available (e.g. "$1,095 member / $1,395
-  non-member, early-bird"), not just "varies"; leave the upcoming cost blank until
-  that edition's fees are published rather than repeating last year's
+- the registration cost of each edition (prior_cost / upcoming_cost) by tier:
+  early bird, regular, late / onsite, trainee (student / resident / fellow), and
+  virtual (online-only), each the actual figure(s) for an attending professional
+  (e.g. "$1,095 member / $1,395 non-member"), not just "varies"; leave the
+  upcoming cost blank until that edition's fees are published rather than
+  repeating last year's
 - the time of day and time zone at which each submission deadline closes: for the
   abstract, the late abstract, and the paper deadline separately (e.g. "11:59 PM ET"
   or "23:59 AoE") -- the zone is the part that matters. Read each from the call for
@@ -193,6 +197,27 @@ Write up what you find clearly, one conference at a time."""
 # The suggested categories, filled in once (the prompt is .format()-ed per run).
 _RESEARCH_SYSTEM = _RESEARCH_SYSTEM.replace("{categories}", ", ".join(CATEGORIES))
 
+# The cost tiers (models.COST_TIERS), shared by the extraction prompt and the
+# reformat pass (:func:`reformat_costs`).
+_COST_FORMAT = """\
+Each cost has one field per tier, "" for a tier the \
+notes do not price:
+- early_bird: the early-bird (earliest, lowest) rate.
+- regular: the standard / advance rate, or the only rate when there are no \
+time-based tiers.
+- late: the late or onsite rate.
+- trainee: the student / resident / fellow / trainee rate.
+- virtual: the online-only / virtual rate.
+- notes: almost always "". One short sentence only for something the tiers \
+cannot say (e.g. "Free for residents of member programs"); never a list of \
+other rate categories (industry, retired, allied health, day passes), \
+workshops, taxes, or a restatement of the tiers.
+Each priced tier is the rate for an attending professional (physician / \
+scientist / full delegate), written with its currency symbol, member first then \
+non-member when they differ: "$865 member / $1,175 non-member", or a single \
+amount ("€710") when there is one rate, or "Free". Do not add qualifiers \
+beyond member / non-member. Use the same wording every time."""
+
 _EXTRACT_SYSTEM = """\
 Convert the research notes into structured conference records. Use ISO dates \
 (YYYY-MM-DD) for date fields. Use an empty string "" for any field the notes do \
@@ -224,9 +249,8 @@ that deadline. The prior_location and upcoming_location fields are \
 the host city / venue of each edition (e.g. "Chicago, IL" or "Vienna, \
 Austria"); stable_location is "true" when the notes say the conference is held \
 in the same place every year, otherwise "". The prior_cost and upcoming_cost \
-fields are each edition's registration cost, with the actual price figure(s) \
-when the notes give one (e.g. "$1,095 member, early-bird"). Keep each location \
-and cost with the edition it belongs to. The attendance field must be a plain integer count of attendees \
+fields are each edition's registration cost, split into tiers (described \
+below). Keep each location and cost with the edition it belongs to. The attendance field must be a plain integer count of attendees \
 (digits only, no commas or words) or "" if the notes give no figure; \
 attendance_year is the four-digit year that figure describes (or ""); \
 attendance_source is the URL the figure came from (or ""). The remote_option \
@@ -238,7 +262,20 @@ no proceedings, and "" when the notes do not say. The formats \
 field lists the submission/presentation formats the conference offers -- any of \
 "abstract", "paper", "poster", "oral" -- comma-separated, or "" if the notes do \
 not say; use "paper" only for a genuine full-paper / manuscript venue, not for an \
-abstract-only meeting."""
+abstract-only meeting.
+
+""" + _COST_FORMAT
+
+
+class _ExtractedCost(BaseModel):
+    """Registration cost tiers of one edition (see ``models.COST_TIERS``)."""
+
+    early_bird: str = Field(default="", description="Early-bird rate, e.g. '$865 member / $1,175 non-member', or ''")
+    regular: str = Field(default="", description="Standard / advance rate (or the only rate), or ''")
+    late: str = Field(default="", description="Late / onsite rate, or ''")
+    trainee: str = Field(default="", description="Student / resident / fellow rate, or ''")
+    virtual: str = Field(default="", description="Online-only rate, or ''")
+    notes: str = Field(default="", description="Only what the tiers cannot say; usually ''")
 
 
 class _ExtractedConference(BaseModel):
@@ -331,11 +368,27 @@ class _ExtractedConference(BaseModel):
         description="Submission/presentation formats offered, comma-separated, any of: "
         "abstract, paper, poster, oral (or '' if the notes do not say)"
     )
-    prior_cost: str = Field(default="", description="Registration cost of the prior edition, or ''")
-    upcoming_cost: str = Field(default="", description="Registration cost of the upcoming edition, or ''")
+    prior_cost: _ExtractedCost = Field(
+        default_factory=_ExtractedCost,
+        description="Registration cost tiers of the prior edition (all '' if unknown)",
+    )
+    upcoming_cost: _ExtractedCost = Field(
+        default_factory=_ExtractedCost,
+        description="Registration cost tiers of the upcoming edition (all '' if unpublished)",
+    )
     attendance: str = Field(
         description="Total attendee count as a plain integer (digits only), or '' if unknown"
     )
+
+    @field_validator("prior_cost", "upcoming_cost", mode="before")
+    @classmethod
+    def _cost_from_text(cls, value):
+        """Accept a cost given as text: tier lines are parsed, and any other
+        text is taken as the regular rate ('' is no cost)."""
+        if isinstance(value, str):
+            text = value.strip()
+            return parse_cost(text) or ({"regular": text} if text else {})
+        return value
     attendance_year: str = Field(
         description="Four-digit year the attendance figure describes, or ''"
     )
@@ -420,8 +473,8 @@ def _to_conference(item: _ExtractedConference) -> Optional[Conference]:
         remote_option=remote,
         archival=archival,
         formats=normalize_formats(item.formats),
-        prior_cost=_clean(item.prior_cost),
-        upcoming_cost=_clean(item.upcoming_cost),
+        prior_cost=normalize_cost(item.prior_cost.model_dump()),
+        upcoming_cost=normalize_cost(item.upcoming_cost.model_dump()),
         attendance=_parse_int(item.attendance),
         attendance_year=_parse_int(item.attendance_year),
         attendance_source=_clean(item.attendance_source),
@@ -1065,6 +1118,83 @@ def research_guidelines(
         }
         for target, item in _pair_targets(parsed.conferences, targets)
     }
+
+
+# --- Cost reformat ------------------------------------------------------------
+
+_COST_REFORMAT_SYSTEM = """\
+Each input line is an id, a tab, and one conference edition's registration \
+cost written as free text. Rewrite each into cost tiers, one record per id, \
+copying the id exactly. Use only the amounts the text states; do not invent, \
+convert, or look up values, and keep each amount's currency. When the text \
+names a currency for all its amounts (e.g. "(CAD)"), write that currency's \
+symbol (CA$) on each amount. A text that gives no fees (e.g. "Fees not \
+published") has every tier "".
+
+""" + _COST_FORMAT
+
+
+class _ReformattedCost(_ExtractedCost):
+    id: str
+
+
+class _ReformattedCostList(BaseModel):
+    costs: List[_ReformattedCost]
+
+
+def reformat_costs(
+    texts: dict,
+    backend: str = DEFAULT_BACKEND,
+    model: Optional[str] = None,
+    max_tokens: int = 16000,
+) -> dict:
+    """Rewrite free-text costs into the tier format, without web search.
+
+    ``texts`` maps any key to stored cost text;
+    returns ``{key: tier text | None}`` (see :func:`models.normalize_cost`) for
+    the keys the model returned. One extraction call for all of ``texts``.
+    """
+    if not texts:
+        return {}
+    # Numbered lines: a model copies a short number back more reliably than a
+    # long key.
+    keys = list(texts)
+    prompt = "\n".join(f"{i}\t{' '.join(str(texts[k]).split())}" for i, k in enumerate(keys, 1))
+    if backend == "claude-code":
+        payload = _run_claude_cli(
+            prompt,
+            append_system=_COST_REFORMAT_SYSTEM,
+            tools=[],
+            json_schema=_ReformattedCostList.model_json_schema(),
+            model=model,
+            timeout=_CLI_EXTRACT_TIMEOUT * 2,
+        )
+        data = payload.get("structured_output")
+        if not data:  # the CLI sometimes returns the JSON only as the result text
+            try:
+                data = json.loads(payload.get("result") or "")
+            except json.JSONDecodeError:
+                data = None
+        parsed = _ReformattedCostList.model_validate(data) if data else None
+    elif backend == "api":
+        response = _anthropic_client().messages.parse(
+            model=model or ANTHROPIC_MODEL,
+            max_tokens=max_tokens,
+            system=_COST_REFORMAT_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+            output_format=_ReformattedCostList,
+        )
+        parsed = response.parsed_output
+    else:
+        raise ValueError(f"Unknown discovery backend {backend!r}")
+    if not parsed:
+        return {}
+    out = {}
+    for item in parsed.costs:
+        index = item.id.strip()
+        if index.isdigit() and 1 <= int(index) <= len(keys):
+            out[keys[int(index) - 1]] = normalize_cost(item.model_dump(exclude={"id"}))
+    return out
 
 
 # --- Registration -------------------------------------------------------------

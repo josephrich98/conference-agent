@@ -436,6 +436,27 @@ dependencies there rather than installing ad hoc.
   `registration_checked`. The table cell (`registrationCell` in `index.html`)
   shows one line per item and colors the deadline dates like the other dates;
   the `/c/<id>/` pages spell the dates out (`seo_pages._registration_text`).
+- **Cost is per-edition "Tier: price" lines, compared by amount.**
+  `prior_cost` / `upcoming_cost` hold one line per published tier, in the
+  order `Early bird`, `Regular`, `Late`, `Trainee`, `Virtual`, `Notes`
+  (`models.COST_TIERS`); each priced tier is the attending-professional rate,
+  member first (`$865 member / $1,175 non-member`). `models.normalize_cost`
+  (the model validator, and `merge_records`) canonicalizes label spellings
+  (`students:` → `Trainee:`, `online:` → `Virtual:`), amounts (`EUR 710` →
+  `€710`, `AUD` → `A$`), and member / non-member wording; other text (the
+  earlier free-text summaries) is kept as given. Discovery extracts the tiers
+  as an object (`discover._ExtractedCost`). Because sources reword the same
+  fees from run to run, `models.same_cost` compares two costs by their amounts
+  (tier by tier for two tiered values; all amounts for free text; a tiered
+  value whose amounts all appear in free text is the same cost), and
+  `database.cost_to_store` keeps the stored text when a write states the same
+  fees (`upsert_conferences`, `merge_records`), unless it upgrades free text
+  to tiers. A survey that reports no cost for the same edition (unchanged
+  start date) keeps the stored one. The subscriber diff
+  (`subscriptions.diff_snapshots`) uses `same_cost` too, so a rewording emails
+  no one. `scripts/reformat_costs.py` converts stored free text to tiers with
+  an extraction-only call (`discover.reformat_costs`, no web search). The
+  table (`costCell` in `index.html`) shows one line per tier.
 - **Location and cost are per edition.** A series moves cities and changes its
   fees, so both are prior/upcoming pairs (`prior_location` / `upcoming_location`,
   `prior_cost` / `upcoming_cost`, in `models.EDITION_SUFFIXES`), rolled with the
@@ -686,7 +707,10 @@ dependencies there rather than installing ad hoc.
   counts them (a descending sort lists them). Relevance order is unaffected,
   and rows with no date stay (sorted last). A "Browse by field" bar above the search box (one
   card per category with rows, then the chosen category's subcategories as
-  chips: every subcategory tagging a series in that category) sets those
+  chips: every subcategory tagging a series in that category; its heading is a
+  toggle that collapses it, open by default on a wide screen and closed on a
+  phone, remembered per browser, naming the selection with a ✕ to clear it;
+  on a phone the cards and chips are each one sideways-scrolling row) sets those
   same category / subcategory filters, and the page mirrors them and the
   search text in the URL (`/?category=<slug>`, `/?subcategory=machine-learning`,
   `&q=...`; back/forward step through selections), so a field's view is a

@@ -47,7 +47,7 @@ from urllib.parse import urlencode
 
 from conference_agent.calendar_sync import conferences_to_ics
 from conference_agent.database import NEW_EDITION_GAP_DAYS
-from conference_agent.models import Conference
+from conference_agent.models import Conference, same_cost
 
 # (attribute, label) pairs whose change triggers an update email. Prior-edition
 # fields are left out: they only change when an edition rolls over, which also
@@ -101,11 +101,16 @@ def watched_snapshot(conf: Conference) -> Dict[str, Optional[str]]:
 
 
 def diff_snapshots(old: Dict[str, Optional[str]], new: Dict[str, Optional[str]]) -> List[Change]:
-    """Labeled (old, new) pairs for each watched field that differs."""
+    """Labeled (old, new) pairs for each watched field that differs.
+
+    Cost is compared by its amounts (:func:`models.same_cost`), so a rewording
+    of the same fees is not a change.
+    """
     return [
         (label, old.get(attr), new.get(attr))
         for attr, label in WATCHED_FIELDS
         if old.get(attr) != new.get(attr)
+        and not (attr == "cost" and same_cost(old.get(attr), new.get(attr)))
     ]
 
 
@@ -198,8 +203,14 @@ def new_edition_year(changes: List[Change], prior_start: Optional[date] = None) 
     return None
 
 
+def _one_line(value: Optional[str]) -> Optional[str]:
+    """A multi-line value (registration, cost) joined with "; " for an email line."""
+    return "; ".join(p.strip() for p in value.splitlines() if p.strip()) if value else value
+
+
 def _describe_change(change: Change, rollover: bool) -> str:
     label, old, new = change
+    old, new = _one_line(old), _one_line(new)
     if old is None:
         return f"- {label}: {new} (newly announced)"
     if new is None and rollover and _ATTR_FOR_LABEL[label].startswith("upcoming_"):
@@ -244,7 +255,7 @@ def build_update_email(
         ]
     lines += ["", "Current schedule:"]
     now = watched_snapshot(conf)
-    lines += [f"- {lbl}: {now[attr]}" for attr, lbl in WATCHED_FIELDS if now[attr]]
+    lines += [f"- {lbl}: {_one_line(now[attr])}" for attr, lbl in WATCHED_FIELDS if now[attr]]
     lines += [
         "",
         f"The attached {conf.id}.ics holds the updated deadlines and dates. Importing it",

@@ -93,7 +93,27 @@
        subcategories as chips. Both are the category / subcategory column
        filters, mirrored in the URL (?category=...&subcategory=...). */
     .fields-bar { padding: 8px 24px 4px; }
-    .fields-bar h2 { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--text); margin: 4px 0 8px; }
+    /* The heading is a toggle that collapses the cards (open by default on
+       a wide screen, closed on a phone; remembered per browser) and names the
+       current selection, with a ✕ beside it that clears it. */
+    .fields-head { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
+    .fields-head h2 { margin: 0; font-size: inherit; font-weight: inherit; min-width: 0; }
+    .fields-toggle {
+      display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%;
+      padding: 6px 12px; border-radius: 0; background: var(--panel); color: var(--text);
+      font-family: var(--serif); font-size: 17px; font-weight: 600; text-align: left;
+    }
+    .fields-toggle:hover { border-color: var(--accent); filter: none; }
+    .ft-sel {
+      font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--accent);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+    }
+    .ft-sel:empty { display: none; }
+    .ft-caret { font-size: 12px; color: var(--muted); transition: transform 0.15s; }
+    .fields-toggle[aria-expanded="false"] .ft-caret { transform: rotate(-90deg); }
+    .fields-clear { padding: 6px 10px; font-size: 13px; border-radius: 0; background: var(--panel); color: var(--muted); }
+    .fields-clear:hover { border-color: var(--accent); color: var(--accent); filter: none; }
+    .fields-clear[hidden] { display: none; }
     .cat-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -131,7 +151,23 @@
     .sub-chip.on { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); font-weight: 600; }
     @media (max-width: 600px) {
       .fields-bar { padding: 8px 16px 4px; }
-      .cat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .fields-toggle { width: 100%; }
+      .fields-head h2 { flex: 1; }
+      .ft-caret { margin-left: auto; }
+      /* On a phone the cards and the chips are each one row that scrolls
+         sideways; the next card shows partly and the right edge fades, so
+         it reads as more to swipe. */
+      .cat-grid, .sub-chips {
+        display: flex; flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
+        scrollbar-width: none; scroll-snap-type: x proximity;
+        -webkit-mask-image: linear-gradient(to right, #000 85%, transparent);
+        mask-image: linear-gradient(to right, #000 85%, transparent);
+        padding-right: 32px;
+      }
+      .cat-grid::-webkit-scrollbar, .sub-chips::-webkit-scrollbar { display: none; }
+      .cat-card { flex: 0 0 40%; scroll-snap-align: start; padding: 9px 12px 10px; font-size: 15px; }
+      .sub-chip { flex: 0 0 auto; white-space: nowrap; scroll-snap-align: start; }
+      .sub-chips:empty { display: none; }
     }
     .add-more a { color: var(--accent); }
     .controls {
@@ -542,9 +578,14 @@
   </header>
 
   <nav class="fields-bar" aria-label="Browse by field">
-    <h2>Browse by field</h2>
-    <div class="cat-grid" id="cat-grid"></div>
-    <div class="sub-chips" id="sub-chips"></div>
+    <div class="fields-head">
+      <h2><button type="button" class="fields-toggle" id="fields-toggle" aria-expanded="true" aria-controls="fields-panel"><span class="ft-label">Browse by field</span><span class="ft-sel" id="fields-sel"></span><span class="ft-caret" aria-hidden="true">&#9662;</span></button></h2>
+      <button type="button" class="fields-clear" id="fields-clear" aria-label="Show all fields" title="Show all fields" hidden>&#x2715;</button>
+    </div>
+    <div id="fields-panel">
+      <div class="cat-grid" id="cat-grid"></div>
+      <div class="sub-chips" id="sub-chips"></div>
+    </div>
   </nav>
 
   <style>
@@ -1376,6 +1417,27 @@
     // YYYY-MM for a month), one line per published item, rendered one per line
     // with the deadlines colored like the other dates. Text in another shape
     // (the earlier free-text windows) is shown as written.
+    // Cost: one "Tier: price" line per published tier (models.COST_TIERS), the
+    // previous edition's in orange; earlier free text is shown as written.
+    const COST_LABELS = ["Early bird", "Regular", "Late", "Trainee", "Virtual", "Notes"];
+    function costCell(upcoming, prior) {
+      const value = upcoming || prior;
+      if (!value) return '<span class="muted">—</span>';
+      const rows = [];
+      for (const raw of String(value).split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        const label = COST_LABELS.find((l) => line.startsWith(`${l}: `));
+        if (!label) return editionText(upcoming, prior);
+        const text = escapeHtml(line.slice(label.length + 2).trim());
+        rows.push(label === "Notes" ? `<div class="reg-notes">${text}</div>`
+          : `<div><span class="reg-label">${label}:</span> ${text}</div>`);
+      }
+      const cls = upcoming ? "registration" : "registration from-prior";
+      const title = upcoming ? "" : ' title="Previous edition"';
+      return `<div class="${cls}"${title}>${rows.join("")}</div>`;
+    }
+
     const REGISTRATION_LABELS = ["Opens", "Early bird deadline", "Final deadline", "Refund deadline", "Notes"];
     function registrationCell(upcoming, prior) {
       const value = upcoming || prior;
@@ -1607,7 +1669,7 @@
           <td data-col="upcoming_dates">${rangeOrPrior(r.upcoming_start_date, r.upcoming_end_date, r.prior_start_date, r.prior_end_date)}</td>
           <td data-col="location">${locationCell(r)}</td>
           <td data-col="airports">${airportsCell(r)}</td>
-          <td data-col="cost">${editionText(r.upcoming_cost, r.prior_cost)}</td>
+          <td data-col="cost">${costCell(r.upcoming_cost, r.prior_cost)}</td>
           <td data-col="cal" class="cal-cell">
             <button class="cal-btn cal-open" data-conf-id="${escapeHtml(r.id)}" title="Add this conference's deadlines and dates to your calendar">📅 cal</button>
           </td>
@@ -2277,6 +2339,45 @@
             .map(([t, n]) => chip(t, t, n, !!(subs && subs.has(t)))).join("");
       }
       $("sub-chips").innerHTML = chips;
+
+      // The heading names the selection, so it shows while the cards are closed.
+      const sel = filters.category && filters.category.size > 1
+        ? [...filters.category].filter((v) => v !== BLANK).map(fieldLabel).join(", ")
+        : [active && fieldLabel(active), subs && [...subs].filter((v) => v !== BLANK).join(", ")]
+          .filter(Boolean).join(" \u203a ");
+      $("fields-sel").textContent = sel;
+      $("fields-clear").hidden = allOn;
+      revealFieldSelection();
+    }
+
+    // In a sideways-scrolling row (phone), bring the selection into view. A
+    // closed panel has no width, so this runs again when it opens.
+    function revealFieldSelection() {
+      for (const box of [$("cat-grid"), $("sub-chips")]) {
+        const on = box.querySelector(".on");
+        if (!on || box.scrollWidth <= box.clientWidth) continue;
+        const left = on.offsetLeft - box.offsetLeft;
+        if (left < box.scrollLeft || left + on.offsetWidth > box.scrollLeft + box.clientWidth) {
+          box.scrollLeft = Math.max(0, left - 16);
+        }
+      }
+    }
+
+    // Open / closed: remembered per browser; by default open on a wide
+    // screen and closed on a phone.
+    const FIELDS_OPEN_KEY = "conference-agent.fields-open";
+    function setFieldsOpen(open, remember) {
+      $("fields-panel").hidden = !open;
+      $("fields-toggle").setAttribute("aria-expanded", String(open));
+      if (open) revealFieldSelection();
+      if (remember) {
+        try { localStorage.setItem(FIELDS_OPEN_KEY, open ? "1" : "0"); } catch (e) { /* storage blocked */ }
+      }
+    }
+    {
+      let saved = null;
+      try { saved = localStorage.getItem(FIELDS_OPEN_KEY); } catch (e) { /* storage blocked */ }
+      setFieldsOpen(saved === null ? !window.matchMedia("(max-width: 600px)").matches : saved === "1", false);
     }
 
     function onFieldsBarClick(e) {
@@ -2741,6 +2842,14 @@
     });
     $("cat-grid").addEventListener("click", onFieldsBarClick);
     $("sub-chips").addEventListener("click", onFieldsBarClick);
+    $("fields-toggle").addEventListener("click", () =>
+      setFieldsOpen($("fields-panel").hidden, true));
+    $("fields-clear").addEventListener("click", () => {
+      delete filters.category;
+      delete filters.subcategory;
+      urlPush = true;
+      search();
+    });
     // Back / Forward step through field selections.
     window.addEventListener("popstate", () => {
       if (!DATA.conferences.length) return;

@@ -574,6 +574,239 @@ def is_structured_registration(value) -> bool:
     return bool(value) and bool(parse_registration(value))
 
 
+# --- Cost ---------------------------------------------------------------------
+#
+# An edition's registration cost is stored as text, one "Tier: price" line per
+# published tier, in this order, with only the tiers the meeting published:
+#
+#     Early bird: $865 member / $1,175 non-member
+#     Regular: $1,015 member / $1,365 non-member
+#     Late: $1,099 member / $1,499 non-member
+#     Trainee: $100
+#     Virtual: $575 member / $1,125 non-member
+#     Notes: Fellows, residents, and students free.
+#
+# Amounts are written with a currency symbol ("$1,095", "€710", "A$2,035",
+# "CA$1,200"), whatever spelling the input used ("EUR 710", "710 EUR"). Each
+# tier names the standard (attending professional) rate, member first then
+# non-member when they differ. Text in any other shape (the earlier free-text
+# summaries) is kept as given until it is researched again.
+#
+# Sources reword the same fees from run to run, so a cost is compared by its
+# amounts (:func:`same_cost`), not its text: a write whose amounts match the
+# stored value keeps the stored text, and subscribers are not emailed.
+COST_TIERS = (
+    ("early_bird", "Early bird"),
+    ("regular", "Regular"),
+    ("late", "Late"),
+    ("trainee", "Trainee"),
+    ("virtual", "Virtual"),
+    ("notes", "Notes"),
+)
+_COST_LABELS = {label.lower(): key for key, label in COST_TIERS}
+_COST_LABELS.update({
+    "early bird": "early_bird",
+    "early-bird": "early_bird",
+    "earlybird": "early_bird",
+    "early": "early_bird",
+    "early registration": "early_bird",
+    "standard": "regular",
+    "full": "regular",
+    "onsite": "late",
+    "on-site": "late",
+    "late / onsite": "late",
+    "last minute": "late",
+    "student": "trainee",
+    "students": "trainee",
+    "trainees": "trainee",
+    "resident": "trainee",
+    "online": "virtual",
+    "virtual only": "virtual",
+    "note": "notes",
+})
+_COST_LABEL_RE = re.compile(
+    r"^\s*(" + "|".join(sorted((re.escape(k) for k in _COST_LABELS), key=len, reverse=True))
+    + r")\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
+_COST_SPLIT_RE = re.compile(
+    r";\s*(?=(?:" + "|".join(sorted((re.escape(k) for k in _COST_LABELS), key=len, reverse=True))
+    + r")\s*:)",
+    re.IGNORECASE,
+)
+# Currency spellings -> the canonical prefix.
+_CURRENCY_PREFIX = {
+    "$": "$", "us$": "$", "usd": "$",
+    "€": "€", "eur": "€",
+    "£": "£", "gbp": "£",
+    "¥": "¥", "jpy": "¥",
+    "cn¥": "CN¥", "cny": "CN¥", "rmb": "CN¥",
+    "a$": "A$", "au$": "A$", "aud": "A$",
+    "ca$": "CA$", "c$": "CA$", "cad": "CA$",
+    "nz$": "NZ$", "nzd": "NZ$",
+    "hk$": "HK$", "hkd": "HK$",
+    "s$": "S$", "sgd": "S$",
+    "₹": "₹", "inr": "₹",
+    "₩": "₩", "krw": "₩",
+    "chf": "CHF ", "sek": "SEK ", "dkk": "DKK ", "nok": "NOK ", "brl": "R$", "r$": "R$",
+}
+_CURRENCY_ALT = "|".join(
+    sorted((re.escape(k) for k in _CURRENCY_PREFIX), key=len, reverse=True)
+)
+_NUMBER = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+# An amount with its currency before ("$1,095", "EUR 710", "AUD $2,035") or
+# after ("710 EUR", "710€"), optionally a range ("€80-€400", "EUR 90-120").
+_AMOUNT_RE = re.compile(
+    rf"(?<![A-Za-z0-9$])(?:(?P<pre>{_CURRENCY_ALT})(?:\s*\$)?\s?(?P<n1>{_NUMBER})"
+    rf"|(?P<n2>{_NUMBER})\s?(?P<post>{_CURRENCY_ALT})(?![A-Za-z]))"
+    rf"(?:\s?[-–]\s?(?:(?:{_CURRENCY_ALT})(?:\s*\$)?\s?)?(?P<n3>{_NUMBER})(?![\d,]))?",
+    re.IGNORECASE,
+)
+_FREE_RE = re.compile(r"\b(?:free|complimentary|no (?:fee|charge))\b", re.IGNORECASE)
+
+
+def _amount_number(text: str) -> float:
+    return float(text.replace(",", ""))
+
+
+def _amount_text(prefix: str, number: float) -> str:
+    shown = f"{number:,.0f}" if number == int(number) else f"{number:,.2f}"
+    return f"{prefix}{shown}"
+
+
+def cost_amounts(value) -> list:
+    """The amounts in cost text as sorted ``(currency prefix, number)`` pairs;
+    a free tier counts as ``("", 0)``, as does any zero amount."""
+    out = []
+    for m in _AMOUNT_RE.finditer(str(value or "")):
+        prefix = _CURRENCY_PREFIX[(m["pre"] or m["post"]).lower()]
+        for n in (m["n1"] or m["n2"], m["n3"]):
+            if n:
+                number = _amount_number(n)
+                out.append(("", 0.0) if number == 0 else (prefix, number))
+    out += [("", 0.0)] * len(_FREE_RE.findall(str(value or "")))
+    return sorted(out)
+
+
+def _canonical_price(text: str) -> str:
+    """A tier's price text with each amount spelled canonically and the member /
+    non-member words in one spelling."""
+    def amount(m):
+        prefix = _CURRENCY_PREFIX[(m["pre"] or m["post"]).lower()]
+        shown = _amount_text(prefix, _amount_number(m["n1"] or m["n2"]))
+        if m["n3"]:
+            shown += "–" + _amount_text(prefix, _amount_number(m["n3"]))
+        return shown
+
+    text = _AMOUNT_RE.sub(amount, " ".join(text.split()))
+    text = re.sub(r"\bnon[- ]?members?\b", "non-member", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!-)\bmembers?\b", "member", text, flags=re.IGNORECASE)
+    return text.rstrip(".")
+
+
+def parse_cost(value) -> Optional[dict]:
+    """The cost tiers of ``value`` as ``{key: price}`` (keys from
+    :data:`COST_TIERS`), or ``None`` when it is not in the line format (blank,
+    or earlier free text). A dict is read by key."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        items = {}
+        for raw_key, raw in value.items():
+            key = _COST_LABELS.get(str(raw_key).replace("_", " ").strip().lower(), raw_key)
+            if key in dict(COST_TIERS) and raw not in (None, "") and str(raw).strip():
+                items[key] = str(raw).strip()
+    else:
+        text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+        lines = [
+            part.strip()
+            for line in text.split("\n")
+            for part in _COST_SPLIT_RE.split(line)
+            if part.strip()
+        ]
+        if not lines:
+            return None
+        items = {}
+        for line in lines:
+            m = _COST_LABEL_RE.match(line)
+            # A tier holding several items ("Early bird: $1,049; students
+            # $379") is the earlier free text.
+            if not m or (_COST_LABELS[m[1].lower()] != "notes" and ";" in m[2]):
+                return None
+            key = _COST_LABELS[m[1].lower()]
+            if m[2].strip() and key not in items:
+                items[key] = m[2].strip()
+    out = {}
+    for key, _ in COST_TIERS:
+        raw = items.get(key)
+        if raw is None or raw.strip().lower() in ("", "n/a", "none", "unknown", "tba", "tbd"):
+            continue
+        out[key] = " ".join(raw.split()) if key == "notes" else _canonical_price(raw)
+    return out
+
+
+def format_cost(items: dict) -> Optional[str]:
+    """The stored text for parsed cost tiers (see :data:`COST_TIERS`)."""
+    lines = [f"{label}: {items[key]}" for key, label in COST_TIERS if items.get(key)]
+    return "\n".join(lines) or None
+
+
+def normalize_cost(value) -> Optional[str]:
+    """Canonical cost text: the tier line format with canonical amounts, in
+    tier order, for input in that format (any label spelling, ``;`` or newline
+    separated) or a dict; other text is kept as given (whitespace cleaned).
+    ``None`` for blank input."""
+    items = parse_cost(value)
+    if items is not None:
+        return format_cost(items)
+    if value is None or isinstance(value, dict):
+        return None
+    return " ".join(str(value).split()) or None
+
+
+def is_structured_cost(value) -> bool:
+    """True when ``value`` is non-blank cost text in the tier line format."""
+    return bool(value) and bool(parse_cost(value))
+
+
+def _cost_words(text: str) -> list:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def same_cost(a, b) -> bool:
+    """Whether two cost texts state the same fees, ignoring wording.
+
+    Two tiered values are compared tier by tier, each by its amounts (or, for a
+    tier with no amount, its words; a Notes line by its amounts alone). Free text
+    is compared by all of its amounts. A tiered value that restates free text is
+    the same cost when every amount it lists appears in the free text (the
+    tiers drop rates the free text also listed, such as industry rates).
+    """
+    a, b = (a or "").strip() or None, (b or "").strip() or None
+    if a is None or b is None:
+        return a is b
+    pa, pb = parse_cost(a), parse_cost(b)
+    if pa and pb:
+        def key(items):
+            out = {}
+            for tier, text in items.items():
+                amounts = cost_amounts(text)
+                if tier == "notes":
+                    if amounts:
+                        out[tier] = amounts
+                else:
+                    out[tier] = amounts or _cost_words(text)
+            return out
+        return key(pa) == key(pb)
+    aa, ab = cost_amounts(a), cost_amounts(b)
+    if not aa and not ab:
+        return _cost_words(a) == _cost_words(b)
+    if bool(pa) != bool(pb):
+        tiered, free = (aa, ab) if pa else (ab, aa)
+        return bool(tiered) and set(tiered) <= set(free)
+    return aa == ab
+
+
 def name_id(name: str) -> str:
     """The record id for a conference name: a lowercase, hyphenated ASCII slug.
 
@@ -721,7 +954,12 @@ class Conference(BaseModel):
         None, description="Host city / venue of the most recent edition, e.g. 'Chicago, IL'"
     )
     prior_cost: Optional[str] = Field(
-        None, description="Registration cost summary of the most recent edition"
+        None,
+        description=(
+            "Registration cost of the most recent edition, one 'Tier: price' line per "
+            "published tier: 'Early bird', 'Regular', 'Late', 'Trainee', 'Virtual', "
+            "and 'Notes' only for what the tiers cannot say (see COST_TIERS)."
+        ),
     )
 
     # --- Upcoming edition --------------------------------------------------
@@ -779,7 +1017,10 @@ class Conference(BaseModel):
     )
     upcoming_cost: Optional[str] = Field(
         None,
-        description="Registration cost summary of the upcoming edition, e.g. '$1,095 (member, early-bird)'",
+        description=(
+            "Registration cost of the upcoming edition, one 'Tier: price' line per "
+            "published tier, e.g. 'Early bird: $1,095 member / $1,395 non-member'"
+        ),
         validation_alias=AliasChoices("upcoming_cost", "cost"),
     )
 
@@ -924,6 +1165,11 @@ class Conference(BaseModel):
     @classmethod
     def _normalize_registration(cls, value):
         return normalize_registration(value)
+
+    @field_validator("prior_cost", "upcoming_cost", mode="before")
+    @classmethod
+    def _normalize_cost(cls, value):
+        return normalize_cost(value)
 
     @field_validator("abstract_guidelines", "paper_guidelines", mode="before")
     @classmethod

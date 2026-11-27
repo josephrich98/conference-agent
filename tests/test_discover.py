@@ -68,7 +68,7 @@ def test_to_conference_maps_dates_and_enums():
     assert conf.attendance_source == "https://www.rsna.org/annual-meeting/attendance"
     assert conf.size == ConferenceSize.MASSIVE
     assert conf.remote_option == RemoteOption.HYBRID
-    assert conf.cost == "$1,095"
+    assert conf.cost == "Regular: $1,095"
 
 
 def test_to_conference_parses_multiple_subcategories():

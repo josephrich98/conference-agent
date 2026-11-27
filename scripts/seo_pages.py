@@ -81,6 +81,11 @@ def _registration_text(text: Optional[str]) -> Optional[str]:
     return "; ".join(out)
 
 
+def _cost_text(text: Optional[str]) -> Optional[str]:
+    """Cost for a page: its tier lines joined with "; "."""
+    return "; ".join(p.strip() for p in text.splitlines() if p.strip()) if text else None
+
+
 def _date_range(start: Optional[str], end: Optional[str]) -> Optional[str]:
     if not start:
         return None
@@ -248,7 +253,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         # Airports belong to the displayed location: here when it is this one.
         ("Nearby airports", _airports_text(row) if _upcoming_location(row) else None),
         ("Attendance format", row.get("remote_option")),
-        ("Cost", row.get("upcoming_cost")),
+        ("Cost", _cost_text(row.get("upcoming_cost"))),
         ("Submission types", row.get("format")),
         ("Fields", row.get("subcategory")),
         ("CCF rank", row.get("ccf_rank")),
@@ -271,7 +276,7 @@ def conference_page(row: dict, generated: str) -> tuple[str, str]:
         ("Registration", _registration_text(row.get("prior_registration"))),
         ("Location", row.get("prior_location")),
         ("Nearby airports", None if _upcoming_location(row) else _airports_text(row)),
-        ("Cost", row.get("prior_cost")),
+        ("Cost", _cost_text(row.get("prior_cost"))),
     ]
 
     def table(items):
