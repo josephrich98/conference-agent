@@ -52,7 +52,7 @@
     .header-text { min-width: 0; }
     h1 { font-family: var(--serif); font-size: 28px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
     .logo { height: 1.4em; width: auto; flex: none; }
-    .subtitle { color: var(--muted); font-size: 14px; margin: 0; max-width: 72ch; }
+    .subtitle { color: var(--muted); font-size: 14px; margin: 0; white-space: nowrap; }
     .repo-link {
       flex: none;
       display: inline-flex;
@@ -556,7 +556,7 @@
   <header>
     <div class="header-text">
       <h1><img class="logo" src="logo.svg" alt="" width="53" height="40">Conference Agent</h1>
-      <p class="subtitle">Dynamic academic conference database with a focus on artificial intelligence, medicine, and genomics. Keep track of submission deadlines with calendar events and email reminders.</p>
+      <p class="subtitle">Academic conference database</p>
     </div>
     <div class="header-links">
     <a class="add-link" href="add/" aria-label="Add or edit a conference"><span class="long-label">Add or edit a conference</span><span class="short-label">Add/Edit</span></a>
@@ -573,6 +573,13 @@
     .view-toolbar { padding: 0 24px; }
     .view-toolbar button { padding: 6px 11px; font-size: 13px; }
     .view-toolbar button.on { border-color: var(--accent); color: var(--accent); }
+    /* On a phone the menus after View / Minimal columns sit behind "Show more". */
+    #vt-more { display: none; }
+    @media (max-width: 600px) {
+      #vt-more { display: inline-block; }
+      .view-toolbar:not(.more-open) #vt-display,
+      .view-toolbar:not(.more-open) #vt-rank { display: none; }
+    }
     .vt-menu { position: relative; }
     .vt-panel {
       position: absolute;
@@ -711,6 +718,7 @@
         </div>
       </div>
       <button type="button" id="vt-minimal" title="Show only the main columns">Minimal columns</button>
+      <button type="button" id="vt-more" aria-expanded="false" aria-controls="vt-display vt-rank" title="Show the other display and filter menus">Show more ▾</button>
       <div class="vt-menu" id="vt-sort-menu" hidden>
         <button type="button" id="vt-sort-btn" aria-haspopup="true" aria-expanded="false" title="Sort the tiles or list (the same order as the table's column headers)">Sort ▾</button>
         <div class="vt-panel vt-sort-panel" id="vt-sort-panel" hidden role="menu" aria-label="Sort by">
@@ -2797,6 +2805,11 @@
       $(`vt-${name}-all`).addEventListener("change", () => toggleMenuAll(name));
     }
     $("vt-minimal").addEventListener("click", toggleMinimal);
+    $("vt-more").addEventListener("click", () => {
+      const open = $("view-toolbar").classList.toggle("more-open");
+      $("vt-more").setAttribute("aria-expanded", String(open));
+      $("vt-more").textContent = open ? "Show less ▴" : "Show more ▾";
+    });
     $("columns-all").addEventListener("click", () => setAllColumns(true));
     $("columns-none").addEventListener("click", () => setAllColumns(false));
     // Close the columns dropdown and the filter popup when clicking outside them.

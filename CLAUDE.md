@@ -726,7 +726,9 @@ dependencies there rather than installing ad hoc.
   Deselect all row: `VALUE_MENUS` in `index.html`), and a Minimal columns / Show all columns toggle (right
   after the View menu; `MINIMAL_COLS`: Conference, Subcategory, Size,
   Abstract / Paper due, Conference dates, Location, Calendar, Email) that sets the
-  Columns ▾ menu's hidden set. While a `MARKED_COLS` column is hidden, a marker
+  Columns ▾ menu's hidden set. On a phone (≤ 600px) a "Show more" button
+  after it reveals the remaining menus (`#vt-display`, `#vt-rank`), which
+  are otherwise hidden there. While a `MARKED_COLS` column is hidden, a marker
   stands in for it: CORE / CCF badges after the size (a click filters by the
   rank) and a 📄 after the Abstract / Paper due date when the series has
   guidelines (the text on hover; a tap shows them inline); `applyColumnVisibility`
