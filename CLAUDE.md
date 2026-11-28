@@ -723,7 +723,7 @@ dependencies there rather than installing ad hoc.
   times), Size (edits the size column's ■ filter state, so the two stay in
   sync; like the CORE / CCF menus it starts with nothing checked, meaning no
   filter, and checking values shows only those, with a Select all /
-  Deselect all row: `VALUE_MENUS` in `index.html`), and a Minimal columns / Show all columns toggle (right
+  Deselect all row: `VALUE_MENUS` in `index.html`), and a Minimal columns / All columns toggle (right
   after the View menu; `MINIMAL_COLS`: Conference, Subcategory, Size,
   Abstract / Paper due, Conference dates, Location, Calendar, Email) that sets the
   Columns ▾ menu's hidden set. On a phone (≤ 600px) a "Show more" button

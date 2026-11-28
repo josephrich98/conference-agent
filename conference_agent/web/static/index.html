@@ -2136,7 +2136,7 @@
     }
 
     // Minimal columns: the Conference column plus a short list; the button then
-    // offers "Show all columns" (every column but the default-hidden ID). Both just set the
+    // offers "All columns" (every column but the default-hidden ID). Both just set the
     // Columns ▾ menu's hidden set.
     const MINIMAL_COLS = ["conference", "subcategory", "size", "upcoming_abstract_deadline",
       "upcoming_paper_deadline", "upcoming_dates", "location", "cal", "email"];
@@ -2233,7 +2233,7 @@
 
     function syncMinimalButton() {
       const minimal = isMinimal();
-      $("vt-minimal").textContent = minimal ? "Show all columns" : "Minimal columns";
+      $("vt-minimal").textContent = minimal ? "All columns" : "Minimal columns";
       $("vt-minimal").title = minimal ? "Show every column except ID" : "Show only the main columns";
     }
 
