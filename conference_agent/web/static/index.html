@@ -167,10 +167,11 @@
       flex-wrap: wrap;
       align-items: center;
     }
+    .query-wrap { position: relative; display: flex; flex: 1 1 420px; min-width: 260px; }
     #query {
-      flex: 1 1 420px;
-      min-width: 260px;
-      padding: 9px 12px;
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 9px 34px 9px 12px;
       font-size: 14px;
       border: 1px solid var(--border);
       border-radius: 0;
@@ -180,6 +181,14 @@
       border-color: var(--rule-strong);
     }
     #query::placeholder { color: #87928e; }
+    #query-clear {
+      position: absolute; right: 1px; top: 1px; bottom: 1px;
+      width: 32px; padding: 0; border: 0; background: transparent;
+      color: var(--muted); font-size: 15px; line-height: 1;
+    }
+    #query-clear:hover { color: var(--text); }
+    #query-clear[hidden] { display: none; }
+    #status a.did-you-mean { font-weight: 600; }
     button {
       padding: 9px 14px;
       font-size: 14px;
@@ -691,7 +700,10 @@
     }
   </style>
   <div class="controls">
-    <input id="query" type="text" placeholder='Search by field, month, place, or name (radiology november), or a boolean query (size:large AND remote:hybrid)' autocomplete="off" />
+    <span class="query-wrap">
+      <input id="query" type="text" placeholder="Search" aria-label="Search conferences by field, month, place, or name, or a boolean query" title="Search by field, month, place, or name (radiology november), or a boolean query (size:large AND remote:hybrid)" autocomplete="off" enterkeyhint="search" />
+      <button type="button" id="query-clear" aria-label="Clear search" title="Clear search" hidden>&#x2715;</button>
+    </span>
     <button class="primary" id="search-btn">Search</button>
     <div class="columns-menu">
       <button id="columns-btn" title="Choose which columns are visible">Columns ▾</button>
@@ -718,7 +730,7 @@
         </div>
       </div>
       <button type="button" id="vt-minimal" title="Show only the main columns">Minimal columns</button>
-      <button type="button" id="vt-more" aria-expanded="false" aria-controls="vt-display vt-rank" title="Show the other display and filter menus">Show more ▾</button>
+      <button type="button" id="vt-more" aria-expanded="false" aria-controls="vt-display vt-rank" title="Show the other display and filter menus">More ▾</button>
       <div class="vt-menu" id="vt-sort-menu" hidden>
         <button type="button" id="vt-sort-btn" aria-haspopup="true" aria-expanded="false" title="Sort the tiles or list (the same order as the table's column headers)">Sort ▾</button>
         <div class="vt-panel vt-sort-panel" id="vt-sort-panel" hidden role="menu" aria-label="Sort by">
@@ -1817,7 +1829,8 @@
       }
 
       let byRelevance = false;
-      if (rows.length === 0 && q.trim()) {
+      const exactEmpty = rows.length === 0 && Boolean(q.trim());
+      if (exactEmpty) {
         const hits = ConferenceSearch.keywordSearch(q, pool).map((h) => h.row);
         if (hits.length) {
           byRelevance = state.relevance;
@@ -1831,18 +1844,26 @@
           status = "0 conferences. Try fewer or different keywords.";
         }
       }
-      return { rows, status, byRelevance };
+      // "Did you mean": a word that looks like a mistyped acronym, offered
+      // whenever the exact search matched nothing.
+      const suggestion = exactEmpty ? ConferenceSearch.suggestAcronym(q, DATA.conferences) : null;
+      if (suggestion && !rows.length) status = "0 conferences.";
+      return { rows, status, byRelevance, suggestion };
     }
 
     // keepFilter: a change made inside the open ■ list, which stays open.
     function search({ keepFilter = false } = {}) {
       if (!keepFilter) closeFilter();
-      const { rows, status, byRelevance } = runQuery(DATA.conferences.filter((r) => passesFilters(r)));
+      state.lastQuery = $("query").value;
+      $("query-clear").hidden = !state.lastQuery;
+      const { rows, status, byRelevance, suggestion } = runQuery(DATA.conferences.filter((r) => passesFilters(r)));
       renderHeader(!byRelevance);
       state.rows = rows;
       state.byRelevance = byRelevance;
       const active = COLUMNS.filter((c) => c.key in filters).map((c) => c.label);
-      $("status").innerHTML = escapeHtml(status) + (active.length
+      $("status").innerHTML = escapeHtml(status) + (suggestion
+        ? ` Did you mean <a class="did-you-mean" id="did-you-mean" data-q="${attr(suggestion)}">${escapeHtml(suggestion)}</a>?`
+        : "") + (active.length
         ? ` Column filters: ${escapeHtml(active.join(", "))} · <a id="clear-filters">clear</a>`
         : "") + (hidePast
         ? ' Conferences with no deadline ahead are hidden · <a id="show-past">show</a>'
@@ -2808,7 +2829,7 @@
     $("vt-more").addEventListener("click", () => {
       const open = $("view-toolbar").classList.toggle("more-open");
       $("vt-more").setAttribute("aria-expanded", String(open));
-      $("vt-more").textContent = open ? "Show less ▴" : "Show more ▾";
+      $("vt-more").textContent = open ? "Less ▴" : "More ▾";
     });
     $("columns-all").addEventListener("click", () => setAllColumns(true));
     $("columns-none").addEventListener("click", () => setAllColumns(false));
@@ -2827,6 +2848,10 @@
     $("status").addEventListener("click", (e) => {
       if (e.target.id === "clear-filters") clearFilter();
       if (e.target.id === "show-past") setHidePast(false);
+      if (e.target.id === "did-you-mean") {
+        $("query").value = e.target.dataset.q;
+        newSearch();
+      }
     });
     $("cat-grid").addEventListener("click", onFieldsBarClick);
     $("sub-chips").addEventListener("click", onFieldsBarClick);
@@ -2896,8 +2921,20 @@
     });
     window.addEventListener("resize", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
     document.querySelector(".table-scroll").addEventListener("scroll", () => { if (fp) placeFilter(); if (tp) placeTimePop(); if (np) placeNotify(); if (cp) placeCal(); });
+    // The ✕ in the search box clears it and searches. A search also runs
+    // when the box loses focus with new text (a phone keyboard's Done closes
+    // the keyboard without sending Enter).
+    // search() records the text it ran with in state.lastQuery.
+    function syncQueryClear() { $("query-clear").hidden = !$("query").value; }
     $("query").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") newSearch();
+      if (e.key === "Enter") { newSearch(); if (matchMedia("(pointer: coarse)").matches) $("query").blur(); }
+    });
+    $("query").addEventListener("input", syncQueryClear);
+    $("query").addEventListener("change", () => { if ($("query").value !== state.lastQuery) newSearch(); });
+    $("query-clear").addEventListener("click", () => {
+      $("query").value = "";
+      newSearch();
+      $("query").focus();
     });
     $("help-toggle").addEventListener("click", () => {
       const h = $("fields-help");

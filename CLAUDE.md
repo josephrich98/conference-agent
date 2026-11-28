@@ -692,7 +692,12 @@ dependencies there rather than installing ad hoc.
   `conference_agent.web.search.keyword_search`, serves `conference-agent lookup` (unique column
   values over the same search), so the boolean grammar, its Python parity, and
   the API are unchanged; `tests/test_keyword_search.py` covers it via Node and
-  pins the Python port to it. Categorical
+  pins the Python port to it. When the exact search matches nothing, the
+  status line also offers "Did you mean ...?" (`suggestAcronym` in
+  `search.js`, browser only): the query with any word within one or two edits
+  of a stored acronym (and not itself a catalog word) replaced by it; clicking
+  it searches the corrected text. The box's ✕ clears it, and leaving the box
+  with new text searches (a phone keyboard's Done sends no Enter). Categorical
   column headers (category, subcategory, format, size, remote, archival, the
   four month columns) carry an Excel-style ■ checkbox value filter; clicking a cell (or
   one tag in it) in those columns filters the column to that value at once
@@ -726,7 +731,7 @@ dependencies there rather than installing ad hoc.
   Deselect all row: `VALUE_MENUS` in `index.html`), and a Minimal columns / All columns toggle (right
   after the View menu; `MINIMAL_COLS`: Conference, Subcategory, Size,
   Abstract / Paper due, Conference dates, Location, Calendar, Email) that sets the
-  Columns ▾ menu's hidden set. On a phone (≤ 600px) a "Show more" button
+  Columns ▾ menu's hidden set. On a phone (≤ 600px) a "More" button
   after it reveals the remaining menus (`#vt-display`, `#vt-rank`), which
   are otherwise hidden there. While a `MARKED_COLS` column is hidden, a marker
   stands in for it: CORE / CCF badges after the size (a click filters by the

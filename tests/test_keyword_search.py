@@ -81,6 +81,7 @@ def run(tmp_path_factory):
         assert proc.returncode == 0, f"node runner failed:\n{proc.stderr}"
         return json.loads(proc.stdout)
 
+    _run.rows_path = rows_path
     return _run
 
 
@@ -166,3 +167,21 @@ def test_python_port_matches_js(run):
     for q in _PARITY_QUERIES:
         assert keyword_terms(q) == out[q]["terms"], q
         assert [r["id"] for r in keyword_search(q, _ROWS)] == out[q]["ids"], q
+
+
+def test_did_you_mean_suggests_a_mistyped_acronym(run):
+    proc = subprocess.run(
+        [_NODE, str(Path(__file__).parent / "js" / "run_suggest.js"), str(run.rows_path)],
+        input=json.dumps(["rnsa", "nuerips deadline", "SITC", "radiology", "size:large", "xyzzy"]),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["rnsa"] == "RSNA"  # a transposition
+    assert out["nuerips deadline"] == "NeurIPS deadline"  # only the mistyped word changes
+    assert out["SITC"] is None  # already an acronym
+    assert out["radiology"] is None  # a word used in the catalog
+    assert out["size:large"] is None  # field syntax
+    assert out["xyzzy"] is None  # close to nothing
+

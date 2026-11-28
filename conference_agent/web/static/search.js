@@ -1063,15 +1063,71 @@ function keywordSearch(query, rows) {
       (Number(b.row.attendance) || 0) - (Number(a.row.attendance) || 0));
 }
 
+/**
+ * "Did you mean": the query with each word that looks like a mistyped
+ * conference acronym replaced by that acronym, or null when no word does.
+ *
+ * A word qualifies when it has at least three characters, contains no field or
+ * operator syntax, matches no stored acronym exactly, is not a word in any
+ * series' name, field, or location, and is within one edit
+ * (two for words of six or more characters) of an acronym; the closest wins
+ * (ties go to a transposition, then a dropped letter, then the larger meeting
+ * by attendance). The page offers this only
+ * when the exact search matched nothing.
+ */
+function suggestAcronym(query, rows) {
+  const key = (s) => foldText(s).replace(/[^\p{L}\p{N}]/gu, "");
+  const acronyms = new Map(); // key -> {text, attendance}
+  for (const r of rows) {
+    const text = String(r.acronym || "").trim();
+    const k = key(text);
+    if (k.length < 2) continue;
+    const att = Number(r.attendance) || 0;
+    const prev = acronyms.get(k);
+    if (!prev || att > prev.attendance) acronyms.set(k, { text, attendance: att });
+  }
+  // Words used in the catalog's names, fields, and places are real words.
+  const vocab = new Set();
+  for (const r of rows) {
+    for (const f of ["name", "subcategory", "category", "upcoming_location", "prior_location"]) {
+      for (const w of splitWords(r[f] || "")) vocab.add(w);
+    }
+  }
+  let changed = false;
+  const words = String(query).split(/(\s+)/).map((w) => {
+    if (!w.trim() || /[:<>=()"*]/.test(w) || /^(and|or|not)$/i.test(w)) return w;
+    const k = key(w);
+    if (k.length < 3 || acronyms.has(k) || vocab.has(k) || /^\d+$/.test(k)) return w;
+    const max = k.length >= 6 ? 2 : 1;
+    // Among equally close acronyms, prefer the same letters reordered (a
+    // transposition), then one the word is missing letters from.
+    const sorted = (t) => [...t].sort().join("");
+    const isSubsequence = (t, of) => { let i = 0; for (const c of of) if (c === t[i]) i++; return i === t.length; };
+    const rank = (ak) => (sorted(ak) === sorted(k) ? 2 : isSubsequence(k, ak) ? 1 : 0);
+    let best = null;
+    for (const [ak, a] of acronyms) {
+      const d = editDistance(k, ak, max);
+      if (d > max) continue;
+      const cand = { d, a, r: rank(ak) };
+      if (!best || d < best.d || (d === best.d && (cand.r > best.r
+        || (cand.r === best.r && a.attendance > best.a.attendance)))) best = cand;
+    }
+    if (!best) return w;
+    changed = true;
+    return best.a.text;
+  });
+  return changed ? words.join("") : null;
+}
+
 // Browser global + CommonJS export (for the Node-based tests).
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError,
-    upcomingDeadline, pastDeadlines, shownDeadline,
+    upcomingDeadline, pastDeadlines, shownDeadline, suggestAcronym,
   };
 } else {
   window.ConferenceSearch = {
     buildPredicate, sortRows, keywordSearch, keywordTerms, QueryError,
-    upcomingDeadline, pastDeadlines, shownDeadline,
+    upcomingDeadline, pastDeadlines, shownDeadline, suggestAcronym,
   };
 }
